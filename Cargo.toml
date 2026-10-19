@@ -10,6 +10,7 @@ members = [
     "crates/aim-sync",
     "crates/aim-llm",
     "crates/aim-wasm",
+    "apps/trainer",
 ]
 
 [workspace.package]
