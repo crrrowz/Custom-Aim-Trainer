@@ -16,9 +16,6 @@ pub struct ActiveTargetMarker {
 #[derive(Component)]
 pub struct OpticFlowSphere;
 
-#[derive(Component)]
-pub struct CrosshairMarker;
-
 #[derive(Resource)]
 pub struct TargetAssets {
     pub home_mesh: Handle<Mesh>,
@@ -28,8 +25,6 @@ pub struct TargetAssets {
     pub hit_material: Handle<StandardMaterial>,
     pub optic_flow_mesh: Handle<Mesh>,
     pub optic_flow_material: Handle<StandardMaterial>,
-    pub crosshair_mesh: Handle<Mesh>,
-    pub crosshair_material: Handle<StandardMaterial>,
 }
 
 /// Generates an unlit texture with a low-contrast 10° lat/long optic-flow grid.
@@ -86,7 +81,6 @@ pub fn setup_target_assets(
 ) {
     let optic_flow_texture = generate_optic_flow_image(&mut images);
 
-    // Unlit target materials
     let home_material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.2, 0.8, 1.0), // Cyan home target
         unlit: true,
@@ -105,7 +99,6 @@ pub fn setup_target_assets(
         ..default()
     });
 
-    // Optic-flow background material with low-contrast lat/long grid texture
     let optic_flow_material = materials.add(StandardMaterial {
         base_color_texture: Some(optic_flow_texture),
         unlit: true,
@@ -113,17 +106,8 @@ pub fn setup_target_assets(
         ..default()
     });
 
-    // Green crosshair material
-    let crosshair_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.0, 1.0, 0.3), // Vibrant green
-        unlit: true,
-        depth_bias: 1000.0,
-        ..default()
-    });
-
     let sphere_mesh = meshes.add(Sphere::new(1.0).mesh().ico(3).unwrap());
     let backdrop_mesh = meshes.add(Sphere::new(40.0).mesh().ico(4).unwrap());
-    let dot_mesh = meshes.add(Sphere::new(1.0).mesh().ico(2).unwrap());
 
     // Spawn camera-centered optic-flow inward sphere
     commands.spawn((
@@ -141,8 +125,6 @@ pub fn setup_target_assets(
         hit_material,
         optic_flow_mesh: backdrop_mesh,
         optic_flow_material,
-        crosshair_mesh: dot_mesh,
-        crosshair_material,
     });
 }
 
@@ -169,7 +151,6 @@ pub fn spawn_home_target(
 ) {
     let home_angles = ViewAngles::new(0.0, 0.0);
     let radius_deg = 0.5;
-    // R = d * sin(r) for exact angular radius match
     let linear_radius = distance_m * (radius_deg as f32).to_radians().sin();
 
     commands.spawn((
@@ -196,7 +177,6 @@ pub fn spawn_trial_target(
     now_s: f64,
 ) {
     let angles = ViewAngles::new(trial.yaw_deg, trial.pitch_deg);
-    // R = d * sin(r) for exact angular radius match
     let linear_radius = distance_m * (trial.radius_deg as f32).to_radians().sin();
 
     commands.spawn((

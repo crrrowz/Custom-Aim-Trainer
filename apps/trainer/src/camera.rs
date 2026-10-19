@@ -1,4 +1,4 @@
-//! 3D FPS Camera and crosshair conforming to VALORANT optics and projection geometry.
+//! 3D FPS Camera conforming to VALORANT optics and projection geometry.
 
 use aim_core::camera::{vfov_from_hfov, ViewAngles, VALORANT_HFOV_DEG};
 use bevy::prelude::*;
@@ -8,9 +8,6 @@ use bevy::prelude::*;
 pub struct FpsCamera {
     pub angles: ViewAngles,
 }
-
-#[derive(Component)]
-pub struct CrosshairEntity;
 
 /// Computes the PerspectiveProjection configured for VALORANT at the given aspect ratio.
 pub fn valorant_projection(aspect: f64) -> PerspectiveProjection {
@@ -24,38 +21,40 @@ pub fn valorant_projection(aspect: f64) -> PerspectiveProjection {
     }
 }
 
-/// Spawns the VALORANT 3D camera with child crosshair lines positioned at screen center.
-pub fn spawn_fps_camera(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
+/// Spawns the VALORANT 3D camera.
+pub fn spawn_fps_camera(mut commands: Commands) {
     let aspect = 16.0 / 9.0;
     let proj = valorant_projection(aspect);
 
-    let crosshair_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.0, 1.0, 0.3), // Vibrant green
-        unlit: true,
-        depth_bias: 1000.0,
-        ..default()
-    });
+    commands.spawn((
+        Camera3d::default(),
+        Projection::Perspective(proj),
+        Transform::from_xyz(0.0, 0.0, 0.0).looking_at(Vec3::new(0.0, 0.0, 1.0), Vec3::Y),
+        FpsCamera::default(),
+    ));
+}
 
-    // Crosshair dot at exact center: small quad positioned in camera view space at z = -1.0
-    let dot_mesh = meshes.add(Rectangle::new(0.003, 0.003));
-
+/// Spawns the pixel-aligned 2D crosshair overlay centered on screen.
+pub fn spawn_crosshair_ui(mut commands: Commands) {
+    // Exact screen-center root container
     commands
-        .spawn((
-            Camera3d::default(),
-            Projection::Perspective(proj),
-            Transform::from_xyz(0.0, 0.0, 0.0).looking_at(Vec3::new(0.0, 0.0, 1.0), Vec3::Y),
-            FpsCamera::default(),
-        ))
+        .spawn(Node {
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            position_type: PositionType::Absolute,
+            ..default()
+        })
         .with_children(|parent| {
+            // 4x4 pixel green crosshair dot (#00ff4c)
             parent.spawn((
-                Mesh3d(dot_mesh),
-                MeshMaterial3d(crosshair_material),
-                Transform::from_xyz(0.0, 0.0, 1.0), // 1.0 unit forward along camera line-of-sight
-                CrosshairEntity,
+                Node {
+                    width: Val::Px(4.0),
+                    height: Val::Px(4.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.0, 1.0, 0.3)),
             ));
         });
 }

@@ -7,6 +7,8 @@ use aim_core::sensitivity::VALORANT_YAW_DEG_PER_COUNT;
 use aim_scenarios::{generate_trials, Scenario, Trial};
 use aim_telemetry::format::{quality_flags, HitZone};
 use bevy::prelude::*;
+use bevy::render::settings::{Backends, RenderCreation, WgpuSettings};
+use bevy::render::RenderPlugin;
 use bevy::window::{
     CursorGrabMode, CursorOptions, Monitor, MonitorSelection, PrimaryMonitor, PrimaryWindow,
     RawHandleWrapper, WindowFocused, WindowMode,
@@ -15,7 +17,7 @@ use bevy::winit::{UpdateMode, WinitSettings};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
-use trainer::camera::{spawn_fps_camera, sync_camera_transform, FpsCamera};
+use trainer::camera::{spawn_crosshair_ui, spawn_fps_camera, sync_camera_transform, FpsCamera};
 use trainer::raw_input::RawInputWorker;
 use trainer::recorder::{self, SessionRecorder};
 use trainer::target::{
@@ -30,6 +32,7 @@ pub struct TrainerConfig {
     pub sens: f64,
     pub duration_s: f64,
     pub windowed: bool,
+    pub backend: String,
     pub output_path: Option<PathBuf>,
 }
 
@@ -76,6 +79,7 @@ fn parse_cli_args() -> TrainerConfig {
     let mut sens = 0.35f64;
     let mut duration_s = 288.0f64;
     let mut windowed = false;
+    let mut backend = "auto".to_string();
     let mut output_path = None;
 
     let args: Vec<String> = std::env::args().collect();
@@ -102,6 +106,10 @@ fn parse_cli_args() -> TrainerConfig {
                 duration_s = args[i + 1].parse().unwrap_or(duration_s);
                 i += 2;
             }
+            "--backend" if i + 1 < args.len() => {
+                backend = args[i + 1].to_lowercase();
+                i += 2;
+            }
             "--windowed" => {
                 windowed = true;
                 i += 1;
@@ -123,6 +131,7 @@ fn parse_cli_args() -> TrainerConfig {
         sens,
         duration_s,
         windowed,
+        backend,
         output_path,
     }
 }
@@ -231,11 +240,6 @@ fn handle_window_focus(
     }
 }
 
-/// Unified raw input drain and chronological hit evaluation.
-///
-/// Dispatches discrete motion and clicks in true QPC order:
-/// When a click event arrives, the hit test is evaluated against ViewAngles accumulated
-/// up to that exact microsecond timestamp, guaranteeing zero post-click motion contamination.
 fn drain_and_evaluate_input_system(
     mut commands: Commands,
     config: Res<TrainerConfig>,
@@ -246,7 +250,6 @@ fn drain_and_evaluate_input_system(
 ) {
     let deg_per_count = VALORANT_YAW_DEG_PER_COUNT * config.sens;
 
-    // 1. Drain raw events from thread channel
     let mut batch = Vec::new();
     while let Ok(event) = state.worker.receiver.try_recv() {
         state.event_count += 1;
@@ -265,7 +268,6 @@ fn drain_and_evaluate_input_system(
         batch.push(event);
     }
 
-    // 2. Warm-up window for primary device selection (picks device with most events in first 200 events)
     if state.primary_device.is_none() {
         state.warmup_events_collected += batch.len() as u64;
         if state.warmup_events_collected >= 200
@@ -287,7 +289,6 @@ fn drain_and_evaluate_input_system(
         .map(|c| c.angles)
         .unwrap_or_default();
 
-    // 3. Process events chronologically through pure replay_input
     let actions =
         trainer::replay::replay_input(&mut current_angles, &batch, primary_id, deg_per_count);
 
@@ -367,12 +368,10 @@ fn drain_and_evaluate_input_system(
         }
     }
 
-    // Synchronize modified angles back into Bevy camera component
     if let Some(mut fps_cam) = camera_query.iter_mut().next() {
         fps_cam.angles = current_angles;
     }
 
-    // 4. Target spawning & trial timeout checking
     let assets = match assets {
         Some(a) => a,
         None => return,
@@ -612,27 +611,50 @@ fn main() {
         WindowMode::BorderlessFullscreen(MonitorSelection::Primary)
     };
 
+    let backends = match config.backend.as_str() {
+        "dx12" => Some(Backends::DX12),
+        "vulkan" => Some(Backends::VULKAN),
+        _ => Some(Backends::PRIMARY),
+    };
+
+    println!(
+        "[AimForge] Initializing graphics with requested backend: '{}' (resolved: {:?}), present mode: AutoNoVsync",
+        config.backend, backends
+    );
+
     App::new()
         .insert_resource(config)
         .insert_resource(WinitSettings {
             focused_mode: UpdateMode::Continuous,
             unfocused_mode: UpdateMode::Continuous,
         })
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "AimForge Trainer".into(),
-                mode: window_mode,
-                present_mode: bevy::window::PresentMode::AutoNoVsync,
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "AimForge Trainer".into(),
+                        mode: window_mode,
+                        present_mode: bevy::window::PresentMode::AutoNoVsync,
+                        ..default()
+                    }),
+                    ..default()
+                })
+                .set(RenderPlugin {
+                    render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
+                        backends,
+                        power_preference: bevy::render::settings::PowerPreference::HighPerformance,
+                        ..default()
+                    })),
+                    ..default()
+                }),
+        )
         .add_systems(
             Startup,
             (
                 setup_trainer,
                 setup_target_assets,
                 spawn_fps_camera,
+                spawn_crosshair_ui,
                 lock_cursor_startup,
             ),
         )
