@@ -1,0 +1,19 @@
+Scenario(
+    id: "assess.v1.head_level_peeks",
+    version: 1,
+    kind: Assessment,
+    timeout_s: 150.0,
+    spawn_distance_m: 15.0,
+    target_shape: WallPeek,
+    layout: HeadLevelPeeks(
+        peeks_count: 36,
+        occluder_yaws_deg: [-25.0, 25.0],
+        target_radius_deg: 0.45,
+        head_pitch_deg: 1.25, // Form-calibrated pitch off 0° background line
+        pitch_noise_std_deg: 0.4,
+        pitch_noise_clamp_deg: 0.8,
+        peek_speed_mps: 5.73, // VALORANT rifle peek velocity
+        trial_timeout_s: 2.5,
+    ),
+    hit_rule: SingleShotKill,
+)

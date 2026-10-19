@@ -1,0 +1,19 @@
+Scenario(
+    id: "assess.v1.micro_precision",
+    version: 1,
+    kind: Assessment,
+    timeout_s: 180.0,
+    spawn_distance_m: 15.0,
+    target_shape: Sphere,
+    layout: Fitts(
+        grid: FittsGrid(
+            distances_deg: [2.0, 4.0, 6.0],
+            radius_sizes_deg: [0.4, 0.6],
+            octants: 8,
+            repetitions_per_cell: 1, // 48 micro trials
+            anchor: HomeTargetCenter,
+        ),
+        trial_timeout_s: 2.5,
+    ),
+    hit_rule: SingleShotKill,
+)

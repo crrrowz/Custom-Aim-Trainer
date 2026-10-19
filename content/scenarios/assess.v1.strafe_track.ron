@@ -1,0 +1,21 @@
+Scenario(
+    id: "assess.v1.strafe_track",
+    version: 1,
+    kind: Assessment,
+    timeout_s: 45.0,
+    spawn_distance_m: 15.0,
+    target_shape: Sphere,
+    layout: Tracking(
+        target_radius_deg: 0.6,
+        trajectory: ReactiveStrafe(
+            speed_deg_s: 21.88, // 5.73 m/s / 15.0m * 180 / PI
+            mean_reversal_s: 0.55,
+            min_reversal_s: 0.35,
+            max_reversal_s: 0.75,
+            max_yaw_deg: 35.0,
+            fixed_pitch_deg: 0.0,
+        ),
+        duration_s: 45.0,
+    ),
+    hit_rule: ContinuousTracking,
+)

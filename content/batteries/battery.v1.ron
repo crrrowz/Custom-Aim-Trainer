@@ -1,0 +1,13 @@
+BatteryManifest(
+    id: "battery.v1",
+    version: 1,
+    stages: [
+        (scenario: "assess.v1.warmup", rest_after_s: 10.0),
+        (scenario: "assess.v1.flick_static", rest_after_s: 15.0),
+        (scenario: "assess.v1.micro_precision", rest_after_s: 15.0),
+        (scenario: "assess.v1.head_level_peeks", rest_after_s: 15.0),
+        (scenario: "assess.v1.smooth_track", rest_after_s: 15.0),
+        (scenario: "assess.v1.strafe_track", rest_after_s: 15.0),
+        (scenario: "assess.v1.multi_switch", rest_after_s: 0.0),
+    ],
+)

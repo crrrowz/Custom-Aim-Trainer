@@ -182,10 +182,27 @@ fn setup_trainer(mut commands: Commands, config: Res<TrainerConfig>) {
         hz: 240,
     });
 
-    let ron_str = include_str!("../../../content/scenarios/assess.v1.flick_static.ron");
-    let scenario_def: Scenario =
-        ron::from_str(ron_str).expect("Failed parsing assess.v1.flick_static.ron");
-    let trials = generate_trials(&scenario_def, config.seed);
+    let (scenario_def, seed) = if config.scenario == "assess.v1.flick_static" {
+        let ron_str = include_str!("../../../content/scenarios/assess.v1.flick_static.ron");
+        let sc: Scenario =
+            ron::from_str(ron_str).expect("Failed parsing assess.v1.flick_static.ron");
+        (sc, config.seed)
+    } else {
+        // Look up scenario from content/scenarios/
+        let path = format!("content/scenarios/{}.ron", config.scenario);
+        if let Ok(ron_str) = std::fs::read_to_string(&path) {
+            let sc: Scenario = ron::from_str(&ron_str).expect("Failed parsing scenario file");
+            let s = aim_scenarios::derive_scenario_seed(0, &sc.id);
+            (sc, s)
+        } else {
+            let ron_str = include_str!("../../../content/scenarios/assess.v1.flick_static.ron");
+            let sc: Scenario =
+                ron::from_str(ron_str).expect("Failed parsing assess.v1.flick_static.ron");
+            (sc, config.seed)
+        }
+    };
+
+    let trials = generate_trials(&scenario_def, seed);
 
     let initial_t = clock.now_us();
 
@@ -470,13 +487,19 @@ fn drain_and_evaluate_input_system(
     }
 
     if state.phase == AssessmentPhase::AwaitingTrialTarget {
+        let timeout_s = if state.current_trial_idx < state.trials.len() {
+            state.trials[state.current_trial_idx].trial_timeout_s
+        } else {
+            3.0
+        };
         let trial_elapsed_s =
             SessionClock::us_to_s(now_qpc_us.saturating_sub(state.trial_start_t_us));
-        if trial_elapsed_s >= state.scenario_def.trial_timeout_s {
+        if trial_elapsed_s >= timeout_s {
             state.misses_count += 1;
             println!(
-                "[Trial {}/96] TIMEOUT ({:.2}s). Total Hits: {}, Misses: {}",
+                "[Trial {}/{}] TIMEOUT ({:.2}s). Total Hits: {}, Misses: {}",
                 state.current_trial_idx + 1,
+                state.trials.len(),
                 trial_elapsed_s,
                 state.hits_count,
                 state.misses_count
@@ -574,11 +597,7 @@ fn session_lifecycle_system(
                     let u500 = sorted.iter().filter(|&&dt| dt < 500).count();
                     let o2000 = sorted.iter().filter(|&&dt| dt > 2000).count();
                     let act_s = sorted.iter().sum::<u64>() as f64 / 1_000_000.0;
-                    let rate = if act_s > 0.0 {
-                        c as f64 / act_s
-                    } else {
-                        0.0
-                    };
+                    let rate = if act_s > 0.0 { c as f64 / act_s } else { 0.0 };
 
                     println!(
                         "  -> Active Rate: {:.1} ev/s | p50={}us, p95={}us, p99={}us, max={}us",

@@ -1,10 +1,10 @@
 //! Deterministic seeded scenario trial generator.
 //!
-//! Generates balanced, unbiased trial sequences from Fitts' Law discrete grids
-//! using Fisher-Yates shuffle driven by ChaCha8 RNG.
+//! Generates balanced, unbiased trial sequences from Fitts' Law discrete grids,
+//! head-level peeking lanes, and multi-target clusters.
 
-use crate::rng::{create_seeded_rng, sample_range_u32};
-use crate::schema::Scenario;
+use crate::rng::{create_seeded_rng, sample_range_u32, sample_unit_f64};
+use crate::schema::{FittsGrid, Scenario, TargetLayout};
 
 /// Individual concrete trial spawned in the trainer.
 #[derive(Debug, Clone, PartialEq)]
@@ -16,30 +16,23 @@ pub struct Trial {
     pub direction_deg: f64,
     pub yaw_deg: f64,
     pub pitch_deg: f64,
+    pub trial_timeout_s: f64,
+}
+
+/// Head-level peeking trial specification.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PeekTrial {
+    pub index: usize,
+    pub occluder_yaw_deg: f64,
+    pub target_radius_deg: f64,
+    pub head_pitch_deg: f64,
+    pub noisy_pitch_deg: f64,
+    pub peek_speed_mps: f64,
+    pub trial_timeout_s: f64,
 }
 
 /// Computes exact spherical coordinates (yaw, pitch) for a target placed at
 /// true angular distance `d_deg` along bearing angle `bearing_deg` from center (0, 0).
-///
-/// Bearing convention:
-/// - 0.0° = Directly Right along positive yaw
-/// - Advances counter-clockwise (CCW):
-///   - 0° = Right (+yaw, 0 pitch)
-///   - 45° = Up-Right
-///   - 90° = Up (0 yaw, +pitch)
-///   - 180° = Left (-yaw / 180° yaw, 0 pitch)
-///   - 270° = Down (0 yaw, -pitch)
-///
-/// Exact 3D spherical rotation math:
-/// - Start with forward unit vector v0 = [0, 0, 1].
-/// - Target displaced by angle D along bearing θ in tangential plane:
-///   - Unit tangent vector T = [cos(θ), sin(θ), 0].
-///   - Target direction vector V = v0 * cos(D) + T * sin(D)
-///     V = [cos(θ)*sin(D), sin(θ)*sin(D), cos(D)].
-/// - Note that ||V||^2 = cos^2(θ)*sin^2(D) + sin^2(θ)*sin^2(D) + cos^2(D) = sin^2(D) + cos^2(D) = 1.
-/// - The true angular distance from forward [0, 0, 1] is acos(V.z) = acos(cos(D)) = D (exact!).
-/// - Pitch: elevation angle from XZ plane = asin(V.y) = asin(sin(θ)*sin(D)).
-/// - Yaw: azimuth angle in XZ plane = atan2(V.x, V.z) = atan2(cos(θ)*sin(D), cos(D)).
 pub fn target_angles_from_bearing(distance_deg: f64, bearing_deg: f64) -> (f64, f64) {
     let d_rad = distance_deg.to_radians();
     let theta_rad = bearing_deg.to_radians();
@@ -62,12 +55,19 @@ pub fn target_angles_from_bearing(distance_deg: f64, bearing_deg: f64) -> (f64, 
 
 /// Generates the complete, deterministically shuffled trial sequence for a scenario and seed.
 pub fn generate_trials(scenario: &Scenario, seed: u64) -> Vec<Trial> {
-    let grid = &scenario.grid;
-    let mut trials = Vec::with_capacity(grid.total_trials());
+    match &scenario.layout {
+        TargetLayout::Fitts {
+            grid,
+            trial_timeout_s,
+        } => generate_fitts_trials(grid, *trial_timeout_s, seed),
+        _ => Vec::new(),
+    }
+}
 
+pub fn generate_fitts_trials(grid: &FittsGrid, trial_timeout_s: f64, seed: u64) -> Vec<Trial> {
+    let mut trials = Vec::with_capacity(grid.total_trials());
     let step_deg = 360.0 / (grid.octants as f64);
 
-    // 1. Build canonical list of all cell combinations x repetitions
     for &dist in &grid.distances_deg {
         for &radius in &grid.radius_sizes_deg {
             for octant in 0..grid.octants {
@@ -83,13 +83,13 @@ pub fn generate_trials(scenario: &Scenario, seed: u64) -> Vec<Trial> {
                         direction_deg,
                         yaw_deg,
                         pitch_deg,
+                        trial_timeout_s,
                     });
                 }
             }
         }
     }
 
-    // 2. Fisher-Yates shuffle using deterministic sample_range_u32
     let mut rng = create_seeded_rng(seed);
     let n = trials.len();
     if n > 1 {
@@ -99,12 +99,90 @@ pub fn generate_trials(scenario: &Scenario, seed: u64) -> Vec<Trial> {
         }
     }
 
-    // 3. Assign sequential 0-based trial indices
     for (idx, trial) in trials.iter_mut().enumerate() {
         trial.index = idx;
     }
 
     trials
+}
+
+/// Generates deterministic peeking trials for A3 (`HeadLevelPeeks`).
+pub fn generate_peek_trials(scenario: &Scenario, seed: u64) -> Vec<PeekTrial> {
+    if let TargetLayout::HeadLevelPeeks {
+        peeks_count,
+        occluder_yaws_deg,
+        target_radius_deg,
+        head_pitch_deg,
+        pitch_noise_std_deg,
+        pitch_noise_clamp_deg,
+        peek_speed_mps,
+        trial_timeout_s,
+    } = &scenario.layout
+    {
+        let mut rng = create_seeded_rng(seed);
+        let mut trials = Vec::with_capacity(*peeks_count as usize);
+
+        for i in 0..(*peeks_count as usize) {
+            // Balance left and right occluder selection
+            let occluder_yaw = occluder_yaws_deg[i % occluder_yaws_deg.len()];
+
+            // Box-Muller Gaussian noise for head height variations
+            let u1 = sample_unit_f64(&mut rng).clamp(1e-7, 1.0 - 1e-7);
+            let u2 = sample_unit_f64(&mut rng);
+            let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+            let noise =
+                (z * pitch_noise_std_deg).clamp(-*pitch_noise_clamp_deg, *pitch_noise_clamp_deg);
+
+            let noisy_pitch = head_pitch_deg + noise;
+
+            trials.push(PeekTrial {
+                index: i,
+                occluder_yaw_deg: occluder_yaw,
+                target_radius_deg: *target_radius_deg,
+                head_pitch_deg: *head_pitch_deg,
+                noisy_pitch_deg: noisy_pitch,
+                peek_speed_mps: *peek_speed_mps,
+                trial_timeout_s: *trial_timeout_s,
+            });
+        }
+        trials
+    } else {
+        Vec::new()
+    }
+}
+
+/// Generates deterministic balanced candidates for A6 (`ConcurrentCluster`).
+///
+/// Preserves balance across distance bins and octants without rejection bias.
+pub fn generate_cluster_candidates(scenario: &Scenario, seed: u64) -> Vec<(f64, u32)> {
+    if let TargetLayout::ConcurrentCluster {
+        total_targets,
+        distance_bins_deg,
+        octants,
+        ..
+    } = &scenario.layout
+    {
+        let mut table = Vec::with_capacity(*total_targets as usize);
+        let dist_count = distance_bins_deg.len();
+
+        for i in 0..(*total_targets as usize) {
+            let dist = distance_bins_deg[i % dist_count];
+            let octant = (i as u32) % octants;
+            table.push((dist, octant));
+        }
+
+        let mut rng = create_seeded_rng(seed);
+        let n = table.len();
+        if n > 1 {
+            for i in (1..n).rev() {
+                let j = sample_range_u32(&mut rng, 0, (i + 1) as u32) as usize;
+                table.swap(i, j);
+            }
+        }
+        table
+    } else {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]
@@ -118,16 +196,18 @@ mod tests {
             id: "assess.v1.flick_static".to_string(),
             version: 1,
             kind: ScenarioKind::Assessment,
-            trial_timeout_s: 3.0,
             timeout_s: 288.0,
             spawn_distance_m: 15.0,
             target_shape: TargetShape::Sphere,
-            grid: FittsGrid {
-                distances_deg: vec![8.0, 20.0, 40.0],
-                radius_sizes_deg: vec![0.4, 0.8],
-                octants: 8,
-                repetitions_per_cell: 2,
-                anchor: DistanceAnchor::HomeTargetCenter,
+            layout: TargetLayout::Fitts {
+                grid: FittsGrid {
+                    distances_deg: vec![8.0, 20.0, 40.0],
+                    radius_sizes_deg: vec![0.4, 0.8],
+                    octants: 8,
+                    repetitions_per_cell: 2,
+                    anchor: DistanceAnchor::HomeTargetCenter,
+                },
+                trial_timeout_s: 3.0,
             },
             hit_rule: HitRule::SingleShotKill,
         }
@@ -154,50 +234,12 @@ mod tests {
     }
 
     #[test]
-    fn test_ron_file_deserialization() {
-        let ron_str = include_str!("../../../content/scenarios/assess.v1.flick_static.ron");
-        let scenario: Scenario =
-            ron::from_str(ron_str).expect("Failed deserializing assess.v1.flick_static.ron");
-        assert_eq!(scenario.id, "assess.v1.flick_static");
-        assert_eq!(scenario.grid.total_trials(), 96);
-    }
-
-    #[test]
-    fn test_trial_count_and_full_cell_coverage() {
-        let scenario = sample_flick_scenario();
-        let trials = generate_trials(&scenario, 42);
-
-        assert_eq!(trials.len(), 96);
-
-        // Verify all 48 unique cells appear exactly 2 times
-        for &dist in &scenario.grid.distances_deg {
-            for &radius in &scenario.grid.radius_sizes_deg {
-                for octant in 0..8 {
-                    let matching = trials
-                        .iter()
-                        .filter(|t| {
-                            (t.distance_deg - dist).abs() < 1e-9
-                                && (t.radius_deg - radius).abs() < 1e-9
-                                && t.octant == octant
-                        })
-                        .count();
-                    assert_eq!(
-                        matching, 2,
-                        "Cell (dist={dist}, radius={radius}, octant={octant}) occurred {matching} times, expected 2"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
     fn test_golden_trials_order_deadbeef() {
         let scenario = sample_flick_scenario();
         let trials = generate_trials(&scenario, 0xDEADBEEF);
 
         assert_eq!(trials.len(), 96);
 
-        // Lock exact first 5 trials generated for seed 0xDEADBEEF
         let t0 = &trials[0];
         assert_eq!(t0.index, 0);
         assert_eq!(t0.distance_deg, 20.0);

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Classification of scenario intent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScenarioKind {
+    Warmup,
     Assessment,
     Drill,
 }
@@ -14,15 +15,16 @@ pub enum ScenarioKind {
 pub enum TargetShape {
     Sphere,
     HeadModel,
+    WallPeek,
 }
 
 /// Trial shooting and hit termination rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HitRule {
-    /// Exactly one shot permitted: hit concludes trial as success, miss concludes trial as failure.
+    /// Exactly one shot permitted: hit concludes trial, miss concludes trial.
     SingleShotKill,
-    /// Continuous tracking or multi-bullet engagement until health reaches 0.
-    MultiShotKill(u32),
+    /// Continuous tracking: target remains alive, recording ray-intersection every tick.
+    ContinuousTracking,
 }
 
 /// Starting point for angular distance measurement.
@@ -50,7 +52,6 @@ pub struct FittsGrid {
 }
 
 impl FittsGrid {
-    /// Computes the total required trial count across all design cells and repetitions.
     pub fn total_trials(&self) -> usize {
         self.distances_deg.len()
             * self.radius_sizes_deg.len()
@@ -59,19 +60,102 @@ impl FittsGrid {
     }
 }
 
+/// Target motion dynamics for continuous tracking courses.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum TrackingTrajectory {
+    /// Constant angular speed path with smooth bounded heading turning.
+    ConstantSpeed {
+        speed_deg_s: f64,
+        max_turn_rate_deg_s: f64,
+        max_yaw_deg: f64,
+        max_pitch_deg: f64,
+    },
+    /// Reactive A-D strafe with exponential reversal distribution.
+    ReactiveStrafe {
+        speed_deg_s: f64,
+        mean_reversal_s: f64,
+        min_reversal_s: f64,
+        max_reversal_s: f64,
+        max_yaw_deg: f64,
+        fixed_pitch_deg: f64,
+    },
+}
+
+/// Scenario spatial distribution layout design.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum TargetLayout {
+    /// Discrete Fitts Law grid with per-trial timeout (A0, A1, A2).
+    Fitts {
+        grid: FittsGrid,
+        trial_timeout_s: f64,
+    },
+    /// Head-level lane with tall occluder walls and vertical Gaussian noise (A3).
+    HeadLevelPeeks {
+        peeks_count: u32,
+        occluder_yaws_deg: Vec<f64>,
+        target_radius_deg: f64,
+        head_pitch_deg: f64,
+        pitch_noise_std_deg: f64,
+        pitch_noise_clamp_deg: f64,
+        peek_speed_mps: f64,
+        trial_timeout_s: f64,
+    },
+    /// Continuous 1000Hz reconstructible tracking course (A4, A5).
+    Tracking {
+        target_radius_deg: f64,
+        trajectory: TrackingTrajectory,
+        duration_s: f64,
+    },
+    /// Multi-target cluster with concurrent targets (A6).
+    ConcurrentCluster {
+        concurrent_count: u32,
+        total_targets: u32,
+        target_radius_deg: f64,
+        distance_bins_deg: Vec<f64>,
+        octants: u32,
+        min_separation_deg: f64,
+        max_yaw_deg: f64,
+        max_pitch_deg: f64,
+        duration_s: f64,
+    },
+}
+
 /// Complete scenario specification.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scenario {
     pub id: String,
     pub version: u32,
     pub kind: ScenarioKind,
-    /// Maximum allowable duration in seconds for a single trial before counting as a timeout miss.
-    pub trial_timeout_s: f64,
-    /// Overall scenario safety timeout ceiling (seconds).
     pub timeout_s: f64,
-    /// Physical spawn distance along the line-of-sight in meters.
     pub spawn_distance_m: f64,
     pub target_shape: TargetShape,
-    pub grid: FittsGrid,
+    pub layout: TargetLayout,
     pub hit_rule: HitRule,
+}
+
+impl Scenario {
+    /// Validates that layout and hit_rule are mutually compatible.
+    pub fn validate(&self) -> Result<(), String> {
+        match (&self.layout, self.hit_rule) {
+            (TargetLayout::Tracking { .. }, HitRule::SingleShotKill) => {
+                Err(format!(
+                    "Invalid scenario '{}': Tracking layout requires ContinuousTracking, cannot use SingleShotKill",
+                    self.id
+                ))
+            }
+            (TargetLayout::Fitts { .. }, HitRule::ContinuousTracking) => {
+                Err(format!(
+                    "Invalid scenario '{}': Fitts layout requires SingleShotKill, cannot use ContinuousTracking",
+                    self.id
+                ))
+            }
+            (TargetLayout::HeadLevelPeeks { .. }, HitRule::ContinuousTracking) => {
+                Err(format!(
+                    "Invalid scenario '{}': HeadLevelPeeks layout requires SingleShotKill, cannot use ContinuousTracking",
+                    self.id
+                ))
+            }
+            _ => Ok(()),
+        }
+    }
 }

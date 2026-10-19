@@ -150,11 +150,13 @@ S09.raw   = premature_rate, وثانوياً median(dwell)
 ```
 
 ### 3.8 S10 — مستوى الرأس
-في سيناريوهات الأهداف على ارتفاع الرأس (head-level):
+في سيناريوهات الأهداف على ارتفاع الرأس (head-level peeks مثل A3):
 ```
-pitch_error_i = pitch_crosshair(t_spawn) − pitch_target_head
+pitch_error_i = pitch_crosshair(t_spawn) − nominal_head_pitch
 S10.raw = SD(pitch_error) + |mean(pitch_error)|   // تشتت + انحياز
 ```
+- **ملاحظة منهجية حاسمة:** يُحسب الخطأ مقارنة بـ `nominal_head_pitch` الخاص بالنموذج (وليس بـ `noisy_pitch_deg` الفعلي للهدف)، لأن S10 تقيس **عادة وضع المؤشر (crosshair placement habit)** المسبقة للاعب عند الزاوية قبل ظهور الهدف. الضجيج العمودي العشوائي للهدف لا يمكن للاعب توقّعه مسبقاً.
+- تُحسب `pitch_crosshair(t_spawn)` لحظة ظهور الهدف من إعادة بناء أحداث الإدخال الخام (`InputStream`) المتراكمة حتى لحظة الـ QPC الدقيقة لظهور الهدف وليس من معدل الإطارات.
 
 ### 3.9 S11 — التوازن الاتجاهي
 - نقسّم المواجهات إلى 8 اتجاهات (octants) حسب زاوية الحركة المطلوبة.

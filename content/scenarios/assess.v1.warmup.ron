@@ -1,0 +1,19 @@
+Scenario(
+    id: "assess.v1.warmup",
+    version: 1,
+    kind: Warmup,
+    timeout_s: 90.0,
+    spawn_distance_m: 15.0,
+    target_shape: Sphere,
+    layout: Fitts(
+        grid: FittsGrid(
+            distances_deg: [10.0, 20.0],
+            radius_sizes_deg: [1.0],
+            octants: 8,
+            repetitions_per_cell: 1, // 16 gentle warm-up trials
+            anchor: HomeTargetCenter,
+        ),
+        trial_timeout_s: 3.5,
+    ),
+    hit_rule: SingleShotKill,
+)

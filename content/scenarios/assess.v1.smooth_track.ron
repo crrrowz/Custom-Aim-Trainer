@@ -1,0 +1,19 @@
+Scenario(
+    id: "assess.v1.smooth_track",
+    version: 1,
+    kind: Assessment,
+    timeout_s: 45.0,
+    spawn_distance_m: 15.0,
+    target_shape: Sphere,
+    layout: Tracking(
+        target_radius_deg: 0.6,
+        trajectory: ConstantSpeed(
+            speed_deg_s: 14.0,
+            max_turn_rate_deg_s: 24.0,
+            max_yaw_deg: 35.0,
+            max_pitch_deg: 6.0,
+        ),
+        duration_s: 45.0,
+    ),
+    hit_rule: ContinuousTracking,
+)

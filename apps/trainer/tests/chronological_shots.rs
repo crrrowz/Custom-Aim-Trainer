@@ -129,5 +129,8 @@ fn test_per_event_input_latency_metric() {
     // Median latency for this frame
     applied_latencies.sort_unstable();
     let p50 = applied_latencies[applied_latencies.len() / 2];
-    assert_eq!(p50, 2000, "Median per-event latency must be 2000 us (2.0 ms)");
+    assert_eq!(
+        p50, 2000,
+        "Median per-event latency must be 2000 us (2.0 ms)"
+    );
 }

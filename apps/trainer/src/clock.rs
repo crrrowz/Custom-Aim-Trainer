@@ -11,7 +11,10 @@ pub struct SessionClock {
 
 impl SessionClock {
     pub fn new(qpc_start: i64, qpc_freq: i64) -> Self {
-        Self { qpc_start, qpc_freq }
+        Self {
+            qpc_start,
+            qpc_freq,
+        }
     }
 
     /// Queries the current QPC counter and computes microseconds elapsed since session start.
