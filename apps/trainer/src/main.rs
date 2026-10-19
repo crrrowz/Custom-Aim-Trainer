@@ -10,11 +10,12 @@ use bevy::prelude::*;
 use bevy::render::settings::{Backends, RenderCreation, WgpuSettings};
 use bevy::render::RenderPlugin;
 use bevy::window::{
-    CursorGrabMode, CursorOptions, Monitor, MonitorSelection, PrimaryMonitor, PrimaryWindow,
-    RawHandleWrapper, WindowFocused, WindowMode,
+    CursorGrabMode, CursorOptions, Monitor, MonitorSelection, PresentMode, PrimaryMonitor,
+    PrimaryWindow, RawHandleWrapper, VideoModeSelection, WindowFocused, WindowMode,
 };
 use bevy::winit::{UpdateMode, WinitSettings};
 use std::collections::HashMap;
+use std::num::NonZero;
 use std::path::PathBuf;
 use std::time::Instant;
 use trainer::camera::{spawn_crosshair_ui, spawn_fps_camera, sync_camera_transform, FpsCamera};
@@ -32,7 +33,10 @@ pub struct TrainerConfig {
     pub sens: f64,
     pub duration_s: f64,
     pub windowed: bool,
+    pub fullscreen_exclusive: bool,
     pub backend: String,
+    pub present_mode_str: String,
+    pub max_frame_latency: u32,
     pub output_path: Option<PathBuf>,
 }
 
@@ -50,6 +54,7 @@ pub struct TrainerState {
     pub recorder: SessionRecorder,
     pub event_count: u64,
     pub frame_times_us: Vec<u64>,
+    pub input_ages_us: Vec<u64>,
     pub last_frame_instant: Instant,
     pub initial_startup_done: bool,
 
@@ -60,6 +65,7 @@ pub struct TrainerState {
     pub primary_device: Option<usize>,
     pub non_primary_events: u64,
     pub warmup_events_collected: u64,
+    pub latest_primary_input_t_us: Option<u64>,
 
     // Task 1.9 & Scenario state machine
     pub scenario_def: Scenario,
@@ -79,7 +85,10 @@ fn parse_cli_args() -> TrainerConfig {
     let mut sens = 0.35f64;
     let mut duration_s = 288.0f64;
     let mut windowed = false;
+    let mut fullscreen_exclusive = false;
     let mut backend = "auto".to_string();
+    let mut present_mode_str = "auto-novsync".to_string();
+    let mut max_frame_latency = 1u32;
     let mut output_path = None;
 
     let args: Vec<String> = std::env::args().collect();
@@ -110,8 +119,20 @@ fn parse_cli_args() -> TrainerConfig {
                 backend = args[i + 1].to_lowercase();
                 i += 2;
             }
+            "--present-mode" if i + 1 < args.len() => {
+                present_mode_str = args[i + 1].to_lowercase();
+                i += 2;
+            }
+            "--max-frame-latency" if i + 1 < args.len() => {
+                max_frame_latency = args[i + 1].parse().unwrap_or(1).clamp(1, 3);
+                i += 2;
+            }
             "--windowed" => {
                 windowed = true;
+                i += 1;
+            }
+            "--exclusive" => {
+                fullscreen_exclusive = true;
                 i += 1;
             }
             "--output" if i + 1 < args.len() => {
@@ -131,7 +152,10 @@ fn parse_cli_args() -> TrainerConfig {
         sens,
         duration_s,
         windowed,
+        fullscreen_exclusive,
         backend,
+        present_mode_str,
+        max_frame_latency,
         output_path,
     }
 }
@@ -160,6 +184,7 @@ fn setup_trainer(mut commands: Commands, config: Res<TrainerConfig>) {
         recorder,
         event_count: 0,
         frame_times_us: Vec::with_capacity(20_000),
+        input_ages_us: Vec::with_capacity(20_000),
         last_frame_instant: Instant::now(),
         initial_startup_done: false,
 
@@ -169,6 +194,7 @@ fn setup_trainer(mut commands: Commands, config: Res<TrainerConfig>) {
         primary_device: None,
         non_primary_events: 0,
         warmup_events_collected: 0,
+        latest_primary_input_t_us: None,
 
         scenario_def,
         trials,
@@ -296,11 +322,13 @@ fn drain_and_evaluate_input_system(
         match action {
             trainer::replay::ReplayAction::Motion { t_us, dx, dy } => {
                 state.recorder.record_input(t_us, dx, dy);
+                state.latest_primary_input_t_us = Some(t_us);
             }
             trainer::replay::ReplayAction::Click {
                 t_us,
                 angles_at_click,
             } => {
+                state.latest_primary_input_t_us = Some(t_us);
                 let mut hit_target_id = None;
                 let mut hitzone = HitZone::None;
 
@@ -451,11 +479,22 @@ fn drain_and_evaluate_input_system(
     }
 }
 
-fn track_frame_time_system(mut state: ResMut<TrainerState>) {
+/// Item 3: Frame time and Input Age tracking system.
+///
+/// Input age = (current render-start QPC t_us) - (t_us of newest applied raw input event).
+fn track_frame_and_input_age_system(mut state: ResMut<TrainerState>) {
     let now = Instant::now();
     let frame_us = now.duration_since(state.last_frame_instant).as_micros() as u64;
     state.last_frame_instant = now;
     state.frame_times_us.push(frame_us);
+
+    let render_start_qpc_t = state.start_instant.elapsed().as_micros() as u64;
+    if let Some(newest_input_t) = state.latest_primary_input_t_us {
+        if render_start_qpc_t >= newest_input_t {
+            let input_age = render_start_qpc_t - newest_input_t;
+            state.input_ages_us.push(input_age);
+        }
+    }
 }
 
 fn session_lifecycle_system(
@@ -567,6 +606,26 @@ fn session_lifecycle_system(
                 "Frame times (ms): p50 = {:.2}ms, p99 = {:.2}ms",
                 f_p50, f_p99
             );
+            if (f_p50 - 6.06).abs() < 0.2 {
+                println!("NOTE: Frame time p50 ~6.06ms indicates an external display/driver cap (e.g. NVIDIA Control Panel Vertical Sync, G-Sync, or DWM scanout lock at 165Hz).");
+            }
+        }
+
+        if !state.input_ages_us.is_empty() {
+            let mut ages = state.input_ages_us.clone();
+            ages.sort_unstable();
+            let a_len = ages.len();
+            let a_p50 = ages[a_len * 50 / 100];
+            let a_p99 = ages[a_len * 99 / 100];
+            println!("\n--- Input Age Metrics (Render Start - Newest Input) ---");
+            println!(
+                "Input age (us): p50 = {}us ({:.2}ms), p99 = {}us ({:.2}ms) (sample count: {})",
+                a_p50,
+                a_p50 as f64 / 1000.0,
+                a_p99,
+                a_p99 as f64 / 1000.0,
+                a_len
+            );
         }
 
         let target_path = config.output_path.clone().unwrap_or_else(|| {
@@ -603,10 +662,11 @@ fn lock_cursor_startup(mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindo
 
 fn main() {
     let config = parse_cli_args();
-    let is_windowed = config.windowed;
 
-    let window_mode = if is_windowed {
+    let window_mode = if config.windowed {
         WindowMode::Windowed
+    } else if config.fullscreen_exclusive {
+        WindowMode::Fullscreen(MonitorSelection::Primary, VideoModeSelection::Current)
     } else {
         WindowMode::BorderlessFullscreen(MonitorSelection::Primary)
     };
@@ -617,9 +677,21 @@ fn main() {
         _ => Some(Backends::PRIMARY),
     };
 
+    let (present_mode, requested_desc) = match config.present_mode_str.as_str() {
+        "immediate" => (PresentMode::Immediate, "Immediate (Uncapped / Tearing)"),
+        "mailbox" => (PresentMode::Mailbox, "Mailbox (Fast VSync / Non-blocking)"),
+        "fifo" => (PresentMode::Fifo, "Fifo (Standard VSync)"),
+        _ => (
+            PresentMode::AutoNoVsync,
+            "AutoNoVsync (Immediate -> Mailbox -> Fifo)",
+        ),
+    };
+
+    let max_latency = NonZero::new(config.max_frame_latency);
+
     println!(
-        "[AimForge] Initializing graphics with requested backend: '{}' (resolved: {:?}), present mode: AutoNoVsync",
-        config.backend, backends
+        "[AimForge] Graphics Init: backend='{}' ({:?}), window_mode={:?}, requested present_mode={}, max_frame_latency={:?}",
+        config.backend, backends, window_mode, requested_desc, config.max_frame_latency
     );
 
     App::new()
@@ -634,7 +706,8 @@ fn main() {
                     primary_window: Some(Window {
                         title: "AimForge Trainer".into(),
                         mode: window_mode,
-                        present_mode: bevy::window::PresentMode::AutoNoVsync,
+                        present_mode,
+                        desired_maximum_frame_latency: max_latency,
                         ..default()
                     }),
                     ..default()
@@ -672,7 +745,7 @@ fn main() {
         )
         .add_systems(
             PostUpdate,
-            (track_frame_time_system, session_lifecycle_system),
+            (track_frame_and_input_age_system, session_lifecycle_system),
         )
         .run();
 }
