@@ -1,8 +1,12 @@
 //! AimForge native 3D trainer sidecar.
 //!
-//! Entry point for native Bevy simulation and high-rate Raw Input telemetry recording.
+//! Entry point for native Bevy simulation, Fitts target state machine, and Raw Input telemetry recording.
 
+use aim_core::geometry::HitZoneType;
 use aim_core::sensitivity::VALORANT_YAW_DEG_PER_COUNT;
+use aim_scenarios::{generate_trials, Scenario, Trial};
+use aim_telemetry::format::HitZone;
+use bevy::input::mouse::MouseButton;
 use bevy::prelude::*;
 use bevy::window::{
     CursorGrabMode, CursorOptions, Monitor, PrimaryMonitor, PrimaryWindow, RawHandleWrapper,
@@ -13,6 +17,9 @@ use std::time::Instant;
 use trainer::camera::{spawn_fps_camera, sync_camera_transform, FpsCamera};
 use trainer::raw_input::RawInputWorker;
 use trainer::recorder::{self, SessionRecorder};
+use trainer::target::{
+    setup_target_assets, spawn_home_target, spawn_trial_target, ActiveTargetMarker, TargetAssets,
+};
 
 #[derive(Resource)]
 pub struct TrainerConfig {
@@ -22,6 +29,13 @@ pub struct TrainerConfig {
     pub sens: f64,
     pub duration_s: f64,
     pub output_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssessmentPhase {
+    AwaitingHomeTarget,
+    AwaitingTrialTarget,
+    Completed,
 }
 
 #[derive(Resource)]
@@ -35,6 +49,16 @@ pub struct TrainerState {
     pub frame_times_us: Vec<u64>,
     pub last_frame_instant: Instant,
     pub initial_startup_done: bool,
+
+    // Task 1.9 & Scenario state machine
+    pub scenario_def: Scenario,
+    pub trials: Vec<Trial>,
+    pub current_trial_idx: usize,
+    pub phase: AssessmentPhase,
+    pub next_target_id: u32,
+    pub hits_count: u32,
+    pub misses_count: u32,
+    pub trial_start_instant: Instant,
 }
 
 fn parse_cli_args() -> TrainerConfig {
@@ -42,7 +66,7 @@ fn parse_cli_args() -> TrainerConfig {
     let mut seed = 1337u64;
     let mut dpi = 800u32;
     let mut sens = 0.35f64;
-    let mut duration_s = 60.0f64;
+    let mut duration_s = 288.0f64; // Default to full assessment ceiling
     let mut output_path = None;
 
     let args: Vec<String> = std::env::args().collect();
@@ -102,6 +126,12 @@ fn setup_trainer(mut commands: Commands, config: Res<TrainerConfig>) {
         hz: 240,
     });
 
+    // Load scenario definition
+    let ron_str = include_str!("../../../content/scenarios/assess.v1.flick_static.ron");
+    let scenario_def: Scenario =
+        ron::from_str(ron_str).expect("Failed parsing assess.v1.flick_static.ron");
+    let trials = generate_trials(&scenario_def, config.seed);
+
     commands.insert_resource(TrainerState {
         start_instant: Instant::now(),
         worker,
@@ -112,6 +142,15 @@ fn setup_trainer(mut commands: Commands, config: Res<TrainerConfig>) {
         frame_times_us: Vec::with_capacity(10_000),
         last_frame_instant: Instant::now(),
         initial_startup_done: false,
+
+        scenario_def,
+        trials,
+        current_trial_idx: 0,
+        phase: AssessmentPhase::AwaitingHomeTarget,
+        next_target_id: 1,
+        hits_count: 0,
+        misses_count: 0,
+        trial_start_instant: Instant::now(),
     });
 }
 
@@ -207,6 +246,180 @@ fn drain_raw_input_system(
     }
 }
 
+/// Task 1.9: Ray-sphere hit registration & SingleShotKill trial management
+fn shooting_and_target_lifecycle_system(
+    mut commands: Commands,
+    mouse_button: Res<ButtonInput<MouseButton>>,
+    mut state: ResMut<TrainerState>,
+    assets: Option<Res<TargetAssets>>,
+    camera_query: Query<&FpsCamera>,
+    target_query: Query<(Entity, &ActiveTargetMarker)>,
+) {
+    let assets = match assets {
+        Some(a) => a,
+        None => return,
+    };
+
+    let now_s = state.start_instant.elapsed().as_secs_f64();
+    let current_qpc_diff = state.start_instant.elapsed().as_micros() as u64;
+
+    // 1. Initial spawn if no target exists
+    if target_query.iter().next().is_none() && state.phase != AssessmentPhase::Completed {
+        let tid = state.next_target_id;
+        state.next_target_id += 1;
+
+        match state.phase {
+            AssessmentPhase::AwaitingHomeTarget => {
+                spawn_home_target(
+                    &mut commands,
+                    &assets,
+                    state.scenario_def.spawn_distance_m as f32,
+                    tid,
+                    now_s,
+                );
+                state
+                    .recorder
+                    .record_target_spawn(tid, current_qpc_diff, 0, 0.5, 0.0, 0.0);
+            }
+            AssessmentPhase::AwaitingTrialTarget => {
+                if state.current_trial_idx < state.trials.len() {
+                    let trial = state.trials[state.current_trial_idx].clone();
+                    spawn_trial_target(
+                        &mut commands,
+                        &assets,
+                        &trial,
+                        state.scenario_def.spawn_distance_m as f32,
+                        tid,
+                        now_s,
+                    );
+                    state.recorder.record_target_spawn(
+                        tid,
+                        current_qpc_diff,
+                        0,
+                        trial.radius_deg,
+                        trial.yaw_deg,
+                        trial.pitch_deg,
+                    );
+                    state.trial_start_instant = Instant::now();
+                } else {
+                    state.phase = AssessmentPhase::Completed;
+                }
+            }
+            AssessmentPhase::Completed => {}
+        }
+    }
+
+    // 2. Check per-trial timeout (3.0s) during AwaitingTrialTarget
+    if state.phase == AssessmentPhase::AwaitingTrialTarget {
+        let trial_elapsed_s = state.trial_start_instant.elapsed().as_secs_f64();
+        if trial_elapsed_s >= state.scenario_def.trial_timeout_s {
+            // Timeout count as miss under SingleShotKill rule
+            state.misses_count += 1;
+            println!(
+                "[Trial {}/96] TIMEOUT ({:.2}s). Total Hits: {}, Misses: {}",
+                state.current_trial_idx + 1,
+                trial_elapsed_s,
+                state.hits_count,
+                state.misses_count
+            );
+
+            // Despawn current trial target and transition back to home target
+            for (entity, _) in &target_query {
+                commands.entity(entity).despawn();
+            }
+
+            state.current_trial_idx += 1;
+            if state.current_trial_idx < state.trials.len() {
+                state.phase = AssessmentPhase::AwaitingHomeTarget;
+            } else {
+                state.phase = AssessmentPhase::Completed;
+            }
+            return;
+        }
+    }
+
+    // 3. Process mouse clicks for hit registration
+    if mouse_button.just_pressed(MouseButton::Left) {
+        let view_angles = camera_query
+            .iter()
+            .next()
+            .map(|c| c.angles)
+            .unwrap_or_default();
+
+        let mut hit_target_id = None;
+        let mut hitzone = HitZone::None;
+
+        for (entity, marker) in &target_query {
+            let hit_res = marker.spherical.intersect_ray(view_angles);
+
+            if hit_res.is_hit {
+                hit_target_id = Some(marker.target_id);
+                hitzone = match hit_res.hitzone {
+                    HitZoneType::Head => HitZone::Head,
+                    HitZoneType::Body => HitZone::Body,
+                    HitZoneType::None => HitZone::None,
+                };
+
+                // Despawn hit target
+                commands.entity(entity).despawn();
+
+                if marker.is_home_target {
+                    // Home target hit: proceed to trial target
+                    state.phase = AssessmentPhase::AwaitingTrialTarget;
+                } else {
+                    // Trial target hit under SingleShotKill
+                    state.hits_count += 1;
+                    let trial_elapsed = state.trial_start_instant.elapsed().as_secs_f64();
+                    println!(
+                        "[Trial {}/96] HIT! Time: {:.3}s (Ang Dist: {:.2}°). Total Hits: {}, Misses: {}",
+                        state.current_trial_idx + 1,
+                        trial_elapsed,
+                        hit_res.angular_distance_deg,
+                        state.hits_count,
+                        state.misses_count
+                    );
+
+                    state.current_trial_idx += 1;
+                    if state.current_trial_idx < state.trials.len() {
+                        state.phase = AssessmentPhase::AwaitingHomeTarget;
+                    } else {
+                        state.phase = AssessmentPhase::Completed;
+                    }
+                }
+                break;
+            }
+        }
+
+        // SingleShotKill rule: if shot fired during trial target phase and missed all targets
+        if hit_target_id.is_none() && state.phase == AssessmentPhase::AwaitingTrialTarget {
+            state.misses_count += 1;
+            println!(
+                "[Trial {}/96] MISS! Total Hits: {}, Misses: {}",
+                state.current_trial_idx + 1,
+                state.hits_count,
+                state.misses_count
+            );
+
+            // Despawn current trial target and transition back to home target
+            for (entity, _) in &target_query {
+                commands.entity(entity).despawn();
+            }
+
+            state.current_trial_idx += 1;
+            if state.current_trial_idx < state.trials.len() {
+                state.phase = AssessmentPhase::AwaitingHomeTarget;
+            } else {
+                state.phase = AssessmentPhase::Completed;
+            }
+        }
+
+        // Record shot event in telemetry
+        state
+            .recorder
+            .record_shot(current_qpc_diff, hit_target_id, hitzone);
+    }
+}
+
 fn track_frame_time_system(mut state: ResMut<TrainerState>) {
     let now = Instant::now();
     let frame_us = now.duration_since(state.last_frame_instant).as_micros() as u64;
@@ -220,78 +433,39 @@ fn session_lifecycle_system(
     mut exit: MessageWriter<AppExit>,
 ) {
     let elapsed_s = state.start_instant.elapsed().as_secs_f64();
-    if elapsed_s >= config.duration_s {
+    let completed_all = state.phase == AssessmentPhase::Completed;
+
+    if elapsed_s >= config.duration_s || completed_all {
         println!("\n=== AimForge Trainer Session Completed ===");
         println!("Elapsed time: {:.2}s", elapsed_s);
-        println!("Raw Input events captured: {}", state.event_count);
         println!(
-            "Absolute mouse events discarded: {}",
-            RawInputWorker::absolute_events_discarded()
+            "Assessment Status: {}",
+            if completed_all {
+                "COMPLETED (All 96 trials finished)"
+            } else {
+                "TIMEOUT / ABORTED"
+            }
         );
-        println!("Quality flags: {:#010b}", state.recorder.quality_flags);
         println!(
-            "Display configured: {}x{} @ {}Hz",
-            state.recorder.setup.width, state.recorder.setup.height, state.recorder.setup.hz
-        );
-
-        let active_intervals: Vec<u64> = state
-            .intervals_us
-            .iter()
-            .copied()
-            .filter(|&dt| dt <= 50_000)
-            .collect();
-
-        if !active_intervals.is_empty() {
-            let mut sorted = active_intervals.clone();
-            sorted.sort_unstable();
-
-            let count = sorted.len();
-            let p50 = sorted[count * 50 / 100];
-            let p95 = sorted[count * 95 / 100];
-            let p99 = sorted[count * 99 / 100];
-            let max = sorted[count - 1];
-
-            let under_500 = sorted.iter().filter(|&&dt| dt < 500).count();
-            let over_2000 = sorted.iter().filter(|&&dt| dt > 2000).count();
-
-            let active_time_s = sorted.iter().sum::<u64>() as f64 / 1_000_000.0;
-            let active_rate = if active_time_s > 0.0 {
-                count as f64 / active_time_s
+            "Performance: Hits = {}, Misses = {}, Accuracy = {:.1}%",
+            state.hits_count,
+            state.misses_count,
+            if state.hits_count + state.misses_count > 0 {
+                (state.hits_count as f64 * 100.0) / (state.hits_count + state.misses_count) as f64
             } else {
                 0.0
-            };
-
-            println!("\n--- Raw Input Timing Metrics (during movement) ---");
-            println!("Active movement event count: {}", count);
-            println!("Active movement capture rate: {:.1} events/s", active_rate);
-            println!(
-                "Intervals (us): p50 = {}us, p95 = {}us, p99 = {}us, max = {}us",
-                p50, p95, p99, max
-            );
-            println!(
-                "Intervals < 500us: {} ({:.2}%)",
-                under_500,
-                under_500 as f64 * 100.0 / count as f64
-            );
-            println!(
-                "Intervals > 2000us: {} ({:.2}%)",
-                over_2000,
-                over_2000 as f64 * 100.0 / count as f64
-            );
-        }
-
-        if state.frame_times_us.len() > 10 {
-            let mut frames = state.frame_times_us[5..].to_vec();
-            frames.sort_unstable();
-            let f_len = frames.len();
-            let f_p50 = frames[f_len * 50 / 100] as f64 / 1000.0;
-            let f_p99 = frames[f_len * 99 / 100] as f64 / 1000.0;
-            println!("\n--- Frame Time Metrics ---");
-            println!(
-                "Frame times (ms): p50 = {:.2}ms, p99 = {:.2}ms",
-                f_p50, f_p99
-            );
-        }
+            }
+        );
+        println!("Raw Input events captured: {}", state.event_count);
+        println!(
+            "Shots recorded: {}",
+            state.recorder.streams.shots.records.len()
+        );
+        println!(
+            "Targets recorded: {}",
+            state.recorder.streams.targets.records.len()
+        );
+        println!("Quality flags: {:#010b}", state.recorder.quality_flags);
 
         let target_path = config.output_path.clone().unwrap_or_else(|| {
             PathBuf::from(format!("session-{}.aft", state.recorder.setup.session_id))
@@ -340,7 +514,12 @@ fn main() {
         }))
         .add_systems(
             Startup,
-            (setup_trainer, spawn_fps_camera, lock_cursor_startup),
+            (
+                setup_trainer,
+                setup_target_assets,
+                spawn_fps_camera,
+                lock_cursor_startup,
+            ),
         )
         .add_systems(
             PreUpdate,
@@ -350,6 +529,7 @@ fn main() {
                     handle_window_focus,
                     drain_raw_input_system,
                     sync_camera_transform,
+                    shooting_and_target_lifecycle_system,
                 )
                     .chain(),
             ),

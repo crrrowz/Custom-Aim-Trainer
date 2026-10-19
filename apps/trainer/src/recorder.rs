@@ -2,7 +2,8 @@
 
 use aim_core::sensitivity::VALORANT_YAW_DEG_PER_COUNT;
 use aim_telemetry::format::{
-    quality_flags, AftHeader, AftSession, AftStreams, DisplayConfig, InputConfig, MouseConfig,
+    quality_flags, AftHeader, AftSession, AftStreams, DisplayConfig, HitZone, InputConfig,
+    MouseConfig, ShotRecord, TargetKind, TargetParams, TargetRecord,
 };
 use aim_telemetry::write_aft;
 use std::path::PathBuf;
@@ -52,6 +53,36 @@ impl SessionRecorder {
         self.streams.view.t_us.push(t_us);
         self.streams.view.yaw_deg.push(yaw_deg);
         self.streams.view.pitch_deg.push(pitch_deg);
+    }
+
+    pub fn record_shot(&mut self, t_us: u64, hit_target_id: Option<u32>, hitzone: HitZone) {
+        self.streams.shots.records.push(ShotRecord {
+            t_us,
+            hit_target_id,
+            hitzone,
+        });
+    }
+
+    pub fn record_target_spawn(
+        &mut self,
+        id: u32,
+        spawn_t_us: u64,
+        despawn_t_us: u64,
+        radius_deg: f64,
+        yaw_deg: f64,
+        pitch_deg: f64,
+    ) {
+        self.streams.targets.records.push(TargetRecord {
+            id,
+            spawn_t_us,
+            despawn_t_us,
+            kind: TargetKind::Sphere,
+            params: TargetParams {
+                radius_deg,
+                initial_pos: [yaw_deg, pitch_deg, 15.0],
+                path_spline: None,
+            },
+        });
     }
 
     pub fn build_session(&self) -> AftSession {
