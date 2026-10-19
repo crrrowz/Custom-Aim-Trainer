@@ -3,4 +3,5 @@
 pub mod camera;
 pub mod raw_input;
 pub mod recorder;
+pub mod replay;
 pub mod target;

@@ -1,7 +1,8 @@
 use aim_core::geometry::SphericalTarget;
 use aim_core::sensitivity::VALORANT_YAW_DEG_PER_COUNT;
 use aim_core::ViewAngles;
-use trainer::raw_input::RawInputPayload;
+use trainer::raw_input::{RawInputEvent, RawInputPayload};
+use trainer::replay::{replay_input, ReplayAction};
 
 #[test]
 fn test_chronological_shot_evaluation_at_exact_click_timestamp() {
@@ -16,37 +17,60 @@ fn test_chronological_shot_evaluation_at_exact_click_timestamp() {
     let dx_to_target = (10.0 / deg_per_count).round() as i32;
 
     let events = vec![
-        RawInputPayload::Motion {
-            dx: dx_to_target,
-            dy: 0,
+        RawInputEvent {
+            device_id: 1,
+            t_us: 1000,
+            payload: RawInputPayload::Motion {
+                dx: dx_to_target,
+                dy: 0,
+            },
         },
-        RawInputPayload::LeftButtonDown,
-        RawInputPayload::Motion {
-            dx: dx_to_target * 3,
-            dy: 0,
+        RawInputEvent {
+            device_id: 1,
+            t_us: 2000,
+            payload: RawInputPayload::LeftButtonDown,
+        },
+        RawInputEvent {
+            device_id: 1,
+            t_us: 3000,
+            payload: RawInputPayload::Motion {
+                dx: dx_to_target * 3,
+                dy: 0,
+            },
         },
     ];
 
+    // Call the exact same replay_input function used by the live trainer system
+    let actions = replay_input(&mut current_angles, &events, Some(1), deg_per_count);
+
+    assert_eq!(actions.len(), 3, "Expected exactly 3 replay actions");
+
     let mut shot_evaluated_hit = false;
     let mut hit_distance = 0.0;
+    let mut click_count = 0;
+    let mut motion_count = 0;
 
-    for ev in events {
-        match ev {
-            RawInputPayload::Motion { dx, dy } => {
-                current_angles.apply_counts(dx, dy, deg_per_count);
+    for action in actions {
+        match action {
+            ReplayAction::Motion { .. } => {
+                motion_count += 1;
             }
-            RawInputPayload::LeftButtonDown => {
-                let hit_res = target.intersect_ray(current_angles);
+            ReplayAction::Click {
+                angles_at_click, ..
+            } => {
+                click_count += 1;
+                let hit_res = target.intersect_ray(angles_at_click);
                 shot_evaluated_hit = hit_res.is_hit;
                 hit_distance = hit_res.angular_distance_deg;
             }
-            _ => {}
         }
     }
 
+    assert_eq!(motion_count, 2, "Expected 2 motion actions");
+    assert_eq!(click_count, 1, "Expected 1 click action");
     assert!(
         shot_evaluated_hit,
-        "Shot should have been evaluated at A (target center), not A + B!"
+        "Shot must register hit at intermediate position A (10°), not contaminated by subsequent motion B (40°)!"
     );
     assert!(
         hit_distance < 0.1,
@@ -54,6 +78,6 @@ fn test_chronological_shot_evaluation_at_exact_click_timestamp() {
     );
     assert!(
         (current_angles.yaw - 40.0).abs() < 1.0,
-        "Final camera moved past target to ~40°"
+        "Final camera moved past target to ~40° after all deltas applied"
     );
 }

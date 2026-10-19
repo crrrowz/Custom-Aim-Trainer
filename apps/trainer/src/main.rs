@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 use trainer::camera::{spawn_fps_camera, sync_camera_transform, FpsCamera};
-use trainer::raw_input::{RawInputPayload, RawInputWorker};
+use trainer::raw_input::RawInputWorker;
 use trainer::recorder::{self, SessionRecorder};
 use trainer::target::{
     setup_target_assets, spawn_home_target, spawn_trial_target, ActiveTargetMarker, TargetAssets,
@@ -281,34 +281,30 @@ fn drain_and_evaluate_input_system(
     }
 
     let primary_id = state.primary_device;
+    let mut current_angles = camera_query
+        .iter()
+        .next()
+        .map(|c| c.angles)
+        .unwrap_or_default();
 
-    // 3. Process events chronologically
-    for event in batch {
-        if primary_id.is_some() && Some(event.device_id) != primary_id {
-            state.non_primary_events += 1;
-            state.recorder.quality_flags |= quality_flags::SECONDARY_DEVICE_MOTION;
-            continue;
-        }
+    // 3. Process events chronologically through pure replay_input
+    let actions =
+        trainer::replay::replay_input(&mut current_angles, &batch, primary_id, deg_per_count);
 
-        match event.payload {
-            RawInputPayload::Motion { dx, dy } => {
-                state.recorder.record_input(event.t_us, dx, dy);
-                if let Some(mut fps_cam) = camera_query.iter_mut().next() {
-                    fps_cam.angles.apply_counts(dx, dy, deg_per_count);
-                }
+    for action in actions {
+        match action {
+            trainer::replay::ReplayAction::Motion { t_us, dx, dy } => {
+                state.recorder.record_input(t_us, dx, dy);
             }
-            RawInputPayload::LeftButtonDown => {
-                let view_angles = camera_query
-                    .iter()
-                    .next()
-                    .map(|c| c.angles)
-                    .unwrap_or_default();
-
+            trainer::replay::ReplayAction::Click {
+                t_us,
+                angles_at_click,
+            } => {
                 let mut hit_target_id = None;
                 let mut hitzone = HitZone::None;
 
                 for (entity, marker) in &target_query {
-                    let hit_res = marker.spherical.intersect_ray(view_angles);
+                    let hit_res = marker.spherical.intersect_ray(angles_at_click);
 
                     if hit_res.is_hit {
                         hit_target_id = Some(marker.target_id);
@@ -366,12 +362,14 @@ fn drain_and_evaluate_input_system(
                     }
                 }
 
-                state
-                    .recorder
-                    .record_shot(event.t_us, hit_target_id, hitzone);
+                state.recorder.record_shot(t_us, hit_target_id, hitzone);
             }
-            _ => {}
         }
+    }
+
+    // Synchronize modified angles back into Bevy camera component
+    if let Some(mut fps_cam) = camera_query.iter_mut().next() {
+        fps_cam.angles = current_angles;
     }
 
     // 4. Target spawning & trial timeout checking
