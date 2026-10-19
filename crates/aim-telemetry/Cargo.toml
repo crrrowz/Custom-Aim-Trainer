@@ -1,0 +1,17 @@
+[package]
+name = "aim-telemetry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aim-core = { path = "../aim-core", features = ["serde"] }
+serde = { workspace = true }
+postcard = { workspace = true }
+zstd = { workspace = true }
+crc32fast = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
