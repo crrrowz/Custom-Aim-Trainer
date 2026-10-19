@@ -21,6 +21,7 @@ venv/
 
 # AimForge Telemetry & Local Store
 *.aft
+!crates/aim-telemetry/tests/fixtures/*.aft
 *.sqlite
 *.sqlite3
 *.db
