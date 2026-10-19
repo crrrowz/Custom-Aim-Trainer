@@ -1,4 +1,9 @@
 //! VALORANT mouse sensitivity conversion and angular kinematics.
+//!
+//! Ground Truth Constant:
+//! VALORANT's game engine applies exactly 0.07 degrees of camera yaw per raw mouse hardware count
+//! when in-game sensitivity is 1.0. (Verified manually in The Range without input injection:
+//! see `docs/platform/VALORANT_SENSITIVITY_VERIFICATION.md` for the manual physical protocol).
 
 /// VALORANT yaw angular resolution: 0.07 degrees of yaw per mouse count at sensitivity 1.0.
 pub const VALORANT_YAW_DEG_PER_COUNT: f64 = 0.07;
