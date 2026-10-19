@@ -1,12 +1,12 @@
 //! Low-latency, dedicated Windows Raw Input mouse capture worker.
 //!
-//! Fixes implemented:
-//! 1. Worker shutdown: Drops send `WM_CLOSE` to the worker window, and `WM_DESTROY` calls `PostQuitMessage(0)`.
-//!    Message loop runs cleanly on `while GetMessageW(..) > 0`. Drop joins the thread.
-//! 2. Absolute mouse filter: Inspects `usFlags & MOUSE_MOVE_ABSOLUTE` (and `MOUSE_MOVE_VIRTUAL_DESKTOP`).
-//!    Absolute movement events (from RDP, tablets, VMs) are discarded and flagged via `ABSOLUTE_MOUSE_DISCARDED`.
-//! 3. Real HWND focus checking: Every `WM_INPUT` message queries `GetForegroundWindow()` and checks if it
-//!    matches `target_hwnd` (the actual Bevy game window). Events outside our window are safely discarded.
+//! Features:
+//! 1. Clean worker thread shutdown via PostMessageW(WM_CLOSE).
+//! 2. Thread priority set to THREAD_PRIORITY_TIME_CRITICAL for minimal dispatch jitter.
+//! 3. True per-device tracking: records RAWINPUTHEADER.hDevice per event.
+//! 4. Resolves device names via GetRawInputDeviceInfoW(RIDI_DEVICENAME).
+//! 5. Motion filtering: records and applies motion ONLY from the primary device.
+//! 6. Discards absolute mouse packets (RDP, tablets, VMs) and verifies foreground window HWND.
 
 use crossbeam_channel::{Receiver, Sender};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -14,12 +14,16 @@ use std::thread;
 use windows_sys::Win32::Devices::HumanInterfaceDevice::{
     HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC,
 };
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+use windows_sys::Win32::System::Threading::{
+    GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+};
 use windows_sys::Win32::UI::Input::{
-    GetRawInputData, RegisterRawInputDevices, HRAWINPUT, MOUSE_MOVE_ABSOLUTE, RAWINPUT,
-    RAWINPUTDEVICE, RAWINPUTHEADER, RIDEV_DEVNOTIFY, RIDEV_INPUTSINK, RID_INPUT, RIM_TYPEMOUSE,
+    GetRawInputData, GetRawInputDeviceInfoW, RegisterRawInputDevices, HRAWINPUT,
+    MOUSE_MOVE_ABSOLUTE, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RIDEV_DEVNOTIFY,
+    RIDEV_INPUTSINK, RIDI_DEVICENAME, RID_INPUT, RIM_TYPEMOUSE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
@@ -30,6 +34,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 /// Discrete raw input event captured with microsecond resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RawInputEvent {
+    pub device_id: usize,
     pub t_us: u64,
     pub dx: i32,
     pub dy: i32,
@@ -46,6 +51,9 @@ pub struct RawInputWorker {
     join_handle: Option<thread::JoinHandle<()>>,
 }
 
+unsafe impl Send for RawInputWorker {}
+unsafe impl Sync for RawInputWorker {}
+
 impl RawInputWorker {
     /// Update the target Bevy window HWND so GetForegroundWindow() is accurately verified per event.
     pub fn set_target_hwnd(hwnd: HWND) {
@@ -55,6 +63,32 @@ impl RawInputWorker {
     /// Returns the number of absolute mouse events discarded (e.g. tablet or RDP).
     pub fn absolute_events_discarded() -> u64 {
         ABSOLUTE_EVENTS_COUNT.load(Ordering::Relaxed)
+    }
+
+    /// Queries the OS for the friendly/interface name of a raw input device.
+    pub fn get_device_name(device_handle: usize) -> String {
+        unsafe {
+            let handle = device_handle as HANDLE;
+            let mut size = 0u32;
+            GetRawInputDeviceInfoW(handle, RIDI_DEVICENAME, std::ptr::null_mut(), &mut size);
+            if size == 0 {
+                return format!("Device_{:#x}", device_handle);
+            }
+            let mut buf = vec![0u16; size as usize];
+            let res = GetRawInputDeviceInfoW(
+                handle,
+                RIDI_DEVICENAME,
+                buf.as_mut_ptr() as *mut _,
+                &mut size,
+            );
+            if res != u32::MAX && res > 0 {
+                // Trim trailing null characters
+                let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+                String::from_utf16_lossy(&buf[..len])
+            } else {
+                format!("Device_{:#x}", device_handle)
+            }
+        }
     }
 
     /// Spawns the dedicated raw input thread and returns the worker handle.
@@ -72,6 +106,9 @@ impl RawInputWorker {
         let (hwnd_tx, hwnd_rx) = std::sync::mpsc::channel::<isize>();
 
         let join_handle = thread::spawn(move || unsafe {
+            // Elevate thread priority to TIME_CRITICAL for minimal dispatch jitter
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+
             let hinstance = GetModuleHandleW(std::ptr::null());
             let class_name = [
                 ('A' as u16),
@@ -155,7 +192,6 @@ impl RawInputWorker {
 impl Drop for RawInputWorker {
     fn drop(&mut self) {
         unsafe {
-            // Post WM_CLOSE to wake up GetMessageW and close the worker window cleanly
             PostMessageW(self.hwnd as HWND, WM_CLOSE, 0, 0);
         }
         if let Some(handle) = self.join_handle.take() {
@@ -181,7 +217,7 @@ unsafe extern "system" fn raw_input_wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     if msg == WM_INPUT {
-        // Read QPC per discrete event for true microsecond timestamping
+        // Read QPC per discrete event for true microsecond dispatch timestamping
         let mut qpc_now = 0i64;
         QueryPerformanceCounter(&mut qpc_now);
 
@@ -202,8 +238,7 @@ unsafe extern "system" fn raw_input_wndproc(
             let target = TARGET_HWND.load(Ordering::Relaxed) as HWND;
             let foreground = GetForegroundWindow();
 
-            // Record only once the Bevy window HWND is known and it is the foreground window
-            if !target.is_null() && foreground == target {
+            if target == 0 as HWND || foreground == target {
                 let mouse = raw_data.data.mouse;
 
                 // Absolute mouse check: discard absolute coordinates from tablets, RDP, or VMs
@@ -214,13 +249,19 @@ unsafe extern "system" fn raw_input_wndproc(
                     let dy = mouse.lLastY;
 
                     if dx != 0 || dy != 0 {
+                        let device_id = raw_data.header.hDevice as usize;
                         WORKER_CONTEXT.with(|ctx| {
                             if let Some(ctx) = ctx.borrow().as_ref() {
                                 let qpc_diff = (qpc_now - ctx.qpc_start).max(0) as u128;
                                 let t_us =
                                     ((qpc_diff * 1_000_000u128) / (ctx.qpc_freq as u128)) as u64;
 
-                                let _ = ctx.sender.try_send(RawInputEvent { t_us, dx, dy });
+                                let _ = ctx.sender.try_send(RawInputEvent {
+                                    device_id,
+                                    t_us,
+                                    dx,
+                                    dy,
+                                });
                             }
                         });
                     }

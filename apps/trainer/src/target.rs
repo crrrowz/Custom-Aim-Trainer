@@ -1,4 +1,4 @@
-//! 3D Target visualization, state management, and hit registration for trainer scenarios.
+//! 3D Target visualization, optic-flow background, and state management for trainer scenarios.
 
 use aim_core::geometry::SphericalTarget;
 use aim_core::ViewAngles;
@@ -13,6 +13,12 @@ pub struct ActiveTargetMarker {
     pub spawn_time_s: f64,
 }
 
+#[derive(Component)]
+pub struct OpticFlowSphere;
+
+#[derive(Component)]
+pub struct CrosshairMarker;
+
 #[derive(Resource)]
 pub struct TargetAssets {
     pub home_mesh: Handle<Mesh>,
@@ -20,6 +26,10 @@ pub struct TargetAssets {
     pub trial_mesh: Handle<Mesh>,
     pub trial_material: Handle<StandardMaterial>,
     pub hit_material: Handle<StandardMaterial>,
+    pub optic_flow_mesh: Handle<Mesh>,
+    pub optic_flow_material: Handle<StandardMaterial>,
+    pub crosshair_mesh: Handle<Mesh>,
+    pub crosshair_material: Handle<StandardMaterial>,
 }
 
 pub fn setup_target_assets(
@@ -27,7 +37,7 @@ pub fn setup_target_assets(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Normal target materials
+    // Unlit target materials
     let home_material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.2, 0.8, 1.0), // Cyan home target
         unlit: true,
@@ -46,7 +56,33 @@ pub fn setup_target_assets(
         ..default()
     });
 
+    // Dark neutral optic-flow background material with double-sided rendering
+    let optic_flow_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.06, 0.07, 0.09), // Subtle dark backdrop (#0f1117)
+        unlit: true,
+        cull_mode: None, // Inward visible sphere
+        ..default()
+    });
+
+    // Green crosshair material
+    let crosshair_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.0, 1.0, 0.3), // Vibrant green
+        unlit: true,
+        depth_bias: 1000.0,
+        ..default()
+    });
+
     let sphere_mesh = meshes.add(Sphere::new(1.0).mesh().ico(3).unwrap());
+    let backdrop_mesh = meshes.add(Sphere::new(40.0).mesh().ico(4).unwrap());
+    let dot_mesh = meshes.add(Sphere::new(1.0).mesh().ico(2).unwrap());
+
+    // Spawn camera-centered optic-flow inward sphere
+    commands.spawn((
+        Mesh3d(backdrop_mesh.clone()),
+        MeshMaterial3d(optic_flow_material.clone()),
+        Transform::from_xyz(0.0, 0.0, 0.0),
+        OpticFlowSphere,
+    ));
 
     commands.insert_resource(TargetAssets {
         home_mesh: sphere_mesh.clone(),
@@ -54,6 +90,10 @@ pub fn setup_target_assets(
         trial_mesh: sphere_mesh,
         trial_material,
         hit_material,
+        optic_flow_mesh: backdrop_mesh,
+        optic_flow_material,
+        crosshair_mesh: dot_mesh,
+        crosshair_material,
     });
 }
 

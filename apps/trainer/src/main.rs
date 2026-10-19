@@ -5,13 +5,15 @@
 use aim_core::geometry::HitZoneType;
 use aim_core::sensitivity::VALORANT_YAW_DEG_PER_COUNT;
 use aim_scenarios::{generate_trials, Scenario, Trial};
-use aim_telemetry::format::HitZone;
+use aim_telemetry::format::{quality_flags, HitZone};
 use bevy::input::mouse::MouseButton;
 use bevy::prelude::*;
 use bevy::window::{
-    CursorGrabMode, CursorOptions, Monitor, PrimaryMonitor, PrimaryWindow, RawHandleWrapper,
-    WindowFocused,
+    CursorGrabMode, CursorOptions, Monitor, MonitorSelection, PrimaryMonitor, PrimaryWindow,
+    RawHandleWrapper, WindowFocused, WindowMode,
 };
+use bevy::winit::{UpdateMode, WinitSettings};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 use trainer::camera::{spawn_fps_camera, sync_camera_transform, FpsCamera};
@@ -28,6 +30,7 @@ pub struct TrainerConfig {
     pub dpi: u32,
     pub sens: f64,
     pub duration_s: f64,
+    pub windowed: bool,
     pub output_path: Option<PathBuf>,
 }
 
@@ -44,11 +47,16 @@ pub struct TrainerState {
     pub worker: RawInputWorker,
     pub recorder: SessionRecorder,
     pub event_count: u64,
-    pub last_event_t_us: Option<u64>,
-    pub intervals_us: Vec<u64>,
     pub frame_times_us: Vec<u64>,
     pub last_frame_instant: Instant,
     pub initial_startup_done: bool,
+
+    // Per-device tracking to resolve multi-device shadowing / double counting
+    pub device_counts: HashMap<usize, u64>,
+    pub device_intervals: HashMap<usize, Vec<u64>>,
+    pub device_last_t: HashMap<usize, u64>,
+    pub primary_device: Option<usize>,
+    pub non_primary_events: u64,
 
     // Task 1.9 & Scenario state machine
     pub scenario_def: Scenario,
@@ -67,6 +75,7 @@ fn parse_cli_args() -> TrainerConfig {
     let mut dpi = 800u32;
     let mut sens = 0.35f64;
     let mut duration_s = 288.0f64; // Default to full assessment ceiling
+    let mut windowed = false; // Default to BorderlessFullscreen per Task 1.1
     let mut output_path = None;
 
     let args: Vec<String> = std::env::args().collect();
@@ -93,6 +102,10 @@ fn parse_cli_args() -> TrainerConfig {
                 duration_s = args[i + 1].parse().unwrap_or(duration_s);
                 i += 2;
             }
+            "--windowed" => {
+                windowed = true;
+                i += 1;
+            }
             "--output" if i + 1 < args.len() => {
                 output_path = Some(PathBuf::from(&args[i + 1]));
                 i += 2;
@@ -109,6 +122,7 @@ fn parse_cli_args() -> TrainerConfig {
         dpi,
         sens,
         duration_s,
+        windowed,
         output_path,
     }
 }
@@ -126,7 +140,6 @@ fn setup_trainer(mut commands: Commands, config: Res<TrainerConfig>) {
         hz: 240,
     });
 
-    // Load scenario definition
     let ron_str = include_str!("../../../content/scenarios/assess.v1.flick_static.ron");
     let scenario_def: Scenario =
         ron::from_str(ron_str).expect("Failed parsing assess.v1.flick_static.ron");
@@ -137,11 +150,15 @@ fn setup_trainer(mut commands: Commands, config: Res<TrainerConfig>) {
         worker,
         recorder,
         event_count: 0,
-        last_event_t_us: None,
-        intervals_us: Vec::with_capacity(200_000),
-        frame_times_us: Vec::with_capacity(10_000),
+        frame_times_us: Vec::with_capacity(20_000),
         last_frame_instant: Instant::now(),
         initial_startup_done: false,
+
+        device_counts: HashMap::new(),
+        device_intervals: HashMap::new(),
+        device_last_t: HashMap::new(),
+        primary_device: None,
+        non_primary_events: 0,
 
         scenario_def,
         trials,
@@ -222,19 +239,48 @@ fn drain_raw_input_system(
     let mut total_dx = 0i32;
     let mut total_dy = 0i32;
 
+    // Drain all pending raw events
+    let mut batch = Vec::new();
     while let Ok(event) = state.worker.receiver.try_recv() {
         state.event_count += 1;
-        state.recorder.record_input(event.t_us, event.dx, event.dy);
+        *state.device_counts.entry(event.device_id).or_insert(0) += 1;
 
-        if let Some(last_t) = state.last_event_t_us {
+        if let Some(&last_t) = state.device_last_t.get(&event.device_id) {
             if event.t_us >= last_t {
-                state.intervals_us.push(event.t_us - last_t);
+                state
+                    .device_intervals
+                    .entry(event.device_id)
+                    .or_default()
+                    .push(event.t_us - last_t);
             }
         }
-        state.last_event_t_us = Some(event.t_us);
+        state.device_last_t.insert(event.device_id, event.t_us);
+        batch.push(event);
+    }
 
-        total_dx += event.dx;
-        total_dy += event.dy;
+    // Automatically resolve primary device by event count
+    if state.primary_device.is_none() && !state.device_counts.is_empty() {
+        let best_dev = state
+            .device_counts
+            .iter()
+            .max_by_key(|&(_, count)| *count)
+            .map(|(&dev, _)| dev);
+        state.primary_device = best_dev;
+    }
+
+    let primary_id = state.primary_device;
+
+    for event in batch {
+        if Some(event.device_id) == primary_id {
+            // Apply and record ONLY from the primary mouse device
+            state.recorder.record_input(event.t_us, event.dx, event.dy);
+            total_dx += event.dx;
+            total_dy += event.dy;
+        } else {
+            // Non-primary device moved
+            state.non_primary_events += 1;
+            state.recorder.quality_flags |= quality_flags::SETTINGS_CHANGED;
+        }
     }
 
     if total_dx != 0 || total_dy != 0 {
@@ -246,7 +292,6 @@ fn drain_raw_input_system(
     }
 }
 
-/// Task 1.9: Ray-sphere hit registration & SingleShotKill trial management
 fn shooting_and_target_lifecycle_system(
     mut commands: Commands,
     mouse_button: Res<ButtonInput<MouseButton>>,
@@ -263,7 +308,6 @@ fn shooting_and_target_lifecycle_system(
     let now_s = state.start_instant.elapsed().as_secs_f64();
     let current_qpc_diff = state.start_instant.elapsed().as_micros() as u64;
 
-    // 1. Initial spawn if no target exists
     if target_query.iter().next().is_none() && state.phase != AssessmentPhase::Completed {
         let tid = state.next_target_id;
         state.next_target_id += 1;
@@ -309,11 +353,9 @@ fn shooting_and_target_lifecycle_system(
         }
     }
 
-    // 2. Check per-trial timeout (3.0s) during AwaitingTrialTarget
     if state.phase == AssessmentPhase::AwaitingTrialTarget {
         let trial_elapsed_s = state.trial_start_instant.elapsed().as_secs_f64();
         if trial_elapsed_s >= state.scenario_def.trial_timeout_s {
-            // Timeout count as miss under SingleShotKill rule
             state.misses_count += 1;
             println!(
                 "[Trial {}/96] TIMEOUT ({:.2}s). Total Hits: {}, Misses: {}",
@@ -323,7 +365,6 @@ fn shooting_and_target_lifecycle_system(
                 state.misses_count
             );
 
-            // Despawn current trial target and transition back to home target
             for (entity, _) in &target_query {
                 commands.entity(entity).despawn();
             }
@@ -338,7 +379,6 @@ fn shooting_and_target_lifecycle_system(
         }
     }
 
-    // 3. Process mouse clicks for hit registration
     if mouse_button.just_pressed(MouseButton::Left) {
         let view_angles = camera_query
             .iter()
@@ -360,18 +400,15 @@ fn shooting_and_target_lifecycle_system(
                     HitZoneType::None => HitZone::None,
                 };
 
-                // Despawn hit target
                 commands.entity(entity).despawn();
 
                 if marker.is_home_target {
-                    // Home target hit: proceed to trial target
                     state.phase = AssessmentPhase::AwaitingTrialTarget;
                 } else {
-                    // Trial target hit under SingleShotKill
                     state.hits_count += 1;
                     let trial_elapsed = state.trial_start_instant.elapsed().as_secs_f64();
                     println!(
-                        "[Trial {}/96] HIT! Time: {:.3}s (Ang Dist: {:.2}°). Total Hits: {}, Misses: {}",
+                        "[Trial {}/96] HIT! Time: {:.3}s (Dist: {:.2}°). Hits: {}, Misses: {}",
                         state.current_trial_idx + 1,
                         trial_elapsed,
                         hit_res.angular_distance_deg,
@@ -390,7 +427,6 @@ fn shooting_and_target_lifecycle_system(
             }
         }
 
-        // SingleShotKill rule: if shot fired during trial target phase and missed all targets
         if hit_target_id.is_none() && state.phase == AssessmentPhase::AwaitingTrialTarget {
             state.misses_count += 1;
             println!(
@@ -400,7 +436,6 @@ fn shooting_and_target_lifecycle_system(
                 state.misses_count
             );
 
-            // Despawn current trial target and transition back to home target
             for (entity, _) in &target_query {
                 commands.entity(entity).despawn();
             }
@@ -413,7 +448,6 @@ fn shooting_and_target_lifecycle_system(
             }
         }
 
-        // Record shot event in telemetry
         state
             .recorder
             .record_shot(current_qpc_diff, hit_target_id, hitzone);
@@ -429,7 +463,7 @@ fn track_frame_time_system(mut state: ResMut<TrainerState>) {
 
 fn session_lifecycle_system(
     config: Res<TrainerConfig>,
-    state: Res<TrainerState>,
+    mut state: ResMut<TrainerState>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let elapsed_s = state.start_instant.elapsed().as_secs_f64();
@@ -456,16 +490,88 @@ fn session_lifecycle_system(
                 0.0
             }
         );
-        println!("Raw Input events captured: {}", state.event_count);
+        println!("Raw Input events total: {}", state.event_count);
         println!(
-            "Shots recorded: {}",
-            state.recorder.streams.shots.records.len()
+            "Absolute mouse events discarded: {}",
+            RawInputWorker::absolute_events_discarded()
         );
         println!(
-            "Targets recorded: {}",
-            state.recorder.streams.targets.records.len()
+            "Non-primary device events ignored: {}",
+            state.non_primary_events
         );
-        println!("Quality flags: {:#010b}", state.recorder.quality_flags);
+        println!(
+            "Display configured: {}x{} @ {}Hz",
+            state.recorder.setup.width, state.recorder.setup.height, state.recorder.setup.hz
+        );
+
+        // Per-device detailed breakdown
+        let mut rate_exceeded = false;
+        println!("\n--- Raw Input Device Breakdown ---");
+        for (&dev_id, &count) in &state.device_counts {
+            let dev_name = RawInputWorker::get_device_name(dev_id);
+            let is_primary = Some(dev_id) == state.primary_device;
+            println!(
+                "Device {:#x} [{}]: {} events (Primary: {})",
+                dev_id, dev_name, count, is_primary
+            );
+
+            if let Some(intervals) = state.device_intervals.get(&dev_id) {
+                let active: Vec<u64> = intervals
+                    .iter()
+                    .copied()
+                    .filter(|&dt| dt <= 50_000)
+                    .collect();
+                if !active.is_empty() {
+                    let mut sorted = active.clone();
+                    sorted.sort_unstable();
+                    let c = sorted.len();
+                    let p50 = sorted[c * 50 / 100];
+                    let p95 = sorted[c * 95 / 100];
+                    let p99 = sorted[c * 99 / 100];
+                    let max = sorted[c - 1];
+                    let u500 = sorted.iter().filter(|&&dt| dt < 500).count();
+                    let o2000 = sorted.iter().filter(|&&dt| dt > 2000).count();
+                    let act_s = sorted.iter().sum::<u64>() as f64 / 1_000_000.0;
+                    let rate = if act_s > 0.0 { c as f64 / act_s } else { 0.0 };
+
+                    println!(
+                        "  -> Active Rate: {:.1} ev/s | p50={}us, p95={}us, p99={}us, max={}us",
+                        rate, p50, p95, p99, max
+                    );
+                    println!(
+                        "  -> Intervals <500us: {} ({:.1}%), >2000us: {} ({:.1}%)",
+                        u500,
+                        u500 as f64 * 100.0 / c as f64,
+                        o2000,
+                        o2000 as f64 * 100.0 / c as f64
+                    );
+
+                    // Polling rate sanity check: rate > 1.1 * 1000Hz
+                    if is_primary && rate > 1100.0 {
+                        rate_exceeded = true;
+                    }
+                }
+            }
+        }
+
+        if rate_exceeded {
+            state.recorder.quality_flags |= quality_flags::SETTINGS_CHANGED;
+        }
+
+        println!("\nQuality flags: {:#010b}", state.recorder.quality_flags);
+
+        if state.frame_times_us.len() > 10 {
+            let mut frames = state.frame_times_us[10..].to_vec();
+            frames.sort_unstable();
+            let f_len = frames.len();
+            let f_p50 = frames[f_len * 50 / 100] as f64 / 1000.0;
+            let f_p99 = frames[f_len * 99 / 100] as f64 / 1000.0;
+            println!("\n--- Frame Time Metrics ---");
+            println!(
+                "Frame times (ms): p50 = {:.2}ms, p99 = {:.2}ms",
+                f_p50, f_p99
+            );
+        }
 
         let target_path = config.output_path.clone().unwrap_or_else(|| {
             PathBuf::from(format!("session-{}.aft", state.recorder.setup.session_id))
@@ -501,13 +607,25 @@ fn lock_cursor_startup(mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindo
 
 fn main() {
     let config = parse_cli_args();
+    let is_windowed = config.windowed;
+
+    let window_mode = if is_windowed {
+        WindowMode::Windowed
+    } else {
+        WindowMode::BorderlessFullscreen(MonitorSelection::Primary)
+    };
 
     App::new()
         .insert_resource(config)
+        .insert_resource(WinitSettings {
+            focused_mode: UpdateMode::Continuous,
+            unfocused_mode: UpdateMode::Continuous,
+        })
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "AimForge Trainer".into(),
-                present_mode: bevy::window::PresentMode::Immediate,
+                mode: window_mode,
+                present_mode: bevy::window::PresentMode::AutoNoVsync,
                 ..default()
             }),
             ..default()
