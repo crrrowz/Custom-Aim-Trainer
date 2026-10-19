@@ -3,7 +3,8 @@
 use crate::format::{
     AftFooter, AftHeader, AftSession, AftStreams, FrameStream, InputStream, KeyStream,
     PlayerStream, ShotStream, StreamIndexEntry, TargetStream, ViewStream, AFT_FORMAT_VERSION_V1,
-    AFT_MAGIC, MAX_HEADER_UNCOMPRESSED_SIZE, MAX_STREAM_UNCOMPRESSED_SIZE, NUM_STREAMS_V1,
+    AFT_MAGIC, MAX_DECOMPRESSION_RATIO, MAX_HEADER_UNCOMPRESSED_SIZE, MAX_STREAM_UNCOMPRESSED_SIZE,
+    MAX_TOTAL_UNCOMPRESSED_SIZE, NUM_STREAMS_V1,
 };
 use thiserror::Error;
 
@@ -25,6 +26,20 @@ pub enum ReadError {
     Decompress(std::io::Error),
     #[error("Declared uncompressed size {declared} exceeds security limit {limit}")]
     OversizedLength { declared: usize, limit: usize },
+    #[error("Total uncompressed size {total} exceeds security limit {limit}")]
+    TotalOversizedLength { total: usize, limit: usize },
+    #[error(
+        "Decompression ratio {declared}:{compressed} exceeds maximum safe ratio {max_ratio}:1"
+    )]
+    AbsurdCompressionRatio {
+        compressed: usize,
+        declared: usize,
+        max_ratio: usize,
+    },
+    #[error("Invalid block offset {offset}: must be >= {min_allowed}")]
+    InvalidBlockOffset { offset: u32, min_allowed: u32 },
+    #[error("Overlapping blocks detected: block ending at {prev_end} overlaps block starting at {next_offset}")]
+    OverlappingBlocks { prev_end: u32, next_offset: u32 },
     #[error("Decompressed size mismatch: declared {declared}, got {actual}")]
     LengthMismatch { declared: usize, actual: usize },
     #[error("Footer directory length mismatch: expected {expected}, got {actual}")]
@@ -98,6 +113,80 @@ fn decode_block<T: serde::de::DeserializeOwned>(
     Ok(item)
 }
 
+/// Validate layout integrity, bounds, compression ratios, and non-overlap for all blocks in footer.
+pub fn validate_footer_blocks(footer: &AftFooter, footer_start: usize) -> Result<(), ReadError> {
+    // 1. Total uncompressed memory limit check
+    let mut total_uncompressed: usize = footer.header_entry.uncompressed_len as usize;
+    for entry in &footer.stream_entries {
+        total_uncompressed = total_uncompressed
+            .checked_add(entry.uncompressed_len as usize)
+            .ok_or(ReadError::Overflow)?;
+    }
+    if total_uncompressed > MAX_TOTAL_UNCOMPRESSED_SIZE {
+        return Err(ReadError::TotalOversizedLength {
+            total: total_uncompressed,
+            limit: MAX_TOTAL_UNCOMPRESSED_SIZE,
+        });
+    }
+
+    // 2. Individual block checks & collect intervals for overlap testing
+    let mut intervals = Vec::with_capacity(1 + NUM_STREAMS_V1);
+    let all_entries = std::iter::once(&footer.header_entry).chain(footer.stream_entries.iter());
+
+    for entry in all_entries {
+        // Minimum offset check: must start after 4B magic + 2B version = 6
+        if entry.offset < 6 {
+            return Err(ReadError::InvalidBlockOffset {
+                offset: entry.offset,
+                min_allowed: 6,
+            });
+        }
+
+        let offset = entry.offset as usize;
+        let comp_len = entry.compressed_len as usize;
+        let uncomp_len = entry.uncompressed_len as usize;
+
+        let block_end = offset.checked_add(comp_len).ok_or(ReadError::Overflow)?;
+        if block_end > footer_start {
+            return Err(ReadError::Truncated);
+        }
+
+        // Decompression ratio check:
+        // Highly repetitive streams with small compressed size (< 64 KiB) can naturally compress
+        // efficiently. Therefore, apply ratio protection when compressed size >= 64 KiB, or if
+        // declared uncompressed exceeds the base threshold.
+        // For large allocations (> 1 MiB), uncompressed must not exceed compressed * MAX_DECOMPRESSION_RATIO.
+        if uncomp_len > 1024 * 1024 {
+            let max_plausible = comp_len.max(1).saturating_mul(MAX_DECOMPRESSION_RATIO);
+            if uncomp_len > max_plausible {
+                return Err(ReadError::AbsurdCompressionRatio {
+                    compressed: comp_len,
+                    declared: uncomp_len,
+                    max_ratio: MAX_DECOMPRESSION_RATIO,
+                });
+            }
+        }
+
+        intervals.push((entry.offset, entry.compressed_len));
+    }
+
+    // 3. Overlap check: sort intervals by start offset
+    intervals.sort_by_key(|&(off, _)| off);
+    for window in intervals.windows(2) {
+        let (prev_off, prev_len) = window[0];
+        let (next_off, _) = window[1];
+        let prev_end = prev_off.checked_add(prev_len).ok_or(ReadError::Overflow)?;
+        if prev_end > next_off {
+            return Err(ReadError::OverlappingBlocks {
+                prev_end,
+                next_offset: next_off,
+            });
+        }
+    }
+
+    Ok(())
+}
+
 /// Parse and validate the v1 footer table.
 pub fn parse_footer_v1(data: &[u8]) -> Result<(AftFooter, usize), ReadError> {
     if data.len() < FOOTER_LEN_V1 + 6 {
@@ -169,6 +258,9 @@ pub fn parse_footer_v1(data: &[u8]) -> Result<(AftFooter, usize), ReadError> {
         stream_entries,
         crc32: expected_crc,
     };
+
+    // Validate all block layouts, total sizes, ratios, and non-overlap
+    validate_footer_blocks(&footer, footer_start)?;
 
     Ok((footer, footer_start))
 }

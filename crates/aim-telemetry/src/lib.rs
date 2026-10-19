@@ -168,6 +168,117 @@ mod tests {
     }
 
     #[test]
+    fn test_total_oversized_length_rejected() {
+        let original = sample_session();
+        let mut bytes = write_aft(&original).expect("Serialization failed");
+
+        let footer_start = bytes.len() - FOOTER_LEN_V1;
+        // Set stream 0 declared length to 64 MiB + 1
+        let oversized = (MAX_TOTAL_UNCOMPRESSED_SIZE as u32) + 1;
+        // Stream 0 entry is at footer_start + 12 (after 12B header entry), uncompressed_len at +8 inside entry
+        let stream0_uncomp_offset = footer_start + 12 + 8;
+        bytes[stream0_uncomp_offset..stream0_uncomp_offset + 4]
+            .copy_from_slice(&oversized.to_le_bytes());
+
+        // Recompute valid CRC
+        let crc_offset = bytes.len() - 4;
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&bytes[..crc_offset]);
+        let new_crc = hasher.finalize();
+        bytes[crc_offset..].copy_from_slice(&new_crc.to_le_bytes());
+
+        match read_aft(&bytes) {
+            Err(ReadError::TotalOversizedLength { .. }) => (),
+            other => panic!("Expected TotalOversizedLength, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_absurd_decompression_ratio_rejected() {
+        let original = sample_session();
+        let mut bytes = write_aft(&original).expect("Serialization failed");
+
+        let footer_start = bytes.len() - FOOTER_LEN_V1;
+        // Stream 0 entry compressed_len is bytes[footer_start + 16..footer_start + 20]
+        let comp_len = u32::from_le_bytes(
+            bytes[footer_start + 16..footer_start + 20]
+                .try_into()
+                .unwrap(),
+        );
+        // Set uncompressed_len > 1 MiB and > comp_len * 1000
+        let absurd_uncomp = (comp_len * 1001).max(2 * 1024 * 1024);
+        let stream0_uncomp_offset = footer_start + 20;
+        bytes[stream0_uncomp_offset..stream0_uncomp_offset + 4]
+            .copy_from_slice(&absurd_uncomp.to_le_bytes());
+
+        // Recompute valid CRC
+        let crc_offset = bytes.len() - 4;
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&bytes[..crc_offset]);
+        let new_crc = hasher.finalize();
+        bytes[crc_offset..].copy_from_slice(&new_crc.to_le_bytes());
+
+        match read_aft(&bytes) {
+            Err(ReadError::AbsurdCompressionRatio { .. }) => (),
+            other => panic!("Expected AbsurdCompressionRatio, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_offset_inside_header_magic_rejected() {
+        let original = sample_session();
+        let mut bytes = write_aft(&original).expect("Serialization failed");
+
+        let footer_start = bytes.len() - FOOTER_LEN_V1;
+        // Set header offset to 4 (inside magic/version 0..6)
+        let invalid_offset: u32 = 4;
+        bytes[footer_start..footer_start + 4].copy_from_slice(&invalid_offset.to_le_bytes());
+
+        // Recompute valid CRC
+        let crc_offset = bytes.len() - 4;
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&bytes[..crc_offset]);
+        let new_crc = hasher.finalize();
+        bytes[crc_offset..].copy_from_slice(&new_crc.to_le_bytes());
+
+        match read_aft(&bytes) {
+            Err(ReadError::InvalidBlockOffset {
+                offset,
+                min_allowed,
+            }) => {
+                assert_eq!(offset, 4);
+                assert_eq!(min_allowed, 6);
+            }
+            other => panic!("Expected InvalidBlockOffset, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_overlapping_blocks_rejected() {
+        let original = sample_session();
+        let mut bytes = write_aft(&original).expect("Serialization failed");
+
+        let footer_start = bytes.len() - FOOTER_LEN_V1;
+        // Header offset is at footer_start..footer_start+4
+        let header_offset =
+            u32::from_le_bytes(bytes[footer_start..footer_start + 4].try_into().unwrap());
+        // Set stream 0 offset to equal header offset (exact collision/overlap)
+        bytes[footer_start + 12..footer_start + 16].copy_from_slice(&header_offset.to_le_bytes());
+
+        // Recompute valid CRC
+        let crc_offset = bytes.len() - 4;
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&bytes[..crc_offset]);
+        let new_crc = hasher.finalize();
+        bytes[crc_offset..].copy_from_slice(&new_crc.to_le_bytes());
+
+        match read_aft(&bytes) {
+            Err(ReadError::OverlappingBlocks { .. }) => (),
+            other => panic!("Expected OverlappingBlocks, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_oversized_declared_length_rejected() {
         let original = sample_session();
         let mut bytes = write_aft(&original).expect("Serialization failed");

@@ -8,11 +8,26 @@ pub const AFT_MAGIC: &[u8; 4] = b"AFT\0";
 /// Current format version (v1).
 pub const AFT_FORMAT_VERSION_V1: u16 = 1;
 
-/// Maximum allowable uncompressed header size (64 KiB) for decompression bomb protection.
+/// Maximum allowable uncompressed header size (64 KiB).
 pub const MAX_HEADER_UNCOMPRESSED_SIZE: usize = 64 * 1024;
 
-/// Maximum allowable uncompressed stream size (256 MiB) for decompression bomb protection.
-pub const MAX_STREAM_UNCOMPRESSED_SIZE: usize = 256 * 1024 * 1024;
+/// Maximum allowable uncompressed stream size (32 MiB).
+///
+/// Justification:
+/// A realistic maximum session in AimForge is 10 minutes (600 seconds) recorded with an
+/// extreme 8,000 Hz mouse polling rate (4,800,000 raw input samples).
+/// Delta-encoded timestamps and coordinates in postcard binary require ~15-25 MiB uncompressed.
+/// Setting the per-stream ceiling to 32 MiB provides ample headroom for extreme high-frequency
+/// hardware while preventing unbounded memory consumption.
+pub const MAX_STREAM_UNCOMPRESSED_SIZE: usize = 32 * 1024 * 1024;
+
+/// Maximum allowable cumulative uncompressed size across header and all streams (64 MiB).
+///
+/// Prevents memory exhaustion attacks where multiple streams each claim up to the per-stream limit.
+pub const MAX_TOTAL_UNCOMPRESSED_SIZE: usize = 64 * 1024 * 1024;
+
+/// Maximum plausible decompression ratio (1000:1) to reject decompression bombs prior to allocation.
+pub const MAX_DECOMPRESSION_RATIO: usize = 1000;
 
 /// Number of columnar streams in v1 format.
 pub const NUM_STREAMS_V1: usize = 7;
@@ -60,6 +75,9 @@ pub struct AftHeader {
 }
 
 /// Target category/mesh archetype.
+///
+/// APPEND-ONLY: never reorder, rename-with-new-meaning, or remove variants;
+/// .aft v1 postcard serialization depends strictly on variant indices.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TargetKind {
     Sphere,
@@ -87,6 +105,9 @@ pub struct TargetRecord {
 }
 
 /// Anatomical hit location.
+///
+/// APPEND-ONLY: never reorder, rename-with-new-meaning, or remove variants;
+/// .aft v1 postcard serialization depends strictly on variant indices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HitZone {
     None,
@@ -104,6 +125,9 @@ pub struct ShotRecord {
 }
 
 /// Hardware/virtual key identifier for movement mechanics.
+///
+/// APPEND-ONLY: never reorder, rename-with-new-meaning, or remove variants;
+/// .aft v1 postcard serialization depends strictly on variant indices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KeyCode {
     KeyW,
