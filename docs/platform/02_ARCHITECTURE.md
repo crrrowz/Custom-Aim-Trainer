@@ -37,7 +37,7 @@
                      │  تستخدم نفس crates التحليل   │
                      └──────────────┬──────────────┘
                  ┌──────────────────┼──────────────────┐
-             Paddle (MoR)      Claude API        Riot API (رسمي)
+             Paddle (MoR)   LLM API (Claude/أي مزوّد)  Riot API (رسمي)
 ```
 
 ### لماذا عمليتان (Tauri + Bevy) وليس واحدة؟
@@ -65,7 +65,7 @@ aimforge/
 │   ├── aim-coach/                # prescription, plan, staircase, retest, evaluation
 │   ├── aim-store/                # Port: SessionRepository + adapter SQLite محلي (rusqlite)
 │   ├── aim-sync/                 # Port: SyncClient + adapter Supabase (reqwest)
-│   ├── aim-llm/                  # Port: NarrativeCoach + adapter Claude API (يُستدعى عبر السيرفر)
+│   ├── aim-llm/                  # Port: LlmProvider + adapters (Anthropic, OpenAI-compatible: سحابي أو محلي مثل Ollama)
 │   └── aim-wasm/                 # (لاحقاً) bindings لتشغيل التحليل في المتصفح
 ├── apps/
 │   ├── trainer/                  # Bevy binary (sidecar)
@@ -228,18 +228,22 @@ pub trait SyncClient {
     async fn norms(&self, version: NormsVersion) -> Result<NormTable>;
 }
 
-// aim-llm — called via OUR server, never with an API key on the client
+// aim-llm — any ready-made LLM behind one port (we never train our own model).
+// Cloud providers are called via OUR server (no API key on the client);
+// a local OpenAI-compatible server (Ollama, LM Studio, llama.cpp) is called on localhost.
 #[async_trait]
-pub trait NarrativeCoach {
-    async fn explain(&self, input: CoachInput) -> Result<CoachNarrative>;
-    async fn answer(&self, ctx: CoachInput, question: &str) -> Result<String>;
+pub trait LlmProvider {
+    async fn complete(&self, req: LlmRequest) -> Result<LlmResponse>;
+    fn capabilities(&self) -> LlmCaps;
 }
+// NarrativeCoach<P: LlmProvider> builds prompts, validates numbers, falls back to templates.
+// Details: 04_TRAINING_LOOP.md section 7.
 
 // aim-coach — pure, injected
 pub trait Clock { fn now(&self) -> DateTime<Utc>; }
 ```
 
-**قاعدة ذهبية:** مفاتيح Claude وRiot وPaddle **لا توضع أبداً على جهاز اللاعب**. كل الاستدعاءات تمرّ عبر Edge Functions أو خادم Axum.
+**قاعدة ذهبية:** مفاتيح مزوّدي الـ LLM السحابيين وRiot وPaddle **لا توضع أبداً على جهاز اللاعب**. كل الاستدعاءات تمرّ عبر Edge Functions أو خادم Axum.
 
 ---
 
@@ -249,12 +253,12 @@ pub trait Clock { fn now(&self) -> DateTime<Utc>; }
 - **Auth:** Email + Discord OAuth. وRiot Sign-On لاحقاً عند الحصول على مفتاح إنتاج.
 - **Postgres:** المخطط في `05_DATA_AND_TELEMETRY.md` مع Row Level Security.
 - **Storage:** ملفات `.aft` في bucket خاص لكل مستخدم.
-- **Edge Functions:** `paddle-webhook` (تحديث الاشتراك)، `coach-explain` (وكيل Claude مع حد استخدام)، `riot-sync`.
+- **Edge Functions:** `paddle-webhook` (تحديث الاشتراك)، `coach-explain` (وكيل للـ LLM السحابي مع حد استخدام)، `riot-sync`.
 
 ### المرحلة 2 — خدمة Axum (عند توفر فريق/تمويل)
 - تستورد `aim-analysis` و`aim-coach` كما هي ← إعادة تحليل على السيرفر، وحساب المعايير (norms)، ومنع التلاعب.
 - Supabase يبقى قاعدة بيانات Postgres فقط، أو يُنقل إلى Postgres مُدار. **التغيير محصور في adapter `aim-sync`.**
-- Worker لتدريب نماذج الـ bandit/ML على التليمتري (Python أو Rust/Polars) يقرأ ملفات `.aft` عبر `aim-telemetry` (أو عبر bindings بـ PyO3).
+- Job شهري يحسب المعايير (norms) وجدول فعالية التمارين ويعيد معايرة العتبات (SQL + Rust). لا يوجد تدريب نماذج ذكاء اصطناعي.
 
 ---
 
@@ -266,16 +270,16 @@ pub trait Clock { fn now(&self) -> DateTime<Utc>; }
 | نسخة ويب | `aim-wasm` + محاكي WebGPU | كل منطق المجال |
 | استبدال Bevy بمحرك آخر | `apps/trainer` فقط، بشرط أن يحترم IPC و`.aft` | كل شيء آخر |
 | استبدال Supabase | adapter جديد لـ `SyncClient` | كل شيء آخر |
-| نماذج ML بدل القواعد | implementation جديد لـ `trait Diagnoser` / `trait DrillPolicy` | الواجهات والتخزين |
+| تغيير مزوّد الـ LLM (سحابي ↔ محلي) | إعداد `LlmProvider` فقط | كل شيء آخر |
+| سياسة اختيار تمارين أذكى (إحصائية) | implementation جديد لـ `trait DrillPolicy` | الواجهات والتخزين |
 | تطبيق جوال مرافق | يقرأ نفس API | — |
 
 ```rust
-// aim-analysis: diagnosis behind a trait so rules → ML is a drop-in swap
+// aim-analysis: diagnosis behind a trait; rules live in versioned data files
 pub trait Diagnoser {
     fn diagnose(&self, profile: &SkillProfile, evidence: &EvidenceSet) -> Vec<Finding>;
 }
-pub struct RuleDiagnoser { rules: RuleSet }          // v1: data-driven rules
-pub struct ModelDiagnoser { model: OnnxModel }       // v2: learned (ort crate)
+pub struct RuleDiagnoser { rules: RuleSet }          // rules.vN.ron, recalibrated from data
 ```
 
 ---

@@ -301,7 +301,7 @@ priority(finding) = severity × impact_weight(skill) × trainability(skill) × r
 | `PatternDetector._detectTemporalPatterns` | `skills::consistency` | انحدار خطي بدل مقارنة أثلاث |
 | `SessionComparator` | `aim-coach::evaluation` | MDC + DiD (انظر `04_TRAINING_LOOP.md`) |
 | `FlickAnalyzer`/`PlayerDiagnosis` في `script.js` | ❌ يُحذف | مكرّر |
-| `AimCoach` (rule-based + JSON export) | `RuleDiagnoser` + `aim-llm` | القواعد في ملفات بيانات؛ وClaude عبر السيرفر |
+| `AimCoach` (rule-based + JSON export) | `RuleDiagnoser` + `aim-llm` | القواعد في ملفات بيانات؛ والشرح عبر LLM API (سحابي عبر السيرفر، أو محلي) |
 
 ### خطة التحقق من صحة النقل
 1. نُسجّل 20 جلسة في الويب الحالي بصيغة JSON (تصدير موجود).
