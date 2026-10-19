@@ -1,17 +1,15 @@
 //! Low-latency, dedicated Windows Raw Input mouse capture worker.
 //!
-//! Architecture:
-//! - Spawns a background OS thread running a message-only window (`HWND_MESSAGE`).
-//! - Registers usage page 0x01, usage 0x02 (mouse) with `RIDEV_INPUTSINK | RIDEV_DEVNOTIFY`.
-//!   Registered AFTER the Bevy event loop exists so our worker takes over raw mouse messages.
-//!   Bevy's `MouseMotion` will be zero by design.
-//! - Uses `GetRawInputData` to capture every discrete input event with its own
-//!   `QueryPerformanceCounter` timestamp in monotonic microseconds relative to session start.
-//! - QPC multiplication is performed in u128 arithmetic to guarantee zero overflow.
-//! - Discards events when the main window does not have focus.
+//! Fixes implemented:
+//! 1. Worker shutdown: Drops send `WM_CLOSE` to the worker window, and `WM_DESTROY` calls `PostQuitMessage(0)`.
+//!    Message loop runs cleanly on `while GetMessageW(..) > 0`. Drop joins the thread.
+//! 2. Absolute mouse filter: Inspects `usFlags & MOUSE_MOVE_ABSOLUTE` (and `MOUSE_MOVE_VIRTUAL_DESKTOP`).
+//!    Absolute movement events (from RDP, tablets, VMs) are discarded and flagged via `ABSOLUTE_MOUSE_DISCARDED`.
+//! 3. Real HWND focus checking: Every `WM_INPUT` message queries `GetForegroundWindow()` and checks if it
+//!    matches `target_hwnd` (the actual Bevy game window). Events outside our window are safely discarded.
 
 use crossbeam_channel::{Receiver, Sender};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use windows_sys::Win32::Devices::HumanInterfaceDevice::{
     HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC,
@@ -20,12 +18,13 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows_sys::Win32::UI::Input::{
-    GetRawInputData, RegisterRawInputDevices, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER,
-    RIDEV_DEVNOTIFY, RIDEV_INPUTSINK, RID_INPUT, RIM_TYPEMOUSE,
+    GetRawInputData, RegisterRawInputDevices, HRAWINPUT, MOUSE_MOVE_ABSOLUTE, RAWINPUT,
+    RAWINPUTDEVICE, RAWINPUTHEADER, RIDEV_DEVNOTIFY, RIDEV_INPUTSINK, RID_INPUT, RIM_TYPEMOUSE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-    RegisterClassExW, TranslateMessage, MSG, WM_CLOSE, WM_INPUT, WNDCLASSEXW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
+    GetMessageW, PostMessageW, PostQuitMessage, RegisterClassExW, TranslateMessage, MSG, WM_CLOSE,
+    WM_DESTROY, WM_INPUT, WNDCLASSEXW,
 };
 
 /// Discrete raw input event captured with microsecond resolution.
@@ -36,27 +35,31 @@ pub struct RawInputEvent {
     pub dy: i32,
 }
 
-static WORKER_STOP: AtomicBool = AtomicBool::new(false);
-static IS_FOCUSED: AtomicBool = AtomicBool::new(true);
+static TARGET_HWND: AtomicUsize = AtomicUsize::new(0);
+static ABSOLUTE_EVENTS_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub struct RawInputWorker {
     pub receiver: Receiver<RawInputEvent>,
     pub qpc_freq: i64,
     pub qpc_start: i64,
-    _hwnd: usize,
-    _join_handle: Option<thread::JoinHandle<()>>,
+    hwnd: isize,
+    join_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl RawInputWorker {
-    /// Update window focus state so events outside our window are safely discarded.
-    pub fn set_focused(focused: bool) {
-        IS_FOCUSED.store(focused, Ordering::Relaxed);
+    /// Update the target Bevy window HWND so GetForegroundWindow() is accurately verified per event.
+    pub fn set_target_hwnd(hwnd: HWND) {
+        TARGET_HWND.store(hwnd as usize, Ordering::Relaxed);
     }
 
-    /// Spawns the dedicated raw input thread and returns the channel receiver.
+    /// Returns the number of absolute mouse events discarded (e.g. tablet or RDP).
+    pub fn absolute_events_discarded() -> u64 {
+        ABSOLUTE_EVENTS_COUNT.load(Ordering::Relaxed)
+    }
+
+    /// Spawns the dedicated raw input thread and returns the worker handle.
     pub fn spawn() -> Self {
-        WORKER_STOP.store(false, Ordering::Relaxed);
-        IS_FOCUSED.store(true, Ordering::Relaxed);
+        ABSOLUTE_EVENTS_COUNT.store(0, Ordering::Relaxed);
 
         let mut freq = 0i64;
         let mut start = 0i64;
@@ -66,7 +69,7 @@ impl RawInputWorker {
         }
 
         let (tx, rx) = crossbeam_channel::unbounded();
-        let (hwnd_tx, hwnd_rx) = std::sync::mpsc::channel::<usize>();
+        let (hwnd_tx, hwnd_rx) = std::sync::mpsc::channel::<isize>();
 
         let join_handle = thread::spawn(move || unsafe {
             let hinstance = GetModuleHandleW(std::ptr::null());
@@ -119,7 +122,6 @@ impl RawInputWorker {
                 RegisterRawInputDevices(&device, 1, std::mem::size_of::<RAWINPUTDEVICE>() as u32);
             assert!(ok != 0, "Failed to register Raw Input device for mouse!");
 
-            // Pass channel and timing state to thread-local context
             WORKER_CONTEXT.with(|ctx| {
                 *ctx.borrow_mut() = Some(WorkerContext {
                     sender: tx,
@@ -128,14 +130,13 @@ impl RawInputWorker {
                 });
             });
 
-            hwnd_tx.send(hwnd as usize).unwrap();
+            hwnd_tx.send(hwnd as isize).unwrap();
 
+            // Clean message loop: exits when GetMessageW returns 0 (WM_QUIT) or <= 0
             let mut msg: MSG = std::mem::zeroed();
-            while !WORKER_STOP.load(Ordering::Relaxed) {
-                if GetMessageW(&mut msg, 0 as HWND, 0, 0) > 0 {
-                    TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
-                }
+            while GetMessageW(&mut msg, 0 as HWND, 0, 0) > 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
             }
         });
 
@@ -145,15 +146,21 @@ impl RawInputWorker {
             receiver: rx,
             qpc_freq: freq,
             qpc_start: start,
-            _hwnd: hwnd,
-            _join_handle: Some(join_handle),
+            hwnd,
+            join_handle: Some(join_handle),
         }
     }
 }
 
 impl Drop for RawInputWorker {
     fn drop(&mut self) {
-        WORKER_STOP.store(true, Ordering::Relaxed);
+        unsafe {
+            // Post WM_CLOSE to wake up GetMessageW and close the worker window cleanly
+            PostMessageW(self.hwnd as HWND, WM_CLOSE, 0, 0);
+        }
+        if let Some(handle) = self.join_handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -174,7 +181,7 @@ unsafe extern "system" fn raw_input_wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     if msg == WM_INPUT {
-        // Immediate QPC read per event to eliminate batch timing distortion
+        // Read QPC per discrete event for true microsecond timestamping
         let mut qpc_now = 0i64;
         QueryPerformanceCounter(&mut qpc_now);
 
@@ -191,21 +198,32 @@ unsafe extern "system" fn raw_input_wndproc(
         );
 
         if res != u32::MAX && res > 0 && raw_data.header.dwType == RIM_TYPEMOUSE {
-            // Discard events if window is not focused
-            if IS_FOCUSED.load(Ordering::Relaxed) {
+            // Verify foreground window matches Bevy's actual HWND
+            let target = TARGET_HWND.load(Ordering::Relaxed) as HWND;
+            let foreground = GetForegroundWindow();
+
+            // Record only once the Bevy window HWND is known and it is the foreground window
+            if !target.is_null() && foreground == target {
                 let mouse = raw_data.data.mouse;
-                let dx = mouse.lLastX;
-                let dy = mouse.lLastY;
 
-                if dx != 0 || dy != 0 {
-                    WORKER_CONTEXT.with(|ctx| {
-                        if let Some(ctx) = ctx.borrow().as_ref() {
-                            let qpc_diff = (qpc_now - ctx.qpc_start).max(0) as u128;
-                            let t_us = ((qpc_diff * 1_000_000u128) / (ctx.qpc_freq as u128)) as u64;
+                // Absolute mouse check: discard absolute coordinates from tablets, RDP, or VMs
+                if (mouse.usFlags & MOUSE_MOVE_ABSOLUTE) != 0 {
+                    ABSOLUTE_EVENTS_COUNT.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    let dx = mouse.lLastX;
+                    let dy = mouse.lLastY;
 
-                            let _ = ctx.sender.try_send(RawInputEvent { t_us, dx, dy });
-                        }
-                    });
+                    if dx != 0 || dy != 0 {
+                        WORKER_CONTEXT.with(|ctx| {
+                            if let Some(ctx) = ctx.borrow().as_ref() {
+                                let qpc_diff = (qpc_now - ctx.qpc_start).max(0) as u128;
+                                let t_us =
+                                    ((qpc_diff * 1_000_000u128) / (ctx.qpc_freq as u128)) as u64;
+
+                                let _ = ctx.sender.try_send(RawInputEvent { t_us, dx, dy });
+                            }
+                        });
+                    }
                 }
             }
         }
@@ -214,6 +232,11 @@ unsafe extern "system" fn raw_input_wndproc(
 
     if msg == WM_CLOSE {
         DestroyWindow(hwnd);
+        return 0;
+    }
+
+    if msg == WM_DESTROY {
+        PostQuitMessage(0);
         return 0;
     }
 

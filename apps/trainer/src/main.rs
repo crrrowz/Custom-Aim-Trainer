@@ -4,7 +4,10 @@
 
 use aim_core::sensitivity::VALORANT_YAW_DEG_PER_COUNT;
 use bevy::prelude::*;
-use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow, WindowFocused};
+use bevy::window::{
+    CursorGrabMode, CursorOptions, Monitor, PrimaryMonitor, PrimaryWindow, RawHandleWrapper,
+    WindowFocused,
+};
 use std::path::PathBuf;
 use std::time::Instant;
 use trainer::camera::{spawn_fps_camera, sync_camera_transform, FpsCamera};
@@ -29,6 +32,9 @@ pub struct TrainerState {
     pub event_count: u64,
     pub last_event_t_us: Option<u64>,
     pub intervals_us: Vec<u64>,
+    pub frame_times_us: Vec<u64>,
+    pub last_frame_instant: Instant,
+    pub initial_startup_done: bool,
 }
 
 fn parse_cli_args() -> TrainerConfig {
@@ -102,8 +108,70 @@ fn setup_trainer(mut commands: Commands, config: Res<TrainerConfig>) {
         recorder,
         event_count: 0,
         last_event_t_us: None,
-        intervals_us: Vec::with_capacity(100_000),
+        intervals_us: Vec::with_capacity(200_000),
+        frame_times_us: Vec::with_capacity(10_000),
+        last_frame_instant: Instant::now(),
+        initial_startup_done: false,
     });
+}
+
+fn sync_display_info_system(
+    mut state: ResMut<TrainerState>,
+    q_window: Query<(&Window, Option<&RawHandleWrapper>), With<PrimaryWindow>>,
+    q_monitor: Query<&Monitor, With<PrimaryMonitor>>,
+) {
+    if state.initial_startup_done {
+        return;
+    }
+
+    if let Some((window, raw_handle)) = q_window.iter().next() {
+        let width = window.physical_width();
+        let height = window.physical_height();
+
+        if width > 0 && height > 0 {
+            state.recorder.setup.width = width;
+            state.recorder.setup.height = height;
+
+            if let Some(monitor) = q_monitor.iter().next() {
+                if let Some(mhz) = monitor.refresh_rate_millihertz {
+                    state.recorder.setup.hz = (mhz + 500) / 1000;
+                }
+            }
+
+            if let Some(wrapper) = raw_handle {
+                #[cfg(target_os = "windows")]
+                if let raw_window_handle::RawWindowHandle::Win32(win32_handle) =
+                    wrapper.get_window_handle()
+                {
+                    let hwnd = win32_handle.hwnd.get() as windows_sys::Win32::Foundation::HWND;
+                    RawInputWorker::set_target_hwnd(hwnd);
+                }
+            }
+
+            state.initial_startup_done = true;
+        }
+    }
+}
+
+fn handle_window_focus(
+    mut focus_events: MessageReader<WindowFocused>,
+    mut state: ResMut<TrainerState>,
+    mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+) {
+    for ev in focus_events.read() {
+        if let Some(mut cursor) = q_cursor.iter_mut().next() {
+            if ev.focused {
+                cursor.grab_mode = CursorGrabMode::Confined;
+                cursor.visible = false;
+            } else {
+                cursor.grab_mode = CursorGrabMode::None;
+                cursor.visible = true;
+                if state.initial_startup_done {
+                    state.recorder.flag_focus_lost();
+                }
+            }
+        }
+    }
 }
 
 fn drain_raw_input_system(
@@ -119,7 +187,6 @@ fn drain_raw_input_system(
         state.event_count += 1;
         state.recorder.record_input(event.t_us, event.dx, event.dy);
 
-        // Calculate inter-event intervals for jitter measurement
         if let Some(last_t) = state.last_event_t_us {
             if event.t_us >= last_t {
                 state.intervals_us.push(event.t_us - last_t);
@@ -131,7 +198,6 @@ fn drain_raw_input_system(
         total_dy += event.dy;
     }
 
-    // Apply exact summed deltas to ViewAngles ensuring zero drift
     if total_dx != 0 || total_dy != 0 {
         if let Some(mut fps_cam) = camera_query.iter_mut().next() {
             fps_cam
@@ -141,24 +207,11 @@ fn drain_raw_input_system(
     }
 }
 
-fn handle_window_focus(
-    mut focus_events: MessageReader<WindowFocused>,
-    mut state: ResMut<TrainerState>,
-    mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
-) {
-    for ev in focus_events.read() {
-        RawInputWorker::set_focused(ev.focused);
-        if let Some(mut cursor) = q_cursor.iter_mut().next() {
-            if ev.focused {
-                cursor.grab_mode = CursorGrabMode::Confined;
-                cursor.visible = false;
-            } else {
-                cursor.grab_mode = CursorGrabMode::None;
-                cursor.visible = true;
-                state.recorder.flag_focus_lost();
-            }
-        }
-    }
+fn track_frame_time_system(mut state: ResMut<TrainerState>) {
+    let now = Instant::now();
+    let frame_us = now.duration_since(state.last_frame_instant).as_micros() as u64;
+    state.last_frame_instant = now;
+    state.frame_times_us.push(frame_us);
 }
 
 fn session_lifecycle_system(
@@ -171,31 +224,75 @@ fn session_lifecycle_system(
         println!("\n=== AimForge Trainer Session Completed ===");
         println!("Elapsed time: {:.2}s", elapsed_s);
         println!("Raw Input events captured: {}", state.event_count);
-        if elapsed_s > 0.0 {
+        println!(
+            "Absolute mouse events discarded: {}",
+            RawInputWorker::absolute_events_discarded()
+        );
+        println!("Quality flags: {:#010b}", state.recorder.quality_flags);
+        println!(
+            "Display configured: {}x{} @ {}Hz",
+            state.recorder.setup.width, state.recorder.setup.height, state.recorder.setup.hz
+        );
+
+        let active_intervals: Vec<u64> = state
+            .intervals_us
+            .iter()
+            .copied()
+            .filter(|&dt| dt <= 50_000)
+            .collect();
+
+        if !active_intervals.is_empty() {
+            let mut sorted = active_intervals.clone();
+            sorted.sort_unstable();
+
+            let count = sorted.len();
+            let p50 = sorted[count * 50 / 100];
+            let p95 = sorted[count * 95 / 100];
+            let p99 = sorted[count * 99 / 100];
+            let max = sorted[count - 1];
+
+            let under_500 = sorted.iter().filter(|&&dt| dt < 500).count();
+            let over_2000 = sorted.iter().filter(|&&dt| dt > 2000).count();
+
+            let active_time_s = sorted.iter().sum::<u64>() as f64 / 1_000_000.0;
+            let active_rate = if active_time_s > 0.0 {
+                count as f64 / active_time_s
+            } else {
+                0.0
+            };
+
+            println!("\n--- Raw Input Timing Metrics (during movement) ---");
+            println!("Active movement event count: {}", count);
+            println!("Active movement capture rate: {:.1} events/s", active_rate);
             println!(
-                "Average capture rate: {:.1} events/s",
-                state.event_count as f64 / elapsed_s
+                "Intervals (us): p50 = {}us, p95 = {}us, p99 = {}us, max = {}us",
+                p50, p95, p99, max
+            );
+            println!(
+                "Intervals < 500us: {} ({:.2}%)",
+                under_500,
+                under_500 as f64 * 100.0 / count as f64
+            );
+            println!(
+                "Intervals > 2000us: {} ({:.2}%)",
+                over_2000,
+                over_2000 as f64 * 100.0 / count as f64
             );
         }
 
-        // Compute jitter stats
-        if !state.intervals_us.is_empty() {
-            let n = state.intervals_us.len() as f64;
-            let mean: f64 = state.intervals_us.iter().map(|&v| v as f64).sum::<f64>() / n;
-            let variance: f64 = state
-                .intervals_us
-                .iter()
-                .map(|&v| (v as f64 - mean).powi(2))
-                .sum::<f64>()
-                / n;
-            let std_dev = variance.sqrt();
+        if state.frame_times_us.len() > 10 {
+            let mut frames = state.frame_times_us[5..].to_vec();
+            frames.sort_unstable();
+            let f_len = frames.len();
+            let f_p50 = frames[f_len * 50 / 100] as f64 / 1000.0;
+            let f_p99 = frames[f_len * 99 / 100] as f64 / 1000.0;
+            println!("\n--- Frame Time Metrics ---");
             println!(
-                "Inter-event interval: mean = {:.1}us, jitter (std dev) = {:.1}us (sample count: {})",
-                mean, std_dev, state.intervals_us.len()
+                "Frame times (ms): p50 = {:.2}ms, p99 = {:.2}ms",
+                f_p50, f_p99
             );
         }
 
-        // Export .aft telemetry file
         let target_path = config.output_path.clone().unwrap_or_else(|| {
             PathBuf::from(format!("session-{}.aft", state.recorder.setup.session_id))
         });
@@ -203,14 +300,14 @@ fn session_lifecycle_system(
         match state.recorder.save_to_file(&target_path) {
             Ok(bytes) => {
                 println!(
-                    "Telemetry successfully written to: {} ({:.1} KB)",
+                    "\nTelemetry successfully written to: {} ({:.1} KB)",
                     target_path.display(),
                     bytes as f64 / 1024.0
                 );
             }
             Err(e) => {
                 eprintln!(
-                    "Failed writing telemetry to {}: {}",
+                    "\nFailed writing telemetry to {}: {}",
                     target_path.display(),
                     e
                 );
@@ -248,11 +345,18 @@ fn main() {
         .add_systems(
             PreUpdate,
             (
-                drain_raw_input_system,
-                sync_camera_transform,
-                handle_window_focus,
+                sync_display_info_system,
+                (
+                    handle_window_focus,
+                    drain_raw_input_system,
+                    sync_camera_transform,
+                )
+                    .chain(),
             ),
         )
-        .add_systems(PostUpdate, session_lifecycle_system)
+        .add_systems(
+            PostUpdate,
+            (track_frame_time_system, session_lifecycle_system),
+        )
         .run();
 }
