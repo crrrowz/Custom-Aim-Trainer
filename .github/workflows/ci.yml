@@ -19,6 +19,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Self-Test Boundary Script
+        shell: pwsh
+        run: ./scripts/check-boundaries.ps1 -SelfTest
+
       - name: Run Dependency Boundary Verification
         shell: pwsh
         run: ./scripts/check-boundaries.ps1
