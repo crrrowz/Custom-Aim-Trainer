@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/aim-core",
+    "crates/aim-telemetry",
+    "crates/aim-scenarios",
+    "crates/aim-analysis",
+    "crates/aim-coach",
+    "crates/aim-store",
+    "crates/aim-sync",
+    "crates/aim-llm",
+    "crates/aim-wasm",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["AimForge Team"]
+license = "MIT OR Apache-2.0"
+rust-version = "1.80"
+
+[workspace.dependencies]
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+postcard = { version = "1.0", features = ["alloc"] }
+zstd = "0.13"
+crc32fast = "1.4"
+proptest = "1.5"
+uuid = { version = "1.10", features = ["v4", "v7", "serde"] }
+thiserror = "2.0"
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }

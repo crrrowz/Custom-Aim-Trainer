@@ -1,0 +1,13 @@
+[package]
+name = "aim-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aim-core = { path = "../aim-core" }
+aim-analysis = { path = "../aim-analysis" }
+aim-coach = { path = "../aim-coach" }
+serde = { workspace = true }
+thiserror = { workspace = true }
