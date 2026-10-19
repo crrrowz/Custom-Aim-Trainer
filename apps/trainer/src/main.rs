@@ -6,7 +6,6 @@ use aim_core::geometry::HitZoneType;
 use aim_core::sensitivity::VALORANT_YAW_DEG_PER_COUNT;
 use aim_scenarios::{generate_trials, Scenario, Trial};
 use aim_telemetry::format::{quality_flags, HitZone};
-use bevy::input::mouse::MouseButton;
 use bevy::prelude::*;
 use bevy::window::{
     CursorGrabMode, CursorOptions, Monitor, MonitorSelection, PrimaryMonitor, PrimaryWindow,
@@ -17,7 +16,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 use trainer::camera::{spawn_fps_camera, sync_camera_transform, FpsCamera};
-use trainer::raw_input::RawInputWorker;
+use trainer::raw_input::{RawInputPayload, RawInputWorker};
 use trainer::recorder::{self, SessionRecorder};
 use trainer::target::{
     setup_target_assets, spawn_home_target, spawn_trial_target, ActiveTargetMarker, TargetAssets,
@@ -57,6 +56,7 @@ pub struct TrainerState {
     pub device_last_t: HashMap<usize, u64>,
     pub primary_device: Option<usize>,
     pub non_primary_events: u64,
+    pub warmup_events_collected: u64,
 
     // Task 1.9 & Scenario state machine
     pub scenario_def: Scenario,
@@ -74,8 +74,8 @@ fn parse_cli_args() -> TrainerConfig {
     let mut seed = 1337u64;
     let mut dpi = 800u32;
     let mut sens = 0.35f64;
-    let mut duration_s = 288.0f64; // Default to full assessment ceiling
-    let mut windowed = false; // Default to BorderlessFullscreen per Task 1.1
+    let mut duration_s = 288.0f64;
+    let mut windowed = false;
     let mut output_path = None;
 
     let args: Vec<String> = std::env::args().collect();
@@ -159,6 +159,7 @@ fn setup_trainer(mut commands: Commands, config: Res<TrainerConfig>) {
         device_last_t: HashMap::new(),
         primary_device: None,
         non_primary_events: 0,
+        warmup_events_collected: 0,
 
         scenario_def,
         trials,
@@ -230,16 +231,22 @@ fn handle_window_focus(
     }
 }
 
-fn drain_raw_input_system(
+/// Unified raw input drain and chronological hit evaluation.
+///
+/// Dispatches discrete motion and clicks in true QPC order:
+/// When a click event arrives, the hit test is evaluated against ViewAngles accumulated
+/// up to that exact microsecond timestamp, guaranteeing zero post-click motion contamination.
+fn drain_and_evaluate_input_system(
+    mut commands: Commands,
     config: Res<TrainerConfig>,
     mut state: ResMut<TrainerState>,
+    assets: Option<Res<TargetAssets>>,
     mut camera_query: Query<&mut FpsCamera>,
+    target_query: Query<(Entity, &ActiveTargetMarker)>,
 ) {
     let deg_per_count = VALORANT_YAW_DEG_PER_COUNT * config.sens;
-    let mut total_dx = 0i32;
-    let mut total_dy = 0i32;
 
-    // Drain all pending raw events
+    // 1. Drain raw events from thread channel
     let mut batch = Vec::new();
     while let Ok(event) = state.worker.receiver.try_recv() {
         state.event_count += 1;
@@ -258,55 +265,123 @@ fn drain_raw_input_system(
         batch.push(event);
     }
 
-    // Automatically resolve primary device by event count
-    if state.primary_device.is_none() && !state.device_counts.is_empty() {
-        let best_dev = state
-            .device_counts
-            .iter()
-            .max_by_key(|&(_, count)| *count)
-            .map(|(&dev, _)| dev);
-        state.primary_device = best_dev;
+    // 2. Warm-up window for primary device selection (picks device with most events in first 200 events)
+    if state.primary_device.is_none() {
+        state.warmup_events_collected += batch.len() as u64;
+        if state.warmup_events_collected >= 200
+            || state.start_instant.elapsed().as_secs_f64() >= 1.0
+        {
+            let best_dev = state
+                .device_counts
+                .iter()
+                .max_by_key(|&(_, count)| *count)
+                .map(|(&dev, _)| dev);
+            state.primary_device = best_dev;
+        }
     }
 
     let primary_id = state.primary_device;
 
+    // 3. Process events chronologically
     for event in batch {
-        if Some(event.device_id) == primary_id {
-            // Apply and record ONLY from the primary mouse device
-            state.recorder.record_input(event.t_us, event.dx, event.dy);
-            total_dx += event.dx;
-            total_dy += event.dy;
-        } else {
-            // Non-primary device moved
+        if primary_id.is_some() && Some(event.device_id) != primary_id {
             state.non_primary_events += 1;
-            state.recorder.quality_flags |= quality_flags::SETTINGS_CHANGED;
+            state.recorder.quality_flags |= quality_flags::SECONDARY_DEVICE_MOTION;
+            continue;
+        }
+
+        match event.payload {
+            RawInputPayload::Motion { dx, dy } => {
+                state.recorder.record_input(event.t_us, dx, dy);
+                if let Some(mut fps_cam) = camera_query.iter_mut().next() {
+                    fps_cam.angles.apply_counts(dx, dy, deg_per_count);
+                }
+            }
+            RawInputPayload::LeftButtonDown => {
+                let view_angles = camera_query
+                    .iter()
+                    .next()
+                    .map(|c| c.angles)
+                    .unwrap_or_default();
+
+                let mut hit_target_id = None;
+                let mut hitzone = HitZone::None;
+
+                for (entity, marker) in &target_query {
+                    let hit_res = marker.spherical.intersect_ray(view_angles);
+
+                    if hit_res.is_hit {
+                        hit_target_id = Some(marker.target_id);
+                        hitzone = match hit_res.hitzone {
+                            HitZoneType::Head => HitZone::Head,
+                            HitZoneType::Body => HitZone::Body,
+                            HitZoneType::None => HitZone::None,
+                        };
+
+                        commands.entity(entity).despawn();
+
+                        if marker.is_home_target {
+                            state.phase = AssessmentPhase::AwaitingTrialTarget;
+                        } else {
+                            state.hits_count += 1;
+                            let trial_elapsed = state.trial_start_instant.elapsed().as_secs_f64();
+                            println!(
+                                "[Trial {}/96] HIT! Time: {:.3}s (Dist: {:.2}°). Hits: {}, Misses: {}",
+                                state.current_trial_idx + 1,
+                                trial_elapsed,
+                                hit_res.angular_distance_deg,
+                                state.hits_count,
+                                state.misses_count
+                            );
+
+                            state.current_trial_idx += 1;
+                            if state.current_trial_idx < state.trials.len() {
+                                state.phase = AssessmentPhase::AwaitingHomeTarget;
+                            } else {
+                                state.phase = AssessmentPhase::Completed;
+                            }
+                        }
+                        break;
+                    }
+                }
+
+                if hit_target_id.is_none() && state.phase == AssessmentPhase::AwaitingTrialTarget {
+                    state.misses_count += 1;
+                    println!(
+                        "[Trial {}/96] MISS! Total Hits: {}, Misses: {}",
+                        state.current_trial_idx + 1,
+                        state.hits_count,
+                        state.misses_count
+                    );
+
+                    for (entity, _) in &target_query {
+                        commands.entity(entity).despawn();
+                    }
+
+                    state.current_trial_idx += 1;
+                    if state.current_trial_idx < state.trials.len() {
+                        state.phase = AssessmentPhase::AwaitingHomeTarget;
+                    } else {
+                        state.phase = AssessmentPhase::Completed;
+                    }
+                }
+
+                state
+                    .recorder
+                    .record_shot(event.t_us, hit_target_id, hitzone);
+            }
+            _ => {}
         }
     }
 
-    if total_dx != 0 || total_dy != 0 {
-        if let Some(mut fps_cam) = camera_query.iter_mut().next() {
-            fps_cam
-                .angles
-                .apply_counts(total_dx, total_dy, deg_per_count);
-        }
-    }
-}
-
-fn shooting_and_target_lifecycle_system(
-    mut commands: Commands,
-    mouse_button: Res<ButtonInput<MouseButton>>,
-    mut state: ResMut<TrainerState>,
-    assets: Option<Res<TargetAssets>>,
-    camera_query: Query<&FpsCamera>,
-    target_query: Query<(Entity, &ActiveTargetMarker)>,
-) {
+    // 4. Target spawning & trial timeout checking
     let assets = match assets {
         Some(a) => a,
         None => return,
     };
 
     let now_s = state.start_instant.elapsed().as_secs_f64();
-    let current_qpc_diff = state.start_instant.elapsed().as_micros() as u64;
+    let current_qpc_t = state.start_instant.elapsed().as_micros() as u64;
 
     if target_query.iter().next().is_none() && state.phase != AssessmentPhase::Completed {
         let tid = state.next_target_id;
@@ -323,7 +398,7 @@ fn shooting_and_target_lifecycle_system(
                 );
                 state
                     .recorder
-                    .record_target_spawn(tid, current_qpc_diff, 0, 0.5, 0.0, 0.0);
+                    .record_target_spawn(tid, current_qpc_t, 0, 0.5, 0.0, 0.0);
             }
             AssessmentPhase::AwaitingTrialTarget => {
                 if state.current_trial_idx < state.trials.len() {
@@ -338,7 +413,7 @@ fn shooting_and_target_lifecycle_system(
                     );
                     state.recorder.record_target_spawn(
                         tid,
-                        current_qpc_diff,
+                        current_qpc_t,
                         0,
                         trial.radius_deg,
                         trial.yaw_deg,
@@ -375,82 +450,7 @@ fn shooting_and_target_lifecycle_system(
             } else {
                 state.phase = AssessmentPhase::Completed;
             }
-            return;
         }
-    }
-
-    if mouse_button.just_pressed(MouseButton::Left) {
-        let view_angles = camera_query
-            .iter()
-            .next()
-            .map(|c| c.angles)
-            .unwrap_or_default();
-
-        let mut hit_target_id = None;
-        let mut hitzone = HitZone::None;
-
-        for (entity, marker) in &target_query {
-            let hit_res = marker.spherical.intersect_ray(view_angles);
-
-            if hit_res.is_hit {
-                hit_target_id = Some(marker.target_id);
-                hitzone = match hit_res.hitzone {
-                    HitZoneType::Head => HitZone::Head,
-                    HitZoneType::Body => HitZone::Body,
-                    HitZoneType::None => HitZone::None,
-                };
-
-                commands.entity(entity).despawn();
-
-                if marker.is_home_target {
-                    state.phase = AssessmentPhase::AwaitingTrialTarget;
-                } else {
-                    state.hits_count += 1;
-                    let trial_elapsed = state.trial_start_instant.elapsed().as_secs_f64();
-                    println!(
-                        "[Trial {}/96] HIT! Time: {:.3}s (Dist: {:.2}°). Hits: {}, Misses: {}",
-                        state.current_trial_idx + 1,
-                        trial_elapsed,
-                        hit_res.angular_distance_deg,
-                        state.hits_count,
-                        state.misses_count
-                    );
-
-                    state.current_trial_idx += 1;
-                    if state.current_trial_idx < state.trials.len() {
-                        state.phase = AssessmentPhase::AwaitingHomeTarget;
-                    } else {
-                        state.phase = AssessmentPhase::Completed;
-                    }
-                }
-                break;
-            }
-        }
-
-        if hit_target_id.is_none() && state.phase == AssessmentPhase::AwaitingTrialTarget {
-            state.misses_count += 1;
-            println!(
-                "[Trial {}/96] MISS! Total Hits: {}, Misses: {}",
-                state.current_trial_idx + 1,
-                state.hits_count,
-                state.misses_count
-            );
-
-            for (entity, _) in &target_query {
-                commands.entity(entity).despawn();
-            }
-
-            state.current_trial_idx += 1;
-            if state.current_trial_idx < state.trials.len() {
-                state.phase = AssessmentPhase::AwaitingHomeTarget;
-            } else {
-                state.phase = AssessmentPhase::Completed;
-            }
-        }
-
-        state
-            .recorder
-            .record_shot(current_qpc_diff, hit_target_id, hitzone);
     }
 }
 
@@ -504,7 +504,6 @@ fn session_lifecycle_system(
             state.recorder.setup.width, state.recorder.setup.height, state.recorder.setup.hz
         );
 
-        // Per-device detailed breakdown
         let mut rate_exceeded = false;
         println!("\n--- Raw Input Device Breakdown ---");
         for (&dev_id, &count) in &state.device_counts {
@@ -546,7 +545,7 @@ fn session_lifecycle_system(
                         o2000 as f64 * 100.0 / c as f64
                     );
 
-                    // Polling rate sanity check: rate > 1.1 * 1000Hz
+                    // Polling rate anomaly check: rate > 1.1 * 1000Hz
                     if is_primary && rate > 1100.0 {
                         rate_exceeded = true;
                     }
@@ -555,7 +554,7 @@ fn session_lifecycle_system(
         }
 
         if rate_exceeded {
-            state.recorder.quality_flags |= quality_flags::SETTINGS_CHANGED;
+            state.recorder.quality_flags |= quality_flags::POLLING_RATE_ANOMALY;
         }
 
         println!("\nQuality flags: {:#010b}", state.recorder.quality_flags);
@@ -645,9 +644,8 @@ fn main() {
                 sync_display_info_system,
                 (
                     handle_window_focus,
-                    drain_raw_input_system,
+                    drain_and_evaluate_input_system,
                     sync_camera_transform,
-                    shooting_and_target_lifecycle_system,
                 )
                     .chain(),
             ),

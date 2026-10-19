@@ -3,10 +3,12 @@
 //! Features:
 //! 1. Clean worker thread shutdown via PostMessageW(WM_CLOSE).
 //! 2. Thread priority set to THREAD_PRIORITY_TIME_CRITICAL for minimal dispatch jitter.
-//! 3. True per-device tracking: records RAWINPUTHEADER.hDevice per event.
-//! 4. Resolves device names via GetRawInputDeviceInfoW(RIDI_DEVICENAME).
-//! 5. Motion filtering: records and applies motion ONLY from the primary device.
-//! 6. Discards absolute mouse packets (RDP, tablets, VMs) and verifies foreground window HWND.
+//! 3. Ordered event stream capturing BOTH discrete motion and mouse button transitions.
+//! 4. Per-event QPC monotonic microsecond timestamps.
+//! 5. True per-device tracking: records RAWINPUTHEADER.hDevice per event.
+//! 6. Resolves device names via GetRawInputDeviceInfoW(RIDI_DEVICENAME).
+//! 7. Discards absolute mouse packets (RDP, tablets, VMs).
+//! 8. Strict foreground window HWND check: only records when target window is non-null AND focused.
 
 use crossbeam_channel::{Receiver, Sender};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -27,17 +29,26 @@ use windows_sys::Win32::UI::Input::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
-    GetMessageW, PostMessageW, PostQuitMessage, RegisterClassExW, TranslateMessage, MSG, WM_CLOSE,
-    WM_DESTROY, WM_INPUT, WNDCLASSEXW,
+    GetMessageW, PostMessageW, PostQuitMessage, RegisterClassExW, TranslateMessage, MSG,
+    RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_DOWN,
+    RI_MOUSE_RIGHT_BUTTON_UP, WM_CLOSE, WM_DESTROY, WM_INPUT, WNDCLASSEXW,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawInputPayload {
+    Motion { dx: i32, dy: i32 },
+    LeftButtonDown,
+    LeftButtonUp,
+    RightButtonDown,
+    RightButtonUp,
+}
 
 /// Discrete raw input event captured with microsecond resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RawInputEvent {
     pub device_id: usize,
     pub t_us: u64,
-    pub dx: i32,
-    pub dy: i32,
+    pub payload: RawInputPayload,
 }
 
 static TARGET_HWND: AtomicUsize = AtomicUsize::new(0);
@@ -67,6 +78,9 @@ impl RawInputWorker {
 
     /// Queries the OS for the friendly/interface name of a raw input device.
     pub fn get_device_name(device_handle: usize) -> String {
+        if device_handle == 0 {
+            return "Windows Injected / System Synthesized Mouse".to_string();
+        }
         unsafe {
             let handle = device_handle as HANDLE;
             let mut size = 0u32;
@@ -82,7 +96,6 @@ impl RawInputWorker {
                 &mut size,
             );
             if res != u32::MAX && res > 0 {
-                // Trim trailing null characters
                 let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
                 String::from_utf16_lossy(&buf[..len])
             } else {
@@ -169,7 +182,6 @@ impl RawInputWorker {
 
             hwnd_tx.send(hwnd as isize).unwrap();
 
-            // Clean message loop: exits when GetMessageW returns 0 (WM_QUIT) or <= 0
             let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, 0 as HWND, 0, 0) > 0 {
                 TranslateMessage(&msg);
@@ -234,11 +246,11 @@ unsafe extern "system" fn raw_input_wndproc(
         );
 
         if res != u32::MAX && res > 0 && raw_data.header.dwType == RIM_TYPEMOUSE {
-            // Verify foreground window matches Bevy's actual HWND
+            // Strict foreground window checking: target HWND must be known AND match foreground window
             let target = TARGET_HWND.load(Ordering::Relaxed) as HWND;
             let foreground = GetForegroundWindow();
 
-            if target == 0 as HWND || foreground == target {
+            if target != 0 as HWND && foreground == target {
                 let mouse = raw_data.data.mouse;
 
                 // Absolute mouse check: discard absolute coordinates from tablets, RDP, or VMs
@@ -247,24 +259,54 @@ unsafe extern "system" fn raw_input_wndproc(
                 } else {
                     let dx = mouse.lLastX;
                     let dy = mouse.lLastY;
+                    let device_id = raw_data.header.hDevice as usize;
 
-                    if dx != 0 || dy != 0 {
-                        let device_id = raw_data.header.hDevice as usize;
-                        WORKER_CONTEXT.with(|ctx| {
-                            if let Some(ctx) = ctx.borrow().as_ref() {
-                                let qpc_diff = (qpc_now - ctx.qpc_start).max(0) as u128;
-                                let t_us =
-                                    ((qpc_diff * 1_000_000u128) / (ctx.qpc_freq as u128)) as u64;
+                    WORKER_CONTEXT.with(|ctx| {
+                        if let Some(ctx) = ctx.borrow().as_ref() {
+                            let qpc_diff = (qpc_now - ctx.qpc_start).max(0) as u128;
+                            let t_us = ((qpc_diff * 1_000_000u128) / (ctx.qpc_freq as u128)) as u64;
 
+                            // 1. Dispatch motion event if non-zero
+                            if dx != 0 || dy != 0 {
                                 let _ = ctx.sender.try_send(RawInputEvent {
                                     device_id,
                                     t_us,
-                                    dx,
-                                    dy,
+                                    payload: RawInputPayload::Motion { dx, dy },
                                 });
                             }
-                        });
-                    }
+
+                            // 2. Dispatch button state transitions in exact QPC chronological sequence
+                            let btn_flags = mouse.Anonymous.Anonymous.usButtonFlags;
+                            if (btn_flags & (RI_MOUSE_LEFT_BUTTON_DOWN as u16)) != 0 {
+                                let _ = ctx.sender.try_send(RawInputEvent {
+                                    device_id,
+                                    t_us,
+                                    payload: RawInputPayload::LeftButtonDown,
+                                });
+                            }
+                            if (btn_flags & (RI_MOUSE_LEFT_BUTTON_UP as u16)) != 0 {
+                                let _ = ctx.sender.try_send(RawInputEvent {
+                                    device_id,
+                                    t_us,
+                                    payload: RawInputPayload::LeftButtonUp,
+                                });
+                            }
+                            if (btn_flags & (RI_MOUSE_RIGHT_BUTTON_DOWN as u16)) != 0 {
+                                let _ = ctx.sender.try_send(RawInputEvent {
+                                    device_id,
+                                    t_us,
+                                    payload: RawInputPayload::RightButtonDown,
+                                });
+                            }
+                            if (btn_flags & (RI_MOUSE_RIGHT_BUTTON_UP as u16)) != 0 {
+                                let _ = ctx.sender.try_send(RawInputEvent {
+                                    device_id,
+                                    t_us,
+                                    payload: RawInputPayload::RightButtonUp,
+                                });
+                            }
+                        }
+                    });
                 }
             }
         }

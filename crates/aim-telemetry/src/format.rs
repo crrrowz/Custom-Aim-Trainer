@@ -66,6 +66,10 @@ pub mod quality_flags {
     pub const FRAME_DROPS: u32 = 1 << 2;
     /// Bit 3 (8): Session was aborted before reaching trial count or target duration.
     pub const ABORTED: u32 = 1 << 3;
+    /// Bit 4 (16): Motion detected from a secondary/non-primary input device.
+    pub const SECONDARY_DEVICE_MOTION: u32 = 1 << 4;
+    /// Bit 5 (32): Primary device rate exceeded 1.1x configured polling rate during active motion.
+    pub const POLLING_RATE_ANOMALY: u32 = 1 << 5;
 }
 
 /// Header containing session metadata and environment setup.

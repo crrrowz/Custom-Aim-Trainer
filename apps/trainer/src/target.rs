@@ -32,11 +32,60 @@ pub struct TargetAssets {
     pub crosshair_material: Handle<StandardMaterial>,
 }
 
+/// Generates an unlit texture with a low-contrast 10° lat/long optic-flow grid.
+fn generate_optic_flow_image(images: &mut Assets<Image>) -> Handle<Image> {
+    const W: u32 = 1024;
+    const H: u32 = 512;
+    let mut data = vec![0u8; (W * H * 4) as usize];
+
+    for y in 0..H {
+        let lat_deg = (y as f64 / H as f64) * 180.0 - 90.0;
+        let is_lat_line = (lat_deg.abs() % 10.0) < 0.8;
+
+        for x in 0..W {
+            let lon_deg = (x as f64 / W as f64) * 360.0;
+            let is_lon_line = (lon_deg % 10.0) < 0.8;
+
+            let idx = ((y * W + x) * 4) as usize;
+            if is_lat_line || is_lon_line {
+                // Subtle contrast line: #1f2430
+                data[idx] = 31;
+                data[idx + 1] = 36;
+                data[idx + 2] = 48;
+                data[idx + 3] = 255;
+            } else {
+                // Dark background base: #0e1017
+                data[idx] = 14;
+                data[idx + 1] = 16;
+                data[idx + 2] = 23;
+                data[idx + 3] = 255;
+            }
+        }
+    }
+
+    let image = Image::new_fill(
+        bevy::render::render_resource::Extent3d {
+            width: W,
+            height: H,
+            depth_or_array_layers: 1,
+        },
+        bevy::render::render_resource::TextureDimension::D2,
+        &data,
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        bevy::asset::RenderAssetUsages::default(),
+    );
+
+    images.add(image)
+}
+
 pub fn setup_target_assets(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
+    let optic_flow_texture = generate_optic_flow_image(&mut images);
+
     // Unlit target materials
     let home_material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.2, 0.8, 1.0), // Cyan home target
@@ -56,9 +105,9 @@ pub fn setup_target_assets(
         ..default()
     });
 
-    // Dark neutral optic-flow background material with double-sided rendering
+    // Optic-flow background material with low-contrast lat/long grid texture
     let optic_flow_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.06, 0.07, 0.09), // Subtle dark backdrop (#0f1117)
+        base_color_texture: Some(optic_flow_texture),
         unlit: true,
         cull_mode: None, // Inward visible sphere
         ..default()
@@ -120,7 +169,8 @@ pub fn spawn_home_target(
 ) {
     let home_angles = ViewAngles::new(0.0, 0.0);
     let radius_deg = 0.5;
-    let linear_radius = distance_m * (radius_deg as f32).to_radians().tan();
+    // R = d * sin(r) for exact angular radius match
+    let linear_radius = distance_m * (radius_deg as f32).to_radians().sin();
 
     commands.spawn((
         Mesh3d(assets.home_mesh.clone()),
@@ -146,7 +196,8 @@ pub fn spawn_trial_target(
     now_s: f64,
 ) {
     let angles = ViewAngles::new(trial.yaw_deg, trial.pitch_deg);
-    let linear_radius = distance_m * (trial.radius_deg as f32).to_radians().tan();
+    // R = d * sin(r) for exact angular radius match
+    let linear_radius = distance_m * (trial.radius_deg as f32).to_radians().sin();
 
     commands.spawn((
         Mesh3d(assets.trial_mesh.clone()),

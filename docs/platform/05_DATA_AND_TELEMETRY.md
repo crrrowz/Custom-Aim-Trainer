@@ -19,7 +19,8 @@
 │  thresholds_version (للمرجعية فقط)          │
 │  quality_flags: u32 (bitmask: 1=FOCUS_LOST,│
 │    2=SETTINGS_CHANGED, 4=FRAME_DROPS,      │
-│    8=ABORTED)                              │
+│    8=ABORTED, 16=SECONDARY_DEVICE_MOTION, │
+│    32=POLLING_RATE_ANOMALY)                │
 ├────────────────────────────────────────────┤
 │ Streams (columnar, delta-encoded, zstd):   │
 │  input:   t_us[], dx[], dy[]               │  ← كل حدث raw
@@ -61,7 +62,7 @@ CREATE TABLE sessions (
   telemetry_sha256 TEXT NOT NULL,
   plan_id         TEXT,
   block_no        INTEGER,
-  quality_flags   INTEGER NOT NULL DEFAULT 0,  -- bitmask: 1=FOCUS_LOST, 2=SETTINGS_CHANGED, 4=FRAME_DROPS, 8=ABORTED
+  quality_flags   INTEGER NOT NULL DEFAULT 0,  -- bitmask: 1=FOCUS_LOST, 2=SETTINGS_CHANGED, 4=FRAME_DROPS, 8=ABORTED, 16=SECONDARY_DEVICE_MOTION, 32=POLLING_RATE_ANOMALY
   synced_at       TEXT
 );
 
