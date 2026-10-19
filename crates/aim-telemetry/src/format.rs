@@ -56,6 +56,18 @@ pub struct InputConfig {
     pub est_polling_hz: u32,
 }
 
+/// Quality flag bitmask constants for session validation and filtering.
+pub mod quality_flags {
+    /// Bit 0 (1): Window focus was lost during the session.
+    pub const FOCUS_LOST: u32 = 1 << 0;
+    /// Bit 1 (2): In-game sensitivity or hardware DPI settings changed mid-session.
+    pub const SETTINGS_CHANGED: u32 = 1 << 1;
+    /// Bit 2 (4): Excessive frame drops detected (p99 frame time > 2x p50).
+    pub const FRAME_DROPS: u32 = 1 << 2;
+    /// Bit 3 (8): Session was aborted before reaching trial count or target duration.
+    pub const ABORTED: u32 = 1 << 3;
+}
+
 /// Header containing session metadata and environment setup.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AftHeader {
@@ -72,6 +84,7 @@ pub struct AftHeader {
     pub display: DisplayConfig,
     pub input: InputConfig,
     pub thresholds_version: String,
+    pub quality_flags: u32,
 }
 
 /// Target category/mesh archetype.

@@ -28,6 +28,7 @@ fn canonical_v1_session() -> AftSession {
                 est_polling_hz: 1000,
             },
             thresholds_version: "thresholds.v1".to_string(),
+            quality_flags: 0,
         },
         streams: AftStreams {
             input: InputStream {
