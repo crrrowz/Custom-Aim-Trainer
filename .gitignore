@@ -1,0 +1,43 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Node / JS
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.uv/
+
+# AimForge Telemetry & Local Store
+*.aft
+*.sqlite
+*.sqlite3
+*.db
+
+# Security & History
+PowerShellHistory.txt
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+Thumbs.db
+[Dd]esktop.ini
