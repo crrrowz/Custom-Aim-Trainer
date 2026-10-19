@@ -17,8 +17,8 @@ use bevy::winit::{UpdateMode, WinitSettings};
 use std::collections::HashMap;
 use std::num::NonZero;
 use std::path::PathBuf;
-use std::time::Instant;
 use trainer::camera::{spawn_crosshair_ui, spawn_fps_camera, sync_camera_transform, FpsCamera};
+use trainer::clock::SessionClock;
 use trainer::raw_input::RawInputWorker;
 use trainer::recorder::{self, SessionRecorder};
 use trainer::target::{
@@ -49,13 +49,13 @@ pub enum AssessmentPhase {
 
 #[derive(Resource)]
 pub struct TrainerState {
-    pub start_instant: Instant,
+    pub clock: SessionClock,
     pub worker: RawInputWorker,
     pub recorder: SessionRecorder,
     pub event_count: u64,
     pub frame_times_us: Vec<u64>,
-    pub input_ages_us: Vec<u64>,
-    pub last_frame_instant: Instant,
+    pub input_latencies_us: Vec<u64>,
+    pub last_frame_t_us: u64,
     pub initial_startup_done: bool,
 
     // Per-device tracking to resolve multi-device shadowing / double counting
@@ -65,7 +65,6 @@ pub struct TrainerState {
     pub primary_device: Option<usize>,
     pub non_primary_events: u64,
     pub warmup_events_collected: u64,
-    pub latest_primary_input_t_us: Option<u64>,
 
     // Task 1.9 & Scenario state machine
     pub scenario_def: Scenario,
@@ -75,7 +74,7 @@ pub struct TrainerState {
     pub next_target_id: u32,
     pub hits_count: u32,
     pub misses_count: u32,
-    pub trial_start_instant: Instant,
+    pub trial_start_t_us: u64,
 }
 
 fn parse_cli_args() -> TrainerConfig {
@@ -145,6 +144,14 @@ fn parse_cli_args() -> TrainerConfig {
         }
     }
 
+    // Fix 4: Validate mutually incompatible configurations
+    if backend == "dx12" && fullscreen_exclusive {
+        eprintln!(
+            "ERROR: The combination '--backend dx12 --exclusive' is unsupported by wgpu_hal::dx12 on Windows (causes DXGI_ERROR_INVALID_CALL 0x887A0001). Please use Borderless Fullscreen (default) or select '--backend vulkan' for exclusive fullscreen."
+        );
+        std::process::exit(1);
+    }
+
     TrainerConfig {
         scenario,
         seed,
@@ -162,6 +169,8 @@ fn parse_cli_args() -> TrainerConfig {
 
 fn setup_trainer(mut commands: Commands, config: Res<TrainerConfig>) {
     let worker = RawInputWorker::spawn();
+    let clock = SessionClock::new(worker.qpc_start, worker.qpc_freq);
+
     let recorder = SessionRecorder::new(recorder::RecorderSetup {
         session_id: uuid::Uuid::new_v4().to_string(),
         scenario_id: config.scenario.clone(),
@@ -178,14 +187,16 @@ fn setup_trainer(mut commands: Commands, config: Res<TrainerConfig>) {
         ron::from_str(ron_str).expect("Failed parsing assess.v1.flick_static.ron");
     let trials = generate_trials(&scenario_def, config.seed);
 
+    let initial_t = clock.now_us();
+
     commands.insert_resource(TrainerState {
-        start_instant: Instant::now(),
+        clock,
         worker,
         recorder,
         event_count: 0,
         frame_times_us: Vec::with_capacity(20_000),
-        input_ages_us: Vec::with_capacity(20_000),
-        last_frame_instant: Instant::now(),
+        input_latencies_us: Vec::with_capacity(50_000),
+        last_frame_t_us: initial_t,
         initial_startup_done: false,
 
         device_counts: HashMap::new(),
@@ -194,7 +205,6 @@ fn setup_trainer(mut commands: Commands, config: Res<TrainerConfig>) {
         primary_device: None,
         non_primary_events: 0,
         warmup_events_collected: 0,
-        latest_primary_input_t_us: None,
 
         scenario_def,
         trials,
@@ -203,7 +213,7 @@ fn setup_trainer(mut commands: Commands, config: Res<TrainerConfig>) {
         next_target_id: 1,
         hits_count: 0,
         misses_count: 0,
-        trial_start_instant: Instant::now(),
+        trial_start_t_us: initial_t,
     });
 }
 
@@ -275,6 +285,7 @@ fn drain_and_evaluate_input_system(
     target_query: Query<(Entity, &ActiveTargetMarker)>,
 ) {
     let deg_per_count = VALORANT_YAW_DEG_PER_COUNT * config.sens;
+    let render_start_t_us = state.clock.now_us();
 
     let mut batch = Vec::new();
     while let Ok(event) = state.worker.receiver.try_recv() {
@@ -296,9 +307,8 @@ fn drain_and_evaluate_input_system(
 
     if state.primary_device.is_none() {
         state.warmup_events_collected += batch.len() as u64;
-        if state.warmup_events_collected >= 200
-            || state.start_instant.elapsed().as_secs_f64() >= 1.0
-        {
+        let elapsed_s = SessionClock::us_to_s(state.clock.now_us());
+        if state.warmup_events_collected >= 200 || elapsed_s >= 1.0 {
             let best_dev = state
                 .device_counts
                 .iter()
@@ -318,17 +328,22 @@ fn drain_and_evaluate_input_system(
     let actions =
         trainer::replay::replay_input(&mut current_angles, &batch, primary_id, deg_per_count);
 
+    // Fix 1: True per-event input latency metric: render_start_t_us - event.t_us for events applied in this frame
     for action in actions {
         match action {
             trainer::replay::ReplayAction::Motion { t_us, dx, dy } => {
                 state.recorder.record_input(t_us, dx, dy);
-                state.latest_primary_input_t_us = Some(t_us);
+                if render_start_t_us >= t_us {
+                    state.input_latencies_us.push(render_start_t_us - t_us);
+                }
             }
             trainer::replay::ReplayAction::Click {
                 t_us,
                 angles_at_click,
             } => {
-                state.latest_primary_input_t_us = Some(t_us);
+                if render_start_t_us >= t_us {
+                    state.input_latencies_us.push(render_start_t_us - t_us);
+                }
                 let mut hit_target_id = None;
                 let mut hitzone = HitZone::None;
 
@@ -349,7 +364,8 @@ fn drain_and_evaluate_input_system(
                             state.phase = AssessmentPhase::AwaitingTrialTarget;
                         } else {
                             state.hits_count += 1;
-                            let trial_elapsed = state.trial_start_instant.elapsed().as_secs_f64();
+                            let trial_elapsed =
+                                SessionClock::us_to_s(t_us.saturating_sub(state.trial_start_t_us));
                             println!(
                                 "[Trial {}/96] HIT! Time: {:.3}s (Dist: {:.2}°). Hits: {}, Misses: {}",
                                 state.current_trial_idx + 1,
@@ -405,8 +421,8 @@ fn drain_and_evaluate_input_system(
         None => return,
     };
 
-    let now_s = state.start_instant.elapsed().as_secs_f64();
-    let current_qpc_t = state.start_instant.elapsed().as_micros() as u64;
+    let now_qpc_us = state.clock.now_us();
+    let now_qpc_s = SessionClock::us_to_s(now_qpc_us);
 
     if target_query.iter().next().is_none() && state.phase != AssessmentPhase::Completed {
         let tid = state.next_target_id;
@@ -419,11 +435,11 @@ fn drain_and_evaluate_input_system(
                     &assets,
                     state.scenario_def.spawn_distance_m as f32,
                     tid,
-                    now_s,
+                    now_qpc_s,
                 );
                 state
                     .recorder
-                    .record_target_spawn(tid, current_qpc_t, 0, 0.5, 0.0, 0.0);
+                    .record_target_spawn(tid, now_qpc_us, 0, 0.5, 0.0, 0.0);
             }
             AssessmentPhase::AwaitingTrialTarget => {
                 if state.current_trial_idx < state.trials.len() {
@@ -434,17 +450,17 @@ fn drain_and_evaluate_input_system(
                         &trial,
                         state.scenario_def.spawn_distance_m as f32,
                         tid,
-                        now_s,
+                        now_qpc_s,
                     );
                     state.recorder.record_target_spawn(
                         tid,
-                        current_qpc_t,
+                        now_qpc_us,
                         0,
                         trial.radius_deg,
                         trial.yaw_deg,
                         trial.pitch_deg,
                     );
-                    state.trial_start_instant = Instant::now();
+                    state.trial_start_t_us = now_qpc_us;
                 } else {
                     state.phase = AssessmentPhase::Completed;
                 }
@@ -454,7 +470,8 @@ fn drain_and_evaluate_input_system(
     }
 
     if state.phase == AssessmentPhase::AwaitingTrialTarget {
-        let trial_elapsed_s = state.trial_start_instant.elapsed().as_secs_f64();
+        let trial_elapsed_s =
+            SessionClock::us_to_s(now_qpc_us.saturating_sub(state.trial_start_t_us));
         if trial_elapsed_s >= state.scenario_def.trial_timeout_s {
             state.misses_count += 1;
             println!(
@@ -479,22 +496,12 @@ fn drain_and_evaluate_input_system(
     }
 }
 
-/// Item 3: Frame time and Input Age tracking system.
-///
-/// Input age = (current render-start QPC t_us) - (t_us of newest applied raw input event).
-fn track_frame_and_input_age_system(mut state: ResMut<TrainerState>) {
-    let now = Instant::now();
-    let frame_us = now.duration_since(state.last_frame_instant).as_micros() as u64;
-    state.last_frame_instant = now;
+fn track_frame_time_system(mut state: ResMut<TrainerState>) {
+    let now_us = state.clock.now_us();
+    let frame_us = now_us.saturating_sub(state.last_frame_t_us);
+    state.last_frame_t_us = now_us;
     state.frame_times_us.push(frame_us);
-
-    let render_start_qpc_t = state.start_instant.elapsed().as_micros() as u64;
-    if let Some(newest_input_t) = state.latest_primary_input_t_us {
-        if render_start_qpc_t >= newest_input_t {
-            let input_age = render_start_qpc_t - newest_input_t;
-            state.input_ages_us.push(input_age);
-        }
-    }
+    state.recorder.record_frame(now_us, now_us);
 }
 
 fn session_lifecycle_system(
@@ -502,7 +509,7 @@ fn session_lifecycle_system(
     mut state: ResMut<TrainerState>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    let elapsed_s = state.start_instant.elapsed().as_secs_f64();
+    let elapsed_s = SessionClock::us_to_s(state.clock.now_us());
     let completed_all = state.phase == AssessmentPhase::Completed;
 
     if elapsed_s >= config.duration_s || completed_all {
@@ -567,7 +574,11 @@ fn session_lifecycle_system(
                     let u500 = sorted.iter().filter(|&&dt| dt < 500).count();
                     let o2000 = sorted.iter().filter(|&&dt| dt > 2000).count();
                     let act_s = sorted.iter().sum::<u64>() as f64 / 1_000_000.0;
-                    let rate = if act_s > 0.0 { c as f64 / act_s } else { 0.0 };
+                    let rate = if act_s > 0.0 {
+                        c as f64 / act_s
+                    } else {
+                        0.0
+                    };
 
                     println!(
                         "  -> Active Rate: {:.1} ev/s | p50={}us, p95={}us, p99={}us, max={}us",
@@ -581,7 +592,6 @@ fn session_lifecycle_system(
                         o2000 as f64 * 100.0 / c as f64
                     );
 
-                    // Polling rate anomaly check: rate > 1.1 * 1000Hz
                     if is_primary && rate > 1100.0 {
                         rate_exceeded = true;
                     }
@@ -607,24 +617,33 @@ fn session_lifecycle_system(
                 f_p50, f_p99
             );
             if (f_p50 - 6.06).abs() < 0.2 {
-                println!("NOTE: Frame time p50 ~6.06ms indicates an external display/driver cap (e.g. NVIDIA Control Panel Vertical Sync, G-Sync, or DWM scanout lock at 165Hz).");
+                println!(
+                    "NOTE: Frame time p50 ~6.06ms indicates an external display/driver cap (e.g. NVIDIA Control Panel Vertical Sync, G-Sync, or DWM scanout lock at 165Hz)."
+                );
             }
         }
 
-        if !state.input_ages_us.is_empty() {
-            let mut ages = state.input_ages_us.clone();
-            ages.sort_unstable();
-            let a_len = ages.len();
-            let a_p50 = ages[a_len * 50 / 100];
-            let a_p99 = ages[a_len * 99 / 100];
-            println!("\n--- Input Age Metrics (Render Start - Newest Input) ---");
+        // True per-event input latency (render start - event capture time)
+        if !state.input_latencies_us.is_empty() {
+            let mut lats = state.input_latencies_us.clone();
+            lats.sort_unstable();
+            let l_len = lats.len();
+            let l_p50 = lats[l_len * 50 / 100];
+            let l_p95 = lats[l_len * 95 / 100];
+            let l_p99 = lats[l_len * 99 / 100];
+            let l_max = lats[l_len - 1];
+            println!("\n--- Per-Event Input Latency (Render Start - Event Timestamp) ---");
             println!(
-                "Input age (us): p50 = {}us ({:.2}ms), p99 = {}us ({:.2}ms) (sample count: {})",
-                a_p50,
-                a_p50 as f64 / 1000.0,
-                a_p99,
-                a_p99 as f64 / 1000.0,
-                a_len
+                "Latency (us): p50 = {}us ({:.2}ms), p95 = {}us ({:.2}ms), p99 = {}us ({:.2}ms), max = {}us ({:.2}ms) (sample count: {})",
+                l_p50,
+                l_p50 as f64 / 1000.0,
+                l_p95,
+                l_p95 as f64 / 1000.0,
+                l_p99,
+                l_p99 as f64 / 1000.0,
+                l_max,
+                l_max as f64 / 1000.0,
+                l_len
             );
         }
 
@@ -745,7 +764,7 @@ fn main() {
         )
         .add_systems(
             PostUpdate,
-            (track_frame_and_input_age_system, session_lifecycle_system),
+            (track_frame_time_system, session_lifecycle_system),
         )
         .run();
 }
