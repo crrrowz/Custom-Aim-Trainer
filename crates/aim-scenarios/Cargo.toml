@@ -9,6 +9,7 @@ rust-version.workspace = true
 aim-core = { path = "../aim-core" }
 aim-telemetry = { path = "../aim-telemetry" }
 serde = { workspace = true }
+ron = "0.8"
 rand_core = "0.10.1"
 rand_chacha = "=0.10.0"
 
