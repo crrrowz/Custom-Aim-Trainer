@@ -27,6 +27,8 @@ pub enum ReadError {
     OversizedLength { declared: usize, limit: usize },
     #[error("Decompressed size mismatch: declared {declared}, got {actual}")]
     LengthMismatch { declared: usize, actual: usize },
+    #[error("Footer directory length mismatch: expected {expected}, got {actual}")]
+    FooterDirectoryLengthMismatch { expected: u16, actual: u16 },
     #[error("Integer overflow in buffer arithmetic")]
     Overflow,
 }
@@ -150,6 +152,16 @@ pub fn parse_footer_v1(data: &[u8]) -> Result<(AftFooter, usize), ReadError> {
             compressed_len: comp,
             uncompressed_len: uncomp,
         };
+    }
+
+    // Validate 2-byte footer directory length field (covers 12B header entry + 84B stream entries = 96B)
+    let declared_footer_len = u16::from_le_bytes(data[cursor..cursor + 2].try_into().unwrap());
+    let expected_footer_len = (12 + (NUM_STREAMS_V1 * 12)) as u16; // 96 bytes
+    if declared_footer_len != expected_footer_len {
+        return Err(ReadError::FooterDirectoryLengthMismatch {
+            expected: expected_footer_len,
+            actual: declared_footer_len,
+        });
     }
 
     let footer = AftFooter {

@@ -135,6 +135,27 @@ mod tests {
     }
 
     #[test]
+    fn test_invalid_footer_directory_length_rejected() {
+        let original = sample_session();
+        let mut bytes = write_aft(&original).expect("Serialization failed");
+
+        let footer_dir_len_offset = bytes.len() - 6; // 2B directory length before 4B CRC
+        bytes[footer_dir_len_offset] ^= 0x01;
+
+        // Recompute valid CRC
+        let crc_offset = bytes.len() - 4;
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&bytes[..crc_offset]);
+        let new_crc = hasher.finalize();
+        bytes[crc_offset..].copy_from_slice(&new_crc.to_le_bytes());
+
+        match read_aft(&bytes) {
+            Err(ReadError::FooterDirectoryLengthMismatch { .. }) => (),
+            other => panic!("Expected FooterDirectoryLengthMismatch, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_truncated_file_rejected() {
         let original = sample_session();
         let bytes = write_aft(&original).expect("Serialization failed");
