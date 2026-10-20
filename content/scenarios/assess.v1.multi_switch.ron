@@ -7,7 +7,7 @@ Scenario(
     target_shape: Sphere,
     layout: ConcurrentCluster(
         concurrent_count: 3,
-        total_targets: 45,
+        total_targets: 48, // Balanced multiple of 24 (3 distances x 8 octants x 2 reps)
         target_radius_deg: 0.55,
         distance_bins_deg: [10.0, 20.0, 35.0],
         octants: 8,

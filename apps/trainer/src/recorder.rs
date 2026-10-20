@@ -11,12 +11,25 @@ use std::path::PathBuf;
 pub struct RecorderSetup {
     pub session_id: String,
     pub scenario_id: String,
+    pub form: Option<u32>,
     pub seed: u64,
     pub dpi: u32,
     pub sens: f64,
     pub width: u32,
     pub height: u32,
     pub hz: u32,
+}
+
+/// A target spawn to append to the telemetry target stream.
+pub struct TargetSpawn {
+    pub id: u32,
+    pub spawn_t_us: u64,
+    pub despawn_t_us: u64,
+    pub kind: TargetKind,
+    pub radius_deg: f64,
+    pub yaw_deg: f64,
+    pub pitch_deg: f64,
+    pub path_spline: Option<String>,
 }
 
 pub struct SessionRecorder {
@@ -72,15 +85,28 @@ impl SessionRecorder {
         yaw_deg: f64,
         pitch_deg: f64,
     ) {
-        self.streams.targets.records.push(TargetRecord {
+        self.record_target_spawn_full(TargetSpawn {
             id,
             spawn_t_us,
             despawn_t_us,
             kind: TargetKind::Sphere,
+            radius_deg,
+            yaw_deg,
+            pitch_deg,
+            path_spline: None,
+        });
+    }
+
+    pub fn record_target_spawn_full(&mut self, spawn: TargetSpawn) {
+        self.streams.targets.records.push(TargetRecord {
+            id: spawn.id,
+            spawn_t_us: spawn.spawn_t_us,
+            despawn_t_us: spawn.despawn_t_us,
+            kind: spawn.kind,
             params: TargetParams {
-                radius_deg,
-                initial_pos: [yaw_deg, pitch_deg, 15.0],
-                path_spline: None,
+                radius_deg: spawn.radius_deg,
+                initial_pos: [spawn.yaw_deg, spawn.pitch_deg, 15.0],
+                path_spline: spawn.path_spline,
             },
         });
     }
@@ -98,7 +124,7 @@ impl SessionRecorder {
                 trainer_version: "0.1.0".to_string(),
                 scenario_id: self.setup.scenario_id.clone(),
                 scenario_version: 1,
-                form: Some(1),
+                form: self.setup.form,
                 seed: self.setup.seed,
                 game_profile: "valorant.v1".to_string(),
                 mouse: MouseConfig {

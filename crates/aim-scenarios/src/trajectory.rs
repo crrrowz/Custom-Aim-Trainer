@@ -6,8 +6,8 @@ use aim_core::ViewAngles;
 
 /// Computes the exact target ViewAngles at microsecond timestamp `t_us` for a tracking trajectory.
 ///
-/// Implements exact constant speed: integrates arc length `s = speed_deg_s * t`,
-/// keeping `||v|| = speed_deg_s` everywhere across the continuous path.
+/// Implements exact constant speed: integrates geodesic steps directly on the unit sphere
+/// ensuring `||v|| = speed_deg_s` everywhere within ±5% across the entire course.
 pub fn target_angles_at(trajectory: &TrackingTrajectory, seed: u64, t_us: u64) -> ViewAngles {
     let t_s = t_us as f64 / 1_000_000.0;
 
@@ -21,50 +21,47 @@ pub fn target_angles_at(trajectory: &TrackingTrajectory, seed: u64, t_us: u64) -
             let mut rng = create_seeded_rng(seed);
             let heading_noise_seed = sample_range_f64(&mut rng, 0.0, 1000.0);
 
-            // Integrate trajectory with small time step to guarantee exact arc-length speed
-            let dt = 0.005; // 5ms step
+            // Micro-step integration (0.2ms)
+            let dt = 0.0002;
             let mut cur_t = 0.0;
-            let mut x = 0.0f64;
-            let mut y = 0.0f64;
-            let mut heading_rad = 0.0f64;
-
-            let max_turn_rate_rad = max_turn_rate_deg_s.to_radians();
+            let mut yaw_deg = 0.0f64;
+            let mut pitch_deg = 0.0f64;
+            let mut heading_rad = 0.45f64;
+            let max_turn_rad_s = max_turn_rate_deg_s.to_radians();
 
             while cur_t < t_s {
                 let step = (t_s - cur_t).min(dt);
-                // Heading rate of change modulated smoothly
-                let turn = (2.0 * std::f64::consts::PI * 0.25 * cur_t + heading_noise_seed).sin()
-                    * max_turn_rate_rad;
+
+                let turn = (2.0 * std::f64::consts::PI * 0.15 * cur_t + heading_noise_seed).sin()
+                    * max_turn_rad_s;
                 heading_rad += turn * step;
 
-                let dx = speed_deg_s * heading_rad.cos() * step;
-                let dy = speed_deg_s * heading_rad.sin() * step;
+                let vx = heading_rad.cos();
+                let vy = heading_rad.sin();
 
-                x += dx;
-                y += dy;
+                let dpitch = speed_deg_s * vy * step;
+                let cos_p = pitch_deg.to_radians().cos().max(0.1);
+                let dyaw = (speed_deg_s * vx / cos_p) * step;
+
+                let next_yaw = yaw_deg + dyaw;
+                let next_pitch = pitch_deg + dpitch;
+
+                if next_yaw.abs() > *max_yaw_deg {
+                    heading_rad = vy.atan2(-vx);
+                } else {
+                    yaw_deg = next_yaw;
+                }
+
+                if next_pitch.abs() > *max_pitch_deg {
+                    heading_rad = (-vy).atan2(vx);
+                } else {
+                    pitch_deg = next_pitch;
+                }
 
                 cur_t += step;
             }
 
-            // Smooth triangular wave reflection across bounds
-            let yaw_span = 2.0 * max_yaw_deg;
-            let pitch_span = 2.0 * max_pitch_deg;
-
-            let norm_x = (x % (2.0 * yaw_span) + 2.0 * yaw_span) % (2.0 * yaw_span);
-            let yaw = if norm_x > yaw_span {
-                2.0 * yaw_span - norm_x - max_yaw_deg
-            } else {
-                norm_x - max_yaw_deg
-            };
-
-            let norm_y = (y % (2.0 * pitch_span) + 2.0 * pitch_span) % (2.0 * pitch_span);
-            let pitch = if norm_y > pitch_span {
-                2.0 * pitch_span - norm_y - max_pitch_deg
-            } else {
-                norm_y - max_pitch_deg
-            };
-
-            ViewAngles::new(yaw, pitch)
+            ViewAngles::new(yaw_deg, pitch_deg)
         }
         TrackingTrajectory::ReactiveStrafe {
             speed_deg_s,

@@ -16,6 +16,9 @@ pub struct ActiveTargetMarker {
 #[derive(Component)]
 pub struct OpticFlowSphere;
 
+#[derive(Component)]
+pub struct OccluderWallMarker;
+
 #[derive(Resource)]
 pub struct TargetAssets {
     pub home_mesh: Handle<Mesh>,
@@ -27,11 +30,13 @@ pub struct TargetAssets {
     pub optic_flow_material: Handle<StandardMaterial>,
     pub occluder_mesh: Handle<Mesh>,
     pub occluder_material: Handle<StandardMaterial>,
+    pub slit_mesh: Handle<Mesh>,
+    pub slit_material: Handle<StandardMaterial>,
 }
 
 /// Generates an unlit texture for the optic-flow sphere.
 /// When `disable_latitude` is true (e.g. for A3 Head-Level Peeks), horizontal latitudinal lines
-/// are omitted to prevent leaking a visual horizon cue to the player.
+/// are omitted to prevent leaking an artificial horizontal horizon cue to the player.
 pub fn generate_optic_flow_image(
     images: &mut Assets<Image>,
     disable_latitude: bool,
@@ -85,8 +90,18 @@ pub fn setup_target_assets(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    scenario_res: Option<Res<crate::ScenarioResource>>,
 ) {
-    let optic_flow_texture = generate_optic_flow_image(&mut images, false);
+    let is_peeks = scenario_res
+        .map(|s| {
+            matches!(
+                s.0.layout,
+                aim_scenarios::schema::TargetLayout::HeadLevelPeeks { .. }
+            )
+        })
+        .unwrap_or(false);
+
+    let optic_flow_texture = generate_optic_flow_image(&mut images, is_peeks);
 
     let home_material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.2, 0.8, 1.0), // Cyan home target
@@ -113,18 +128,25 @@ pub fn setup_target_assets(
         ..default()
     });
 
-    // Tall featureless occluder wall material (matches background #0e1017)
     let occluder_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.09, 0.10, 0.14),
+        base_color: Color::srgb(0.09, 0.10, 0.14), // Dark neutral occluder
+        unlit: true,
+        ..default()
+    });
+
+    let slit_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.18, 0.22, 0.30), // Neutral vertical slit (no pitch cue)
         unlit: true,
         ..default()
     });
 
     let sphere_mesh = meshes.add(Sphere::new(1.0).mesh().ico(3).unwrap());
     let backdrop_mesh = meshes.add(Sphere::new(40.0).mesh().ico(4).unwrap());
-    let wall_mesh = meshes.add(Cuboid::new(0.5, 30.0, 0.1));
+    // Tall featureless occluder wall (1.0m width, 40m height) with no horizontal cues
+    let wall_mesh = meshes.add(Cuboid::new(1.0, 40.0, 0.1));
+    // Neutral vertical hold slit spanning +/- 12 degrees vertically
+    let slit_mesh = meshes.add(Cuboid::new(0.04, 6.0, 0.05));
 
-    // Spawn camera-centered optic-flow inward sphere
     commands.spawn((
         Mesh3d(backdrop_mesh.clone()),
         MeshMaterial3d(optic_flow_material.clone()),
@@ -142,6 +164,8 @@ pub fn setup_target_assets(
         optic_flow_material,
         occluder_mesh: wall_mesh,
         occluder_material,
+        slit_mesh,
+        slit_material,
     });
 }
 

@@ -3,6 +3,7 @@ fn test_trainer_session_aft_roundtrip() {
     let mut recorder = trainer::recorder::SessionRecorder::new(trainer::recorder::RecorderSetup {
         session_id: "018f4a38-5182-7212-bf96-b0ad511b81b2".to_string(),
         scenario_id: "assess.v1.flick_static".to_string(),
+        form: Some(0),
         seed: 42,
         dpi: 800,
         sens: 0.35,

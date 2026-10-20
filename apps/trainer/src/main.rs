@@ -24,6 +24,7 @@ use trainer::recorder::{self, SessionRecorder};
 use trainer::target::{
     setup_target_assets, spawn_home_target, spawn_trial_target, ActiveTargetMarker, TargetAssets,
 };
+use trainer::ScenarioResource;
 
 #[derive(Resource)]
 pub struct TrainerConfig {
@@ -38,6 +39,15 @@ pub struct TrainerConfig {
     pub present_mode_str: String,
     pub max_frame_latency: u32,
     pub output_path: Option<PathBuf>,
+}
+
+/// Seed used to generate this session's trials, derived alongside the scenario
+/// before the app runs. `form` is the battery parallel-form index the seed was
+/// derived from, or `None` when the seed came straight from `--seed`.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct ScenarioSeed {
+    pub seed: u64,
+    pub form: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,14 +177,53 @@ fn parse_cli_args() -> TrainerConfig {
     }
 }
 
-fn setup_trainer(mut commands: Commands, config: Res<TrainerConfig>) {
+/// Loads the scenario definition referenced by the CLI args, falling back to
+/// the embedded `assess.v1.flick_static` definition. Returns the scenario and
+/// the seed to drive trial generation with.
+fn load_scenario(config: &TrainerConfig) -> (Scenario, ScenarioSeed) {
+    const FALLBACK_RON: &str =
+        include_str!("../../../content/scenarios/assess.v1.flick_static.ron");
+    let parse_fallback = || -> Scenario {
+        ron::from_str(FALLBACK_RON).expect("Failed parsing assess.v1.flick_static.ron")
+    };
+
+    let cli_seed = ScenarioSeed {
+        seed: config.seed,
+        form: None,
+    };
+
+    if config.scenario == "assess.v1.flick_static" {
+        return (parse_fallback(), cli_seed);
+    }
+
+    let path = format!("content/scenarios/{}.ron", config.scenario);
+    match std::fs::read_to_string(&path) {
+        Ok(ron_str) => {
+            let sc: Scenario = ron::from_str(&ron_str).expect("Failed parsing scenario file");
+            let seed = ScenarioSeed {
+                seed: aim_scenarios::derive_scenario_seed(0, &sc.id),
+                form: Some(0),
+            };
+            (sc, seed)
+        }
+        Err(_) => (parse_fallback(), cli_seed),
+    }
+}
+
+fn setup_trainer(
+    mut commands: Commands,
+    config: Res<TrainerConfig>,
+    scenario_res: Res<ScenarioResource>,
+    scenario_seed: Res<ScenarioSeed>,
+) {
     let worker = RawInputWorker::spawn();
     let clock = SessionClock::new(worker.qpc_start, worker.qpc_freq);
 
     let recorder = SessionRecorder::new(recorder::RecorderSetup {
         session_id: uuid::Uuid::new_v4().to_string(),
         scenario_id: config.scenario.clone(),
-        seed: config.seed,
+        form: scenario_seed.form,
+        seed: scenario_seed.seed,
         dpi: config.dpi,
         sens: config.sens,
         width: 1920,
@@ -182,27 +231,10 @@ fn setup_trainer(mut commands: Commands, config: Res<TrainerConfig>) {
         hz: 240,
     });
 
-    let (scenario_def, seed) = if config.scenario == "assess.v1.flick_static" {
-        let ron_str = include_str!("../../../content/scenarios/assess.v1.flick_static.ron");
-        let sc: Scenario =
-            ron::from_str(ron_str).expect("Failed parsing assess.v1.flick_static.ron");
-        (sc, config.seed)
-    } else {
-        // Look up scenario from content/scenarios/
-        let path = format!("content/scenarios/{}.ron", config.scenario);
-        if let Ok(ron_str) = std::fs::read_to_string(&path) {
-            let sc: Scenario = ron::from_str(&ron_str).expect("Failed parsing scenario file");
-            let s = aim_scenarios::derive_scenario_seed(0, &sc.id);
-            (sc, s)
-        } else {
-            let ron_str = include_str!("../../../content/scenarios/assess.v1.flick_static.ron");
-            let sc: Scenario =
-                ron::from_str(ron_str).expect("Failed parsing assess.v1.flick_static.ron");
-            (sc, config.seed)
-        }
-    };
-
-    let trials = generate_trials(&scenario_def, seed);
+    // The scenario was resolved before the app ran so that this crate's
+    // Startup systems (asset setup) can branch on its layout.
+    let scenario_def = scenario_res.0.clone();
+    let trials = generate_trials(&scenario_def, scenario_seed.seed);
 
     let initial_t = clock.now_us();
 
@@ -700,6 +732,7 @@ fn lock_cursor_startup(mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindo
 
 fn main() {
     let config = parse_cli_args();
+    let (scenario_def, scenario_seed) = load_scenario(&config);
 
     let window_mode = if config.windowed {
         WindowMode::Windowed
@@ -734,6 +767,8 @@ fn main() {
 
     App::new()
         .insert_resource(config)
+        .insert_resource(ScenarioResource(scenario_def))
+        .insert_resource(scenario_seed)
         .insert_resource(WinitSettings {
             focused_mode: UpdateMode::Continuous,
             unfocused_mode: UpdateMode::Continuous,
