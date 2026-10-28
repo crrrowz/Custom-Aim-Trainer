@@ -39,3 +39,4 @@ bevy = { version = "=0.20.0", default-features = false, features = [
     "multi_threaded",
     "default_font"
 ] }
+ttf-parser = "0.25"
