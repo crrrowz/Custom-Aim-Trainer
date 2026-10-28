@@ -6,13 +6,15 @@
 //! - Tracking (A4, A5)
 //! - ConcurrentCluster (A6)
 
+use aim_core::camera::angular_distance;
 use aim_core::geometry::SphericalTarget;
 use aim_core::ViewAngles;
 use aim_scenarios::generator::PeekTrial;
 use aim_scenarios::schema::{TargetLayout, TrackingTrajectory};
 use aim_scenarios::trajectory::TrajectoryIntegrator;
 use aim_scenarios::{
-    generate_cluster_candidates, generate_fitts_trials, generate_peek_trials, Scenario, Trial,
+    generate_cluster_candidates, generate_fitts_trials, generate_peek_trials,
+    target_angles_from_bearing, Scenario, Trial,
 };
 use bevy::prelude::*;
 
@@ -79,9 +81,11 @@ pub enum LayoutEngineState {
         total_targets: u32,
         spawned_count: u32,
         concurrent_count: u32,
+        target_radius_deg: f64,
         min_separation_deg: f64,
         max_yaw_deg: f64,
         max_pitch_deg: f64,
+        active_targets: Vec<(u32, ViewAngles)>,
     },
 }
 
@@ -129,6 +133,7 @@ impl LayoutEngineState {
             TargetLayout::ConcurrentCluster {
                 concurrent_count,
                 total_targets,
+                target_radius_deg,
                 min_separation_deg,
                 max_yaw_deg,
                 max_pitch_deg,
@@ -141,9 +146,11 @@ impl LayoutEngineState {
                     total_targets: *total_targets,
                     spawned_count: 0,
                     concurrent_count: *concurrent_count,
+                    target_radius_deg: *target_radius_deg,
                     min_separation_deg: *min_separation_deg,
                     max_yaw_deg: *max_yaw_deg,
                     max_pitch_deg: *max_pitch_deg,
+                    active_targets: Vec::new(),
                 }
             }
         }
@@ -174,8 +181,9 @@ impl LayoutEngineState {
             Self::Cluster {
                 spawned_count,
                 total_targets,
+                active_targets,
                 ..
-            } => *spawned_count >= *total_targets,
+            } => *spawned_count >= *total_targets && active_targets.is_empty(),
         }
     }
 
@@ -502,11 +510,115 @@ impl LayoutEngineState {
 
     // --- Cluster Handlers ---
 
-    pub fn handle_cluster_spawn(&mut self, _next_target_id: &mut u32) {}
+    pub fn handle_cluster_spawn(
+        &mut self,
+        next_target_id: &mut u32,
+        spawn_distance_m: f32,
+    ) -> Option<ClusterSpawnAction> {
+        if let Self::Cluster {
+            candidates,
+            next_cand_idx,
+            total_targets,
+            spawned_count,
+            concurrent_count,
+            target_radius_deg,
+            min_separation_deg,
+            max_yaw_deg,
+            max_pitch_deg,
+            active_targets,
+        } = self
+        {
+            if *spawned_count >= *total_targets
+                || active_targets.len() >= *concurrent_count as usize
+                || *next_cand_idx >= candidates.len()
+            {
+                return None;
+            }
 
-    pub fn handle_cluster_hit(&mut self, _target_id: u32) {}
+            // Find next candidate in order that satisfies min_separation_deg with currently active targets
+            let mut chosen_idx = None;
+            let mut chosen_angles = ViewAngles::new(0.0, 0.0);
 
-    pub fn handle_cluster_timeout(&mut self, _now_qpc_us: u64) {}
+            for (search_idx, &(dist, octant)) in candidates.iter().enumerate().skip(*next_cand_idx)
+            {
+                let bearing_deg = octant as f64 * 45.0;
+                let (mut yaw, mut pitch) = target_angles_from_bearing(dist, bearing_deg);
+                yaw = yaw.clamp(-*max_yaw_deg, *max_yaw_deg);
+                pitch = pitch.clamp(-*max_pitch_deg, *max_pitch_deg);
+                let candidate_angles = ViewAngles::new(yaw, pitch);
+
+                let satisfies_sep = active_targets.iter().all(|(_, active_angles)| {
+                    angular_distance(candidate_angles, *active_angles) >= *min_separation_deg
+                });
+
+                if satisfies_sep {
+                    chosen_idx = Some(search_idx);
+                    chosen_angles = candidate_angles;
+                    break;
+                }
+            }
+
+            let search_idx = chosen_idx.unwrap_or(*next_cand_idx);
+            // Move chosen candidate to next_cand_idx position so all candidates are spawned without loss
+            if search_idx != *next_cand_idx {
+                candidates.swap(*next_cand_idx, search_idx);
+            }
+
+            let (dist, octant) = candidates[*next_cand_idx];
+            if chosen_idx.is_none() {
+                let bearing_deg = octant as f64 * 45.0;
+                let (mut yaw, mut pitch) = target_angles_from_bearing(dist, bearing_deg);
+                yaw = yaw.clamp(-*max_yaw_deg, *max_yaw_deg);
+                pitch = pitch.clamp(-*max_pitch_deg, *max_pitch_deg);
+                chosen_angles = ViewAngles::new(yaw, pitch);
+            }
+
+            let tid = *next_target_id;
+            *next_target_id += 1;
+            *next_cand_idx += 1;
+            *spawned_count += 1;
+
+            active_targets.push((tid, chosen_angles));
+
+            Some(ClusterSpawnAction {
+                target_id: tid,
+                angles: chosen_angles,
+                radius_deg: *target_radius_deg,
+                distance_m: spawn_distance_m,
+                distance_bin_deg: dist,
+                octant,
+                spawned_index: (*spawned_count - 1) as usize,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn handle_cluster_hit(&mut self, hit_target_id: u32) -> Option<ClusterHitOutcome> {
+        if let Self::Cluster {
+            active_targets,
+            total_targets,
+            spawned_count,
+            ..
+        } = self
+        {
+            if let Some(pos) = active_targets
+                .iter()
+                .position(|(id, _)| *id == hit_target_id)
+            {
+                active_targets.remove(pos);
+                let completed = *spawned_count >= *total_targets && active_targets.is_empty();
+                Some(ClusterHitOutcome {
+                    target_id: hit_target_id,
+                    completed,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -594,4 +706,21 @@ pub struct TrackingSpawnAction {
     pub radius_deg: f64,
     pub distance_m: f32,
     pub spline_ron: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClusterSpawnAction {
+    pub target_id: u32,
+    pub angles: ViewAngles,
+    pub radius_deg: f64,
+    pub distance_m: f32,
+    pub distance_bin_deg: f64,
+    pub octant: u32,
+    pub spawned_index: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClusterHitOutcome {
+    pub target_id: u32,
+    pub completed: bool,
 }

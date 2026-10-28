@@ -319,3 +319,33 @@ pub fn spawn_tracking_target(
         },
     ));
 }
+
+/// Spawns a cluster target for A6 with ClusterTargetMarker component.
+pub fn spawn_cluster_target(
+    commands: &mut Commands,
+    assets: &TargetAssets,
+    angles: ViewAngles,
+    radius_deg: f64,
+    distance_m: f32,
+    target_id: u32,
+    now_s: f64,
+) {
+    let linear_radius = distance_m * (radius_deg as f32).to_radians().sin();
+
+    commands.spawn((
+        Mesh3d(assets.trial_mesh.clone()),
+        MeshMaterial3d(assets.trial_material.clone()),
+        Transform::from_translation(angles_to_world_pos(angles, distance_m))
+            .with_scale(Vec3::splat(linear_radius)),
+        ActiveTargetMarker {
+            target_id,
+            spherical: SphericalTarget::new(angles, radius_deg).with_head_zone(false),
+            is_home_target: false,
+            spawn_time_s: now_s,
+        },
+        crate::layout_engine::ClusterTargetMarker {
+            target_id,
+            spherical: SphericalTarget::new(angles, radius_deg),
+        },
+    ));
+}

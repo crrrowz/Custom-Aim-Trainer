@@ -26,8 +26,8 @@ use trainer::layout_engine::{
 use trainer::raw_input::RawInputWorker;
 use trainer::recorder::{self, SessionRecorder};
 use trainer::target::{
-    setup_target_assets, spawn_home_target, spawn_peek_target, spawn_tracking_target,
-    spawn_trial_target, ActiveTargetMarker, TargetAssets,
+    setup_target_assets, spawn_cluster_target, spawn_home_target, spawn_peek_target,
+    spawn_tracking_target, spawn_trial_target, ActiveTargetMarker, TargetAssets,
 };
 use trainer::ScenarioResource;
 
@@ -506,6 +506,17 @@ fn drain_and_evaluate_input_system(
                                     );
                                 }
                             }
+                        } else if let Some(cluster_outcome) =
+                            state.layout_engine.handle_cluster_hit(marker.target_id)
+                        {
+                            state.hits_count += 1;
+                            println!(
+                                "[Target {}/{}] CLUSTER HIT! Total Hits: {}, Misses: {}",
+                                cluster_outcome.target_id,
+                                total_trials,
+                                state.hits_count,
+                                state.misses_count
+                            );
                         }
                         break;
                     }
@@ -581,126 +592,160 @@ fn drain_and_evaluate_input_system(
         }
     }
 
-    if target_query.iter().next().is_none() && !state.layout_engine.is_completed() {
+    if !state.layout_engine.is_completed() {
         let spawn_dist = state.scenario_def.spawn_distance_m as f32;
-        let mut next_tid = state.next_target_id;
-        let maybe_fitts =
-            state
-                .layout_engine
-                .handle_fitts_spawn(&mut next_tid, now_qpc_us, spawn_dist);
-        let maybe_peeks = if maybe_fitts.is_none() {
-            state
-                .layout_engine
-                .handle_peeks_spawn(&mut next_tid, now_qpc_us, spawn_dist)
-        } else {
-            None
-        };
-        let maybe_tracking = if maybe_fitts.is_none() && maybe_peeks.is_none() {
-            state
-                .layout_engine
-                .handle_tracking_spawn(&mut next_tid, now_qpc_us, spawn_dist)
-        } else {
-            None
-        };
-        state.next_target_id = next_tid;
+        let has_no_targets = target_query.iter().next().is_none();
 
-        if let Some(action) = maybe_fitts {
-            match action {
-                FittsSpawnAction::SpawnHome {
-                    target_id,
-                    distance_m,
-                } => {
-                    spawn_home_target(&mut commands, &assets, distance_m, target_id, now_qpc_s);
-                    state
-                        .recorder
-                        .record_target_spawn(target_id, now_qpc_us, 0, 0.5, 0.0, 0.0);
-                }
-                FittsSpawnAction::SpawnTrial {
-                    target_id,
-                    trial,
-                    distance_m,
-                } => {
-                    spawn_trial_target(
-                        &mut commands,
-                        &assets,
-                        &trial,
+        if has_no_targets {
+            let mut next_tid = state.next_target_id;
+            let maybe_fitts =
+                state
+                    .layout_engine
+                    .handle_fitts_spawn(&mut next_tid, now_qpc_us, spawn_dist);
+            let maybe_peeks = if maybe_fitts.is_none() {
+                state
+                    .layout_engine
+                    .handle_peeks_spawn(&mut next_tid, now_qpc_us, spawn_dist)
+            } else {
+                None
+            };
+            let maybe_tracking = if maybe_fitts.is_none() && maybe_peeks.is_none() {
+                state
+                    .layout_engine
+                    .handle_tracking_spawn(&mut next_tid, now_qpc_us, spawn_dist)
+            } else {
+                None
+            };
+            state.next_target_id = next_tid;
+
+            if let Some(action) = maybe_fitts {
+                match action {
+                    FittsSpawnAction::SpawnHome {
+                        target_id,
                         distance_m,
+                    } => {
+                        spawn_home_target(&mut commands, &assets, distance_m, target_id, now_qpc_s);
+                        state
+                            .recorder
+                            .record_target_spawn(target_id, now_qpc_us, 0, 0.5, 0.0, 0.0);
+                    }
+                    FittsSpawnAction::SpawnTrial {
                         target_id,
-                        now_qpc_s,
-                    );
-                    state.recorder.record_target_spawn(
-                        target_id,
-                        now_qpc_us,
-                        0,
-                        trial.radius_deg,
-                        trial.yaw_deg,
-                        trial.pitch_deg,
-                    );
-                }
-            }
-        } else if let Some(action) = maybe_peeks {
-            match action {
-                PeeksSpawnAction::SpawnNeutralTarget {
-                    target_id,
-                    distance_m,
-                } => {
-                    spawn_home_target(&mut commands, &assets, distance_m, target_id, now_qpc_s);
-                    state
-                        .recorder
-                        .record_target_spawn(target_id, now_qpc_us, 0, 0.5, 0.0, 0.0);
-                }
-                PeeksSpawnAction::SpawnPeekTarget {
-                    target_id,
-                    trial,
-                    distance_m,
-                } => {
-                    spawn_peek_target(
-                        &mut commands,
-                        &assets,
-                        &trial,
+                        trial,
                         distance_m,
-                        target_id,
-                        now_qpc_s,
-                    );
-                    let spawn_angles = trainer::replay::angles_at_timestamp(
-                        &cam_angles_start,
-                        &batch,
-                        now_qpc_us,
-                        primary_id,
-                        deg_per_count,
-                    );
-                    state
-                        .recorder
-                        .record_view(now_qpc_us, spawn_angles.yaw, spawn_angles.pitch);
-                    state.recorder.record_peek_target_spawn(
-                        target_id,
-                        now_qpc_us,
-                        0,
-                        trial.target_radius_deg,
-                        trial.occluder_yaw_deg,
-                        trial.noisy_pitch_deg,
-                        trial.head_pitch_deg,
-                    );
+                    } => {
+                        spawn_trial_target(
+                            &mut commands,
+                            &assets,
+                            &trial,
+                            distance_m,
+                            target_id,
+                            now_qpc_s,
+                        );
+                        state.recorder.record_target_spawn(
+                            target_id,
+                            now_qpc_us,
+                            0,
+                            trial.radius_deg,
+                            trial.yaw_deg,
+                            trial.pitch_deg,
+                        );
+                    }
                 }
+            } else if let Some(action) = maybe_peeks {
+                match action {
+                    PeeksSpawnAction::SpawnNeutralTarget {
+                        target_id,
+                        distance_m,
+                    } => {
+                        spawn_home_target(&mut commands, &assets, distance_m, target_id, now_qpc_s);
+                        state
+                            .recorder
+                            .record_target_spawn(target_id, now_qpc_us, 0, 0.5, 0.0, 0.0);
+                    }
+                    PeeksSpawnAction::SpawnPeekTarget {
+                        target_id,
+                        trial,
+                        distance_m,
+                    } => {
+                        spawn_peek_target(
+                            &mut commands,
+                            &assets,
+                            &trial,
+                            distance_m,
+                            target_id,
+                            now_qpc_s,
+                        );
+                        let spawn_angles = trainer::replay::angles_at_timestamp(
+                            &cam_angles_start,
+                            &batch,
+                            now_qpc_us,
+                            primary_id,
+                            deg_per_count,
+                        );
+                        state.recorder.record_view(
+                            now_qpc_us,
+                            spawn_angles.yaw,
+                            spawn_angles.pitch,
+                        );
+                        state.recorder.record_peek_target_spawn(
+                            target_id,
+                            now_qpc_us,
+                            0,
+                            trial.target_radius_deg,
+                            trial.occluder_yaw_deg,
+                            trial.noisy_pitch_deg,
+                            trial.head_pitch_deg,
+                        );
+                    }
+                }
+            } else if let Some(action) = maybe_tracking {
+                spawn_tracking_target(
+                    &mut commands,
+                    &assets,
+                    action.initial_angles,
+                    action.radius_deg,
+                    action.distance_m,
+                    action.target_id,
+                    now_qpc_s,
+                );
+                state.recorder.record_tracking_target_spawn(
+                    action.target_id,
+                    now_qpc_us,
+                    now_qpc_us + 45_000_000,
+                    action.radius_deg,
+                    action.initial_angles.yaw,
+                    action.initial_angles.pitch,
+                    action.spline_ron,
+                );
             }
-        } else if let Some(action) = maybe_tracking {
-            spawn_tracking_target(
+        }
+
+        // Replenish concurrent cluster targets up to concurrent_count (3)
+        while let Some(cluster_action) = {
+            let mut next_tid = state.next_target_id;
+            let act = state
+                .layout_engine
+                .handle_cluster_spawn(&mut next_tid, spawn_dist);
+            state.next_target_id = next_tid;
+            act
+        } {
+            spawn_cluster_target(
                 &mut commands,
                 &assets,
-                action.initial_angles,
-                action.radius_deg,
-                action.distance_m,
-                action.target_id,
+                cluster_action.angles,
+                cluster_action.radius_deg,
+                cluster_action.distance_m,
+                cluster_action.target_id,
                 now_qpc_s,
             );
-            state.recorder.record_tracking_target_spawn(
-                action.target_id,
+            state.recorder.record_target_spawn(
+                cluster_action.target_id,
                 now_qpc_us,
-                now_qpc_us + 45_000_000,
-                action.radius_deg,
-                action.initial_angles.yaw,
-                action.initial_angles.pitch,
-                action.spline_ron,
+                0,
+                cluster_action.radius_deg,
+                cluster_action.angles.yaw,
+                cluster_action.angles.pitch,
             );
         }
     }
