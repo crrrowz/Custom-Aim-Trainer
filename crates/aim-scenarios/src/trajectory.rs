@@ -19,6 +19,7 @@ pub struct TrajectoryIntegrator {
     cs_yaw_deg: f64,
     cs_pitch_deg: f64,
     cs_heading_rad: f64,
+    pub cs_reflection_count: u64,
     // ReactiveStrafe state:
     rs_rng: ChaCha8Rng,
     rs_current_dir: f64,
@@ -60,6 +61,7 @@ impl TrajectoryIntegrator {
             cs_yaw_deg: 0.0,
             cs_pitch_deg: 0.0,
             cs_heading_rad: 0.45,
+            cs_reflection_count: 0,
             rs_rng,
             rs_current_dir,
             rs_accum_s: 0.0,
@@ -112,14 +114,26 @@ impl TrajectoryIntegrator {
                     let next_yaw = self.cs_yaw_deg + dyaw;
                     let next_pitch = self.cs_pitch_deg + dpitch;
 
-                    if next_yaw.abs() > *max_yaw_deg {
+                    if next_yaw > *max_yaw_deg {
+                        self.cs_yaw_deg = 2.0 * max_yaw_deg - next_yaw;
                         self.cs_heading_rad = vy.atan2(-vx);
+                        self.cs_reflection_count += 1;
+                    } else if next_yaw < -*max_yaw_deg {
+                        self.cs_yaw_deg = -2.0 * max_yaw_deg - next_yaw;
+                        self.cs_heading_rad = vy.atan2(-vx);
+                        self.cs_reflection_count += 1;
                     } else {
                         self.cs_yaw_deg = next_yaw;
                     }
 
-                    if next_pitch.abs() > *max_pitch_deg {
+                    if next_pitch > *max_pitch_deg {
+                        self.cs_pitch_deg = 2.0 * max_pitch_deg - next_pitch;
                         self.cs_heading_rad = (-vy).atan2(vx);
+                        self.cs_reflection_count += 1;
+                    } else if next_pitch < -*max_pitch_deg {
+                        self.cs_pitch_deg = -2.0 * max_pitch_deg - next_pitch;
+                        self.cs_heading_rad = (-vy).atan2(vx);
+                        self.cs_reflection_count += 1;
                     } else {
                         self.cs_pitch_deg = next_pitch;
                     }
@@ -143,14 +157,18 @@ impl TrajectoryIntegrator {
                     let next_yaw = self.cs_yaw_deg + dyaw;
                     let next_pitch = self.cs_pitch_deg + dpitch;
 
-                    let yaw = if next_yaw.abs() > *max_yaw_deg {
-                        self.cs_yaw_deg
+                    let yaw = if next_yaw > *max_yaw_deg {
+                        2.0 * max_yaw_deg - next_yaw
+                    } else if next_yaw < -*max_yaw_deg {
+                        -2.0 * max_yaw_deg - next_yaw
                     } else {
                         next_yaw
                     };
 
-                    let pitch = if next_pitch.abs() > *max_pitch_deg {
-                        self.cs_pitch_deg
+                    let pitch = if next_pitch > *max_pitch_deg {
+                        2.0 * max_pitch_deg - next_pitch
+                    } else if next_pitch < -*max_pitch_deg {
+                        -2.0 * max_pitch_deg - next_pitch
                     } else {
                         next_pitch
                     };

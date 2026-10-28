@@ -39,20 +39,31 @@ fn test_a4_constant_speed_bounds_and_speed_stability() {
             for t_ms in (200..44_000).step_by(500) {
                 let t_us = t_ms * 1000;
                 let dt_us = 20_000; // 20ms
-                let p1 = target_angles_at(&trajectory, seed, t_us);
-                let p2 = target_angles_at(&trajectory, seed, t_us + dt_us);
+
+                let mut integrator = TrajectoryIntegrator::new(trajectory.clone(), seed);
+                let p1 = integrator.angles_at(t_us);
+                let reflections_before = integrator.cs_reflection_count;
+                let p2 = integrator.angles_at(t_us + dt_us);
+                let reflections_after = integrator.cs_reflection_count;
 
                 let dist = angular_distance(p1, p2);
                 let speed = dist / 0.020; // deg/s
 
-                // In straight/curving flight, speed is constant 14°/s. During corner/wall reflections,
-                // the discrete 20ms measurement chord cuts across the reflection corner, showing
-                // an effective chord velocity. Verify that outside reflection corners, speed is within ±5%
-                // (14.0 ±0.7), and during reflection chords it stays within [10.0, 15.0].
-                assert!(
-                    (10.0..=15.0).contains(&speed),
-                    "Speed deviation: expected [10.0, 15.0], got {speed} at t={t_ms}ms (form {form})"
-                );
+                let in_reflection_window = reflections_after > reflections_before;
+
+                if in_reflection_window {
+                    // During chord spanning reflection corner, chord velocity is slightly lower than arc velocity
+                    assert!(
+                        (10.0..=15.0).contains(&speed),
+                        "Reflection chord speed out of bounds: expected [10.0, 15.0], got {speed} at t={t_ms}ms (form {form})"
+                    );
+                } else {
+                    // Outside wall reflections, speed strictly satisfies the ±5% band (13.3 - 14.7 °/s)
+                    assert!(
+                        (13.3..=14.7).contains(&speed),
+                        "Speed deviation outside reflection: expected [13.3, 14.7] (14.0 ±5%), got {speed} at t={t_ms}ms (form {form})"
+                    );
+                }
             }
         }
     } else {
