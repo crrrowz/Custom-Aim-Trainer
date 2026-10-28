@@ -291,11 +291,136 @@ impl LayoutEngineState {
 
     // --- Peeks Handlers ---
 
-    pub fn handle_peeks_spawn(&mut self, _next_target_id: &mut u32, _now_qpc_us: u64) {}
+    pub fn handle_peeks_spawn(
+        &mut self,
+        next_target_id: &mut u32,
+        now_qpc_us: u64,
+        spawn_distance_m: f32,
+    ) -> Option<PeeksSpawnAction> {
+        if let Self::Peeks {
+            trials,
+            current_idx,
+            awaiting_neutral,
+            trial_start_t_us,
+            ..
+        } = self
+        {
+            if *current_idx >= trials.len() {
+                return None;
+            }
+            let tid = *next_target_id;
+            *next_target_id += 1;
+            if *awaiting_neutral {
+                Some(PeeksSpawnAction::SpawnNeutralTarget {
+                    target_id: tid,
+                    distance_m: spawn_distance_m,
+                })
+            } else {
+                let trial = trials[*current_idx].clone();
+                *trial_start_t_us = now_qpc_us;
+                Some(PeeksSpawnAction::SpawnPeekTarget {
+                    target_id: tid,
+                    trial,
+                    distance_m: spawn_distance_m,
+                })
+            }
+        } else {
+            None
+        }
+    }
 
-    pub fn handle_peeks_hit(&mut self, _target_id: u32, _t_us: u64) {}
+    pub fn handle_peeks_hit(
+        &mut self,
+        is_neutral_target: bool,
+        t_us: u64,
+    ) -> Option<PeeksHitOutcome> {
+        if let Self::Peeks {
+            trials,
+            current_idx,
+            awaiting_neutral,
+            trial_start_t_us,
+            ..
+        } = self
+        {
+            if is_neutral_target {
+                *awaiting_neutral = false;
+                Some(PeeksHitOutcome::NeutralHit)
+            } else {
+                let trial_elapsed_s = (t_us.saturating_sub(*trial_start_t_us) as f64) / 1_000_000.0;
+                let trial_idx = *current_idx;
+                *current_idx += 1;
+                let completed = *current_idx >= trials.len();
+                if !completed {
+                    *awaiting_neutral = true;
+                }
+                Some(PeeksHitOutcome::PeekHit {
+                    trial_idx,
+                    trial_elapsed_s,
+                    completed,
+                })
+            }
+        } else {
+            None
+        }
+    }
 
-    pub fn handle_peeks_timeout(&mut self, _now_qpc_us: u64) {}
+    pub fn handle_peeks_miss(&mut self) -> PeeksMissOutcome {
+        if let Self::Peeks {
+            trials,
+            current_idx,
+            awaiting_neutral,
+            ..
+        } = self
+        {
+            if !*awaiting_neutral {
+                let trial_idx = *current_idx;
+                *current_idx += 1;
+                let completed = *current_idx >= trials.len();
+                if !completed {
+                    *awaiting_neutral = true;
+                }
+                PeeksMissOutcome::PeekMiss {
+                    trial_idx,
+                    completed,
+                }
+            } else {
+                PeeksMissOutcome::Ignored
+            }
+        } else {
+            PeeksMissOutcome::Ignored
+        }
+    }
+
+    pub fn handle_peeks_timeout(&mut self, now_qpc_us: u64) -> PeeksTimeoutOutcome {
+        if let Self::Peeks {
+            trials,
+            current_idx,
+            awaiting_neutral,
+            trial_start_t_us,
+            ..
+        } = self
+        {
+            if !*awaiting_neutral && *current_idx < trials.len() {
+                let timeout_s = trials[*current_idx].trial_timeout_s;
+                let trial_elapsed_s =
+                    (now_qpc_us.saturating_sub(*trial_start_t_us) as f64) / 1_000_000.0;
+                if trial_elapsed_s >= timeout_s {
+                    let trial_idx = *current_idx;
+                    *current_idx += 1;
+                    let completed = *current_idx >= trials.len();
+                    if !completed {
+                        *awaiting_neutral = true;
+                    }
+                    return PeeksTimeoutOutcome::TimedOut {
+                        trial_idx,
+                        trial_elapsed_s,
+                        completed,
+                    };
+                }
+            }
+        }
+        PeeksTimeoutOutcome::NoTimeout
+    }
 
     // --- Tracking Handlers ---
 
@@ -345,6 +470,45 @@ pub enum FittsMissOutcome {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FittsTimeoutOutcome {
+    NoTimeout,
+    TimedOut {
+        trial_idx: usize,
+        trial_elapsed_s: f64,
+        completed: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PeeksSpawnAction {
+    SpawnNeutralTarget {
+        target_id: u32,
+        distance_m: f32,
+    },
+    SpawnPeekTarget {
+        target_id: u32,
+        trial: PeekTrial,
+        distance_m: f32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PeeksHitOutcome {
+    NeutralHit,
+    PeekHit {
+        trial_idx: usize,
+        trial_elapsed_s: f64,
+        completed: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PeeksMissOutcome {
+    Ignored,
+    PeekMiss { trial_idx: usize, completed: bool },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PeeksTimeoutOutcome {
     NoTimeout,
     TimedOut {
         trial_idx: usize,

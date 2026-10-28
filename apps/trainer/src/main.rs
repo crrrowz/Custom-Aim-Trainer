@@ -21,11 +21,13 @@ use trainer::camera::{spawn_crosshair_ui, spawn_fps_camera, sync_camera_transfor
 use trainer::clock::SessionClock;
 use trainer::layout_engine::{
     FittsHitOutcome, FittsMissOutcome, FittsSpawnAction, FittsTimeoutOutcome, LayoutEngineState,
+    PeeksHitOutcome, PeeksMissOutcome, PeeksSpawnAction, PeeksTimeoutOutcome,
 };
 use trainer::raw_input::RawInputWorker;
 use trainer::recorder::{self, SessionRecorder};
 use trainer::target::{
-    setup_target_assets, spawn_home_target, spawn_trial_target, ActiveTargetMarker, TargetAssets,
+    setup_target_assets, spawn_home_target, spawn_peek_target, spawn_trial_target,
+    ActiveTargetMarker, TargetAssets,
 };
 use trainer::ScenarioResource;
 
@@ -416,11 +418,12 @@ fn drain_and_evaluate_input_system(
     }
 
     let primary_id = state.primary_device;
-    let mut current_angles = camera_query
+    let cam_angles_start = camera_query
         .iter()
         .next()
         .map(|c| c.angles)
         .unwrap_or_default();
+    let mut current_angles = cam_angles_start;
 
     let actions =
         trainer::replay::replay_input(&mut current_angles, &batch, primary_id, deg_per_count);
@@ -458,28 +461,51 @@ fn drain_and_evaluate_input_system(
                         commands.entity(entity).despawn();
 
                         let total_trials = state.layout_engine.total_trials_or_targets();
-                        match state
+                        if let Some(fitts_outcome) = state
                             .layout_engine
                             .handle_fitts_hit(marker.is_home_target, t_us)
                         {
-                            Some(FittsHitOutcome::HomeHit) => {}
-                            Some(FittsHitOutcome::TrialHit {
-                                trial_idx,
-                                trial_elapsed_s,
-                                completed: _,
-                            }) => {
-                                state.hits_count += 1;
-                                println!(
-                                    "[Trial {}/{}] HIT! Time: {:.3}s (Dist: {:.2}°). Hits: {}, Misses: {}",
-                                    trial_idx + 1,
-                                    total_trials,
+                            match fitts_outcome {
+                                FittsHitOutcome::HomeHit => {}
+                                FittsHitOutcome::TrialHit {
+                                    trial_idx,
                                     trial_elapsed_s,
-                                    hit_res.angular_distance_deg,
-                                    state.hits_count,
-                                    state.misses_count
-                                );
+                                    completed: _,
+                                } => {
+                                    state.hits_count += 1;
+                                    println!(
+                                        "[Trial {}/{}] HIT! Time: {:.3}s (Dist: {:.2}°). Hits: {}, Misses: {}",
+                                        trial_idx + 1,
+                                        total_trials,
+                                        trial_elapsed_s,
+                                        hit_res.angular_distance_deg,
+                                        state.hits_count,
+                                        state.misses_count
+                                    );
+                                }
                             }
-                            None => {}
+                        } else if let Some(peek_outcome) = state
+                            .layout_engine
+                            .handle_peeks_hit(marker.is_home_target, t_us)
+                        {
+                            match peek_outcome {
+                                PeeksHitOutcome::NeutralHit => {}
+                                PeeksHitOutcome::PeekHit {
+                                    trial_idx,
+                                    trial_elapsed_s,
+                                    completed: _,
+                                } => {
+                                    state.hits_count += 1;
+                                    println!(
+                                        "[Trial {}/{}] PEEK HIT! Time: {:.3}s. Hits: {}, Misses: {}",
+                                        trial_idx + 1,
+                                        total_trials,
+                                        trial_elapsed_s,
+                                        state.hits_count,
+                                        state.misses_count
+                                    );
+                                }
+                            }
                         }
                         break;
                     }
@@ -495,6 +521,23 @@ fn drain_and_evaluate_input_system(
                         state.misses_count += 1;
                         println!(
                             "[Trial {}/{}] MISS! Total Hits: {}, Misses: {}",
+                            trial_idx + 1,
+                            total_trials,
+                            state.hits_count,
+                            state.misses_count
+                        );
+
+                        for (entity, _) in &target_query {
+                            commands.entity(entity).despawn();
+                        }
+                    } else if let PeeksMissOutcome::PeekMiss {
+                        trial_idx,
+                        completed: _,
+                    } = state.layout_engine.handle_peeks_miss()
+                    {
+                        state.misses_count += 1;
+                        println!(
+                            "[Trial {}/{}] PEEK MISS! Total Hits: {}, Misses: {}",
                             trial_idx + 1,
                             total_trials,
                             state.hits_count,
@@ -527,13 +570,20 @@ fn drain_and_evaluate_input_system(
     if target_query.iter().next().is_none() && !state.layout_engine.is_completed() {
         let spawn_dist = state.scenario_def.spawn_distance_m as f32;
         let mut next_tid = state.next_target_id;
-        let maybe_action =
+        let maybe_fitts =
             state
                 .layout_engine
                 .handle_fitts_spawn(&mut next_tid, now_qpc_us, spawn_dist);
+        let maybe_peeks = if maybe_fitts.is_none() {
+            state
+                .layout_engine
+                .handle_peeks_spawn(&mut next_tid, now_qpc_us, spawn_dist)
+        } else {
+            None
+        };
         state.next_target_id = next_tid;
 
-        if let Some(action) = maybe_action {
+        if let Some(action) = maybe_fitts {
             match action {
                 FittsSpawnAction::SpawnHome {
                     target_id,
@@ -567,6 +617,51 @@ fn drain_and_evaluate_input_system(
                     );
                 }
             }
+        } else if let Some(action) = maybe_peeks {
+            match action {
+                PeeksSpawnAction::SpawnNeutralTarget {
+                    target_id,
+                    distance_m,
+                } => {
+                    spawn_home_target(&mut commands, &assets, distance_m, target_id, now_qpc_s);
+                    state
+                        .recorder
+                        .record_target_spawn(target_id, now_qpc_us, 0, 0.5, 0.0, 0.0);
+                }
+                PeeksSpawnAction::SpawnPeekTarget {
+                    target_id,
+                    trial,
+                    distance_m,
+                } => {
+                    spawn_peek_target(
+                        &mut commands,
+                        &assets,
+                        &trial,
+                        distance_m,
+                        target_id,
+                        now_qpc_s,
+                    );
+                    let spawn_angles = trainer::replay::angles_at_timestamp(
+                        &cam_angles_start,
+                        &batch,
+                        now_qpc_us,
+                        primary_id,
+                        deg_per_count,
+                    );
+                    state
+                        .recorder
+                        .record_view(now_qpc_us, spawn_angles.yaw, spawn_angles.pitch);
+                    state.recorder.record_peek_target_spawn(
+                        target_id,
+                        now_qpc_us,
+                        0,
+                        trial.target_radius_deg,
+                        trial.occluder_yaw_deg,
+                        trial.noisy_pitch_deg,
+                        trial.head_pitch_deg,
+                    );
+                }
+            }
         }
     }
 
@@ -580,6 +675,25 @@ fn drain_and_evaluate_input_system(
         state.misses_count += 1;
         println!(
             "[Trial {}/{}] TIMEOUT ({:.2}s). Total Hits: {}, Misses: {}",
+            trial_idx + 1,
+            total_trials,
+            trial_elapsed_s,
+            state.hits_count,
+            state.misses_count
+        );
+
+        for (entity, _) in &target_query {
+            commands.entity(entity).despawn();
+        }
+    } else if let PeeksTimeoutOutcome::TimedOut {
+        trial_idx,
+        trial_elapsed_s,
+        completed: _,
+    } = state.layout_engine.handle_peeks_timeout(now_qpc_us)
+    {
+        state.misses_count += 1;
+        println!(
+            "[Trial {}/{}] PEEK TIMEOUT ({:.2}s). Total Hits: {}, Misses: {}",
             trial_idx + 1,
             total_trials,
             trial_elapsed_s,

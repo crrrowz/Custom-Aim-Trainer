@@ -97,6 +97,29 @@ impl SessionRecorder {
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_peek_target_spawn(
+        &mut self,
+        id: u32,
+        spawn_t_us: u64,
+        despawn_t_us: u64,
+        radius_deg: f64,
+        yaw_deg: f64,
+        noisy_pitch_deg: f64,
+        nominal_head_pitch: f64,
+    ) {
+        self.record_target_spawn_full(TargetSpawn {
+            id,
+            spawn_t_us,
+            despawn_t_us,
+            kind: TargetKind::WallPeek,
+            radius_deg,
+            yaw_deg,
+            pitch_deg: noisy_pitch_deg,
+            path_spline: Some(format!("nominal_head_pitch:{}", nominal_head_pitch)),
+        });
+    }
+
     pub fn record_target_spawn_full(&mut self, spawn: TargetSpawn) {
         self.streams.targets.records.push(TargetRecord {
             id: spawn.id,

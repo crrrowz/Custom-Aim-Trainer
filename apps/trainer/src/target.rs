@@ -2,6 +2,7 @@
 
 use aim_core::geometry::SphericalTarget;
 use aim_core::ViewAngles;
+use aim_scenarios::generator::PeekTrial;
 use aim_scenarios::Trial;
 use bevy::prelude::*;
 
@@ -18,6 +19,9 @@ pub struct OpticFlowSphere;
 
 #[derive(Component)]
 pub struct OccluderWallMarker;
+
+#[derive(Component)]
+pub struct NeutralSlitMarker;
 
 #[derive(Resource)]
 pub struct TargetAssets {
@@ -93,6 +97,7 @@ pub fn setup_target_assets(
     scenario_res: Option<Res<crate::ScenarioResource>>,
 ) {
     let is_peeks = scenario_res
+        .as_ref()
         .map(|s| {
             matches!(
                 s.0.layout,
@@ -153,6 +158,31 @@ pub fn setup_target_assets(
         Transform::from_xyz(0.0, 0.0, 0.0),
         OpticFlowSphere,
     ));
+
+    if let Some(scenario) = scenario_res.as_ref() {
+        if let aim_scenarios::schema::TargetLayout::HeadLevelPeeks {
+            occluder_yaws_deg, ..
+        } = &scenario.0.layout
+        {
+            let dist_m = scenario.0.spawn_distance_m as f32;
+            for &wall_yaw in occluder_yaws_deg {
+                let wall_pos = angles_to_world_pos(ViewAngles::new(wall_yaw, 0.0), dist_m);
+                commands.spawn((
+                    Mesh3d(wall_mesh.clone()),
+                    MeshMaterial3d(occluder_material.clone()),
+                    Transform::from_translation(wall_pos).looking_at(Vec3::ZERO, Vec3::Y),
+                    OccluderWallMarker,
+                ));
+            }
+            let slit_pos = angles_to_world_pos(ViewAngles::new(0.0, 0.0), dist_m);
+            commands.spawn((
+                Mesh3d(slit_mesh.clone()),
+                MeshMaterial3d(slit_material.clone()),
+                Transform::from_translation(slit_pos).looking_at(Vec3::ZERO, Vec3::Y),
+                NeutralSlitMarker,
+            ));
+        }
+    }
 
     commands.insert_resource(TargetAssets {
         home_mesh: sphere_mesh.clone(),
@@ -228,6 +258,32 @@ pub fn spawn_trial_target(
         ActiveTargetMarker {
             target_id,
             spherical: SphericalTarget::new(angles, trial.radius_deg).with_head_zone(false),
+            is_home_target: false,
+            spawn_time_s: now_s,
+        },
+    ));
+}
+
+/// Spawns an emerging peek target at its dynamic angle for A3.
+pub fn spawn_peek_target(
+    commands: &mut Commands,
+    assets: &TargetAssets,
+    trial: &PeekTrial,
+    distance_m: f32,
+    target_id: u32,
+    now_s: f64,
+) {
+    let angles = ViewAngles::new(trial.occluder_yaw_deg, trial.noisy_pitch_deg);
+    let linear_radius = distance_m * (trial.target_radius_deg as f32).to_radians().sin();
+
+    commands.spawn((
+        Mesh3d(assets.trial_mesh.clone()),
+        MeshMaterial3d(assets.trial_material.clone()),
+        Transform::from_translation(angles_to_world_pos(angles, distance_m))
+            .with_scale(Vec3::splat(linear_radius)),
+        ActiveTargetMarker {
+            target_id,
+            spherical: SphericalTarget::new(angles, trial.target_radius_deg).with_head_zone(false),
             is_home_target: false,
             spawn_time_s: now_s,
         },
