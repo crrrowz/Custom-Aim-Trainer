@@ -86,6 +86,7 @@ pub struct TrainerState {
     pub next_target_id: u32,
     pub hits_count: u32,
     pub misses_count: u32,
+    pub session_saved: bool,
 }
 
 fn parse_cli_args() -> TrainerConfig {
@@ -320,6 +321,7 @@ fn setup_trainer(
         next_target_id: 1,
         hits_count: 0,
         misses_count: 0,
+        session_saved: false,
     });
 }
 
@@ -917,7 +919,7 @@ fn session_lifecycle_system(
             if completed_all {
                 format!("COMPLETED (All {} trials finished)", total_count)
             } else {
-                "TIMEOUT / ABORTED".to_string()
+                "COMPLETED (Time expired)".to_string()
             }
         );
         println!(
@@ -1040,13 +1042,18 @@ fn session_lifecycle_system(
             );
         }
 
-        save_session_telemetry(&mut state, &config, !completed_all);
+        save_session_telemetry(&mut state, &config, false);
 
         exit.write(AppExit::Success);
     }
 }
 
 fn save_session_telemetry(state: &mut TrainerState, config: &TrainerConfig, is_aborted: bool) {
+    if state.session_saved {
+        return;
+    }
+    state.session_saved = true;
+
     if is_aborted {
         state.recorder.quality_flags |= quality_flags::ABORTED;
     }
