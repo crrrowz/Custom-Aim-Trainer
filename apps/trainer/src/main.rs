@@ -458,6 +458,12 @@ fn drain_and_evaluate_input_system(
         .unwrap_or_default();
     let mut current_angles = cam_angles_start;
 
+    // Filter out pre-resume events from batch before replay_input so camera transform,
+    // hit-testing, and recorded inputs strictly align and never diverge.
+    if pause_manager.resume_qpc_us > 0 {
+        batch.retain(|ev| ev.t_us >= pause_manager.resume_qpc_us);
+    }
+
     let actions =
         trainer::replay::replay_input(&mut current_angles, &batch, primary_id, deg_per_count);
 
@@ -479,9 +485,6 @@ fn drain_and_evaluate_input_system(
     for action in actions {
         match action {
             trainer::replay::ReplayAction::Motion { t_us, dx, dy } => {
-                if t_us < pause_manager.resume_qpc_us {
-                    continue;
-                }
                 state.recorder.record_input(t_us, dx, dy);
                 if render_start_t_us >= t_us {
                     state.input_latencies_us.push(render_start_t_us - t_us);
@@ -491,9 +494,6 @@ fn drain_and_evaluate_input_system(
                 t_us,
                 angles_at_click,
             } => {
-                if t_us < pause_manager.resume_qpc_us {
-                    continue;
-                }
                 if render_start_t_us >= t_us {
                     state.input_latencies_us.push(render_start_t_us - t_us);
                 }

@@ -150,7 +150,7 @@ fn test_aft_streams_monotonic_and_esc_key_records() {
 }
 
 #[test]
-fn test_resume_click_leak_prevention() {
+fn test_resume_click_and_motion_filtered_before_replay() {
     let mut pm = PauseManager::new();
     pm.pause(1_000_000);
     pm.resume(5_000_000);
@@ -158,6 +158,11 @@ fn test_resume_click_leak_prevention() {
 
     let mut cam_angles = aim_core::camera::ViewAngles::new(0.0, 0.0);
     let events = vec![
+        RawInputEvent {
+            t_us: 4_998_000, // Motion while paused / clicking UI
+            device_id: 1,
+            payload: RawInputPayload::Motion { dx: 100, dy: 100 },
+        },
         RawInputEvent {
             t_us: 4_999_000, // Click occurred during pause / UI resume button click
             device_id: 1,
@@ -170,8 +175,21 @@ fn test_resume_click_leak_prevention() {
         },
     ];
 
-    let actions = replay_input(&mut cam_angles, &events, Some(1), 0.0245);
-    assert_eq!(actions.len(), 2);
+    // Filter batch before replay_input just as done in drain_and_evaluate_input_system
+    let valid_batch: Vec<_> = events
+        .into_iter()
+        .filter(|ev| ev.t_us >= pm.resume_qpc_us)
+        .collect();
+
+    assert_eq!(valid_batch.len(), 1);
+    assert_eq!(valid_batch[0].t_us, 5_001_000);
+
+    let actions = replay_input(&mut cam_angles, &valid_batch, Some(1), 0.0245);
+    assert_eq!(actions.len(), 1);
+
+    // Camera angles must remain strictly at (0.0, 0.0) because paused motion was dropped before replay
+    assert_eq!(cam_angles.yaw, 0.0);
+    assert_eq!(cam_angles.pitch, 0.0);
 
     let mut recorder = SessionRecorder::new(RecorderSetup {
         session_id: "leak-test".to_string(),
@@ -187,10 +205,6 @@ fn test_resume_click_leak_prevention() {
 
     for action in actions {
         if let trainer::replay::ReplayAction::Click { t_us, .. } = action {
-            // Apply real game gate: ignore click if t_us < resume_qpc_us
-            if t_us < pm.resume_qpc_us {
-                continue;
-            }
             recorder.record_shot(t_us, None, aim_telemetry::format::HitZone::None);
         }
     }
