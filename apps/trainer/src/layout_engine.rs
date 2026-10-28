@@ -543,10 +543,20 @@ impl LayoutEngineState {
             for (search_idx, &(dist, octant)) in candidates.iter().enumerate().skip(*next_cand_idx)
             {
                 let bearing_deg = octant as f64 * 45.0;
-                let (mut yaw, mut pitch) = target_angles_from_bearing(dist, bearing_deg);
-                yaw = yaw.clamp(-*max_yaw_deg, *max_yaw_deg);
-                pitch = pitch.clamp(-*max_pitch_deg, *max_pitch_deg);
+                let (yaw, pitch) = target_angles_from_bearing(dist, bearing_deg);
                 let candidate_angles = ViewAngles::new(yaw, pitch);
+
+                let signed_yaw = if candidate_angles.yaw > 180.0 {
+                    candidate_angles.yaw - 360.0
+                } else {
+                    candidate_angles.yaw
+                };
+
+                // Verify within prescribed angular bounds
+                if signed_yaw.abs() > *max_yaw_deg || candidate_angles.pitch.abs() > *max_pitch_deg
+                {
+                    continue;
+                }
 
                 let satisfies_sep = active_targets.iter().all(|(_, active_angles)| {
                     angular_distance(candidate_angles, *active_angles) >= *min_separation_deg
@@ -559,20 +569,20 @@ impl LayoutEngineState {
                 }
             }
 
-            let search_idx = chosen_idx.unwrap_or(*next_cand_idx);
+            let search_idx = match chosen_idx {
+                Some(idx) => idx,
+                None => {
+                    // Do not spawn a target that violates min_separation_deg
+                    return None;
+                }
+            };
+
             // Move chosen candidate to next_cand_idx position so all candidates are spawned without loss
             if search_idx != *next_cand_idx {
                 candidates.swap(*next_cand_idx, search_idx);
             }
 
             let (dist, octant) = candidates[*next_cand_idx];
-            if chosen_idx.is_none() {
-                let bearing_deg = octant as f64 * 45.0;
-                let (mut yaw, mut pitch) = target_angles_from_bearing(dist, bearing_deg);
-                yaw = yaw.clamp(-*max_yaw_deg, *max_yaw_deg);
-                pitch = pitch.clamp(-*max_pitch_deg, *max_pitch_deg);
-                chosen_angles = ViewAngles::new(yaw, pitch);
-            }
 
             let tid = *next_target_id;
             *next_target_id += 1;

@@ -37,8 +37,8 @@ fn test_multi_switch_engine_concurrency_and_octant_distance_balance() {
             .handle_cluster_hit(hit_id)
             .expect("Target must be recognized as hit");
 
-        // Immediately replenish
-        if let Some(replenish_action) = engine.handle_cluster_spawn(&mut next_tid, 15.0) {
+        // Replenish up to concurrent_count (3)
+        while let Some(replenish_action) = engine.handle_cluster_spawn(&mut next_tid, 15.0) {
             active_ids.push(replenish_action.target_id);
             spawned.push(replenish_action);
         }
@@ -50,6 +50,34 @@ fn test_multi_switch_engine_concurrency_and_octant_distance_balance() {
 
     assert_eq!(spawned.len(), 48, "Must spawn exactly 48 targets");
     assert!(engine.is_completed(), "Engine must be completed");
+
+    // Real spawned angles verification: distance from center = bin within 1e-6, and inside bounds
+    let center = aim_core::camera::ViewAngles::new(0.0, 0.0);
+    for a in &spawned {
+        let actual_dist = angular_distance(center, a.angles);
+        assert!(
+            (actual_dist - a.distance_bin_deg).abs() < 1e-6,
+            "Target #{} distance from center ({actual_dist}) must equal distance bin ({}) within 1e-6",
+            a.target_id, a.distance_bin_deg
+        );
+        let signed_yaw = if a.angles.yaw > 180.0 {
+            a.angles.yaw - 360.0
+        } else {
+            a.angles.yaw
+        };
+        assert!(
+            signed_yaw.abs() <= 45.0,
+            "Target #{} signed yaw {} exceeds max_yaw 45.0°",
+            a.target_id,
+            signed_yaw
+        );
+        assert!(
+            a.angles.pitch.abs() <= 35.0,
+            "Target #{} pitch {} exceeds max_pitch 35.0°",
+            a.target_id,
+            a.angles.pitch
+        );
+    }
 
     // Verify distance bins distribution through the real engine execution (16 each)
     let c10 = spawned

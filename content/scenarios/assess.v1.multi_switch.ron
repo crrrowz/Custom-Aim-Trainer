@@ -13,7 +13,7 @@ Scenario(
         octants: 8,
         min_separation_deg: 8.0,
         max_yaw_deg: 45.0,
-        max_pitch_deg: 12.0,
+        max_pitch_deg: 35.0, // Set to 35.0° to allow true 20° and 35° distance bins in all octants without clamping
         duration_s: 45.0,
     ),
     hit_rule: SingleShotKill,
