@@ -469,6 +469,9 @@ fn drain_and_evaluate_input_system(
     for action in actions {
         match action {
             trainer::replay::ReplayAction::Motion { t_us, dx, dy } => {
+                if t_us < pause_manager.resume_qpc_us {
+                    continue;
+                }
                 state.recorder.record_input(t_us, dx, dy);
                 if render_start_t_us >= t_us {
                     state.input_latencies_us.push(render_start_t_us - t_us);
@@ -478,6 +481,9 @@ fn drain_and_evaluate_input_system(
                 t_us,
                 angles_at_click,
             } => {
+                if t_us < pause_manager.resume_qpc_us {
+                    continue;
+                }
                 if render_start_t_us >= t_us {
                     state.input_latencies_us.push(render_start_t_us - t_us);
                 }
@@ -512,9 +518,10 @@ fn drain_and_evaluate_input_system(
                         commands.entity(entity).despawn();
 
                         let total_trials = state.layout_engine.total_trials_or_targets();
+                        let active_click_us = pause_manager.active_time_us(t_us);
                         if let Some(fitts_outcome) = state
                             .layout_engine
-                            .handle_fitts_hit(marker.is_home_target, t_us)
+                            .handle_fitts_hit(marker.is_home_target, active_click_us)
                         {
                             match fitts_outcome {
                                 FittsHitOutcome::HomeHit => {}
@@ -537,7 +544,7 @@ fn drain_and_evaluate_input_system(
                             }
                         } else if let Some(peek_outcome) = state
                             .layout_engine
-                            .handle_peeks_hit(marker.is_home_target, t_us)
+                            .handle_peeks_hit(marker.is_home_target, active_click_us)
                         {
                             match peek_outcome {
                                 PeeksHitOutcome::NeutralHit => {}
@@ -704,14 +711,9 @@ fn drain_and_evaluate_input_system(
                             target_id,
                             now_active_s,
                         );
-                        state.recorder.record_target_spawn(
-                            target_id,
-                            now_active_us,
-                            0,
-                            0.5,
-                            0.0,
-                            0.0,
-                        );
+                        state
+                            .recorder
+                            .record_target_spawn(target_id, now_qpc_us, 0, 0.5, 0.0, 0.0);
                     }
                     FittsSpawnAction::SpawnTrial {
                         target_id,
@@ -728,7 +730,7 @@ fn drain_and_evaluate_input_system(
                         );
                         state.recorder.record_target_spawn(
                             target_id,
-                            now_active_us,
+                            now_qpc_us,
                             0,
                             trial.radius_deg,
                             trial.yaw_deg,
@@ -749,14 +751,9 @@ fn drain_and_evaluate_input_system(
                             target_id,
                             now_active_s,
                         );
-                        state.recorder.record_target_spawn(
-                            target_id,
-                            now_active_us,
-                            0,
-                            0.5,
-                            0.0,
-                            0.0,
-                        );
+                        state
+                            .recorder
+                            .record_target_spawn(target_id, now_qpc_us, 0, 0.5, 0.0, 0.0);
                     }
                     PeeksSpawnAction::SpawnPeekTarget {
                         target_id,
@@ -775,23 +772,23 @@ fn drain_and_evaluate_input_system(
                         let spawn_pitch = trainer::replay::crosshair_pitch_at_qpc_instant(
                             &cam_angles_start,
                             &batch,
-                            now_active_us,
+                            now_qpc_us,
                             primary_id,
                             deg_per_count,
                         );
                         let spawn_angles = trainer::replay::angles_at_timestamp(
                             &cam_angles_start,
                             &batch,
-                            now_active_us,
+                            now_qpc_us,
                             primary_id,
                             deg_per_count,
                         );
                         state
                             .recorder
-                            .record_view(now_active_us, spawn_angles.yaw, spawn_pitch);
+                            .record_view(now_qpc_us, spawn_angles.yaw, spawn_pitch);
                         state.recorder.record_peek_target_spawn(
                             target_id,
-                            now_active_us,
+                            now_qpc_us,
                             0,
                             trial.target_radius_deg,
                             trial.occluder_yaw_deg,
@@ -812,7 +809,7 @@ fn drain_and_evaluate_input_system(
                 );
                 state.recorder.record_tracking_target_spawn(
                     action.target_id,
-                    now_active_us,
+                    now_qpc_us,
                     action.despawn_t_us,
                     action.radius_deg,
                     action.initial_angles.yaw,
@@ -842,7 +839,7 @@ fn drain_and_evaluate_input_system(
             );
             state.recorder.record_target_spawn(
                 cluster_action.target_id,
-                now_active_us,
+                now_qpc_us,
                 0,
                 cluster_action.radius_deg,
                 cluster_action.angles.yaw,
@@ -1093,6 +1090,7 @@ fn pause_menu_toggle_system(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut pause_manager: ResMut<PauseManager>,
     mut state: ResMut<TrainerState>,
+    ui_fonts: Res<trainer::fonts::UiFonts>,
     mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     q_overlay: Query<Entity, With<PauseOverlayRoot>>,
 ) {
@@ -1101,9 +1099,19 @@ fn pause_menu_toggle_system(
         pause_manager.toggle_pause(now_us);
         if pause_manager.is_paused {
             state.recorder.flag_paused();
+            state
+                .recorder
+                .record_key(now_us, aim_telemetry::format::KeyCode::Unknown(0x1B), true);
             set_cursor_lock(&mut q_cursor, false);
-            spawn_pause_menu(&mut commands);
+            spawn_pause_menu(&mut commands, &ui_fonts);
         } else {
+            state
+                .recorder
+                .record_key(now_us, aim_telemetry::format::KeyCode::Unknown(0x1B), false);
+            let resume_active_us = pause_manager.active_time_us(now_us);
+            state
+                .layout_engine
+                .void_in_flight_trial_on_resume(resume_active_us);
             set_cursor_lock(&mut q_cursor, true);
             despawn_pause_menu(&mut commands, &q_overlay);
         }
@@ -1131,6 +1139,15 @@ fn pause_menu_button_system(
                 PauseButtonAction::Resume => {
                     let now_us = state.clock.now_us();
                     pause_manager.resume(now_us);
+                    state.recorder.record_key(
+                        now_us,
+                        aim_telemetry::format::KeyCode::Unknown(0x1B),
+                        false,
+                    );
+                    let resume_active_us = pause_manager.active_time_us(now_us);
+                    state
+                        .layout_engine
+                        .void_in_flight_trial_on_resume(resume_active_us);
                     set_cursor_lock(&mut q_cursor, true);
                     despawn_pause_menu(&mut commands, &q_overlay);
                 }
@@ -1228,6 +1245,7 @@ fn main() {
         .add_systems(
             Startup,
             (
+                trainer::fonts::setup_ui_fonts,
                 setup_trainer,
                 setup_target_assets,
                 spawn_fps_camera,

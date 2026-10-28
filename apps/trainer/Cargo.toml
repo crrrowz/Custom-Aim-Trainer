@@ -36,5 +36,6 @@ bevy = { version = "=0.20.0", default-features = false, features = [
     "tonemapping_luts",
     "zstd_rust",
     "png",
-    "multi_threaded"
+    "multi_threaded",
+    "default_font"
 ] }

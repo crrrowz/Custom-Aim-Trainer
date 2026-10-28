@@ -1,4 +1,6 @@
+use crate::fonts::UiFonts;
 use bevy::prelude::*;
+use bevy::text::FontSource;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 #[derive(Resource, Debug, Clone, Default)]
@@ -7,6 +9,7 @@ pub struct PauseManager {
     pub pause_start_us: Option<u64>,
     pub total_paused_us: u64,
     pub was_paused: bool,
+    pub resume_qpc_us: u64,
 }
 
 impl PauseManager {
@@ -46,6 +49,7 @@ impl PauseManager {
                 self.total_paused_us += now_us.saturating_sub(start);
             }
             self.is_paused = false;
+            self.resume_qpc_us = now_us;
         }
     }
 }
@@ -60,7 +64,7 @@ pub enum PauseButtonAction {
     QuitWithoutSaving,
 }
 
-pub fn spawn_pause_menu(commands: &mut Commands) {
+pub fn spawn_pause_menu(commands: &mut Commands, ui_fonts: &UiFonts) {
     commands
         .spawn((
             Node {
@@ -80,24 +84,36 @@ pub fn spawn_pause_menu(commands: &mut Commands) {
             parent.spawn((
                 Text::new("PAUSED"),
                 TextFont {
+                    font: FontSource::Handle(ui_fonts.semibold.clone()),
                     font_size: FontSize::Px(36.0),
                     ..default()
                 },
                 TextColor(Color::WHITE),
             ));
 
-            spawn_button(parent, "Resume", PauseButtonAction::Resume);
-            spawn_button(parent, "Quit & Save", PauseButtonAction::QuitAndSave);
+            spawn_button(parent, "Resume", PauseButtonAction::Resume, ui_fonts);
+            spawn_button(
+                parent,
+                "Quit & Save",
+                PauseButtonAction::QuitAndSave,
+                ui_fonts,
+            );
             spawn_button(
                 parent,
                 "Quit without saving",
                 PauseButtonAction::QuitWithoutSaving,
+                ui_fonts,
             );
         });
 }
 
 #[allow(deprecated)]
-fn spawn_button(parent: &mut ChildSpawnerCommands, label: &str, action: PauseButtonAction) {
+fn spawn_button(
+    parent: &mut ChildSpawnerCommands,
+    label: &str,
+    action: PauseButtonAction,
+    ui_fonts: &UiFonts,
+) {
     parent
         .spawn((
             Node {
@@ -114,6 +130,7 @@ fn spawn_button(parent: &mut ChildSpawnerCommands, label: &str, action: PauseBut
         .with_child((
             Text::new(label),
             TextFont {
+                font: FontSource::Handle(ui_fonts.regular.clone()),
                 font_size: FontSize::Px(18.0),
                 ..default()
             },
