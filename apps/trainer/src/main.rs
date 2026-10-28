@@ -26,8 +26,8 @@ use trainer::layout_engine::{
 use trainer::raw_input::RawInputWorker;
 use trainer::recorder::{self, SessionRecorder};
 use trainer::target::{
-    setup_target_assets, spawn_home_target, spawn_peek_target, spawn_trial_target,
-    ActiveTargetMarker, TargetAssets,
+    setup_target_assets, spawn_home_target, spawn_peek_target, spawn_tracking_target,
+    spawn_trial_target, ActiveTargetMarker, TargetAssets,
 };
 use trainer::ScenarioResource;
 
@@ -381,7 +381,7 @@ fn drain_and_evaluate_input_system(
     mut state: ResMut<TrainerState>,
     assets: Option<Res<TargetAssets>>,
     mut camera_query: Query<&mut FpsCamera>,
-    target_query: Query<(Entity, &ActiveTargetMarker)>,
+    mut target_query: Query<(Entity, &mut ActiveTargetMarker, &mut Transform)>,
 ) {
     let deg_per_count = VALORANT_YAW_DEG_PER_COUNT * config.sens;
     let render_start_t_us = state.clock.now_us();
@@ -447,7 +447,7 @@ fn drain_and_evaluate_input_system(
                 let mut hit_target_id = None;
                 let mut hitzone = HitZone::None;
 
-                for (entity, marker) in &target_query {
+                for (entity, marker, _) in &target_query {
                     let hit_res = marker.spherical.intersect_ray(angles_at_click);
 
                     if hit_res.is_hit {
@@ -527,7 +527,7 @@ fn drain_and_evaluate_input_system(
                             state.misses_count
                         );
 
-                        for (entity, _) in &target_query {
+                        for (entity, _, _) in &target_query {
                             commands.entity(entity).despawn();
                         }
                     } else if let PeeksMissOutcome::PeekMiss {
@@ -544,7 +544,7 @@ fn drain_and_evaluate_input_system(
                             state.misses_count
                         );
 
-                        for (entity, _) in &target_query {
+                        for (entity, _, _) in &target_query {
                             commands.entity(entity).despawn();
                         }
                     }
@@ -567,6 +567,20 @@ fn drain_and_evaluate_input_system(
     let now_qpc_us = state.clock.now_us();
     let now_qpc_s = SessionClock::us_to_s(now_qpc_us);
 
+    // Update active tracking target positions incrementally
+    if let Some((tracking_id, new_angles, radius_deg)) =
+        state.layout_engine.update_tracking_target(now_qpc_us)
+    {
+        let spawn_dist = state.scenario_def.spawn_distance_m as f32;
+        let new_pos = trainer::target::angles_to_world_pos(new_angles, spawn_dist);
+        for (_, mut marker, mut transform) in &mut target_query {
+            if marker.target_id == tracking_id {
+                marker.spherical = aim_core::geometry::SphericalTarget::new(new_angles, radius_deg);
+                transform.translation = new_pos;
+            }
+        }
+    }
+
     if target_query.iter().next().is_none() && !state.layout_engine.is_completed() {
         let spawn_dist = state.scenario_def.spawn_distance_m as f32;
         let mut next_tid = state.next_target_id;
@@ -578,6 +592,13 @@ fn drain_and_evaluate_input_system(
             state
                 .layout_engine
                 .handle_peeks_spawn(&mut next_tid, now_qpc_us, spawn_dist)
+        } else {
+            None
+        };
+        let maybe_tracking = if maybe_fitts.is_none() && maybe_peeks.is_none() {
+            state
+                .layout_engine
+                .handle_tracking_spawn(&mut next_tid, now_qpc_us, spawn_dist)
         } else {
             None
         };
@@ -662,6 +683,25 @@ fn drain_and_evaluate_input_system(
                     );
                 }
             }
+        } else if let Some(action) = maybe_tracking {
+            spawn_tracking_target(
+                &mut commands,
+                &assets,
+                action.initial_angles,
+                action.radius_deg,
+                action.distance_m,
+                action.target_id,
+                now_qpc_s,
+            );
+            state.recorder.record_tracking_target_spawn(
+                action.target_id,
+                now_qpc_us,
+                now_qpc_us + 45_000_000,
+                action.radius_deg,
+                action.initial_angles.yaw,
+                action.initial_angles.pitch,
+                action.spline_ron,
+            );
         }
     }
 
@@ -682,7 +722,7 @@ fn drain_and_evaluate_input_system(
             state.misses_count
         );
 
-        for (entity, _) in &target_query {
+        for (entity, _, _) in &target_query {
             commands.entity(entity).despawn();
         }
     } else if let PeeksTimeoutOutcome::TimedOut {
@@ -701,7 +741,7 @@ fn drain_and_evaluate_input_system(
             state.misses_count
         );
 
-        for (entity, _) in &target_query {
+        for (entity, _, _) in &target_query {
             commands.entity(entity).despawn();
         }
     }

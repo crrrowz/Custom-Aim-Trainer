@@ -1,6 +1,8 @@
 use aim_scenarios::schema::*;
 use aim_scenarios::trajectory::target_angles_at;
 use aim_telemetry::*;
+use trainer::layout_engine::LayoutEngineState;
+use trainer::recorder::{RecorderSetup, SessionRecorder};
 
 #[test]
 fn test_tracking_path_spline_ron_reproducibility() {
@@ -16,55 +18,38 @@ fn test_tracking_path_spline_ron_reproducibility() {
 
     let seed = 0x5A17_F000_0000_0001;
 
-    // Serialize trajectory + seed as machine-parseable RON
-    let spline_ron =
-        ron::to_string(&(trajectory.clone(), seed)).expect("Failed serializing spline");
-
-    // Write into an AftSession
-    let mut session = AftSession {
-        header: AftHeader {
-            session_id: "018f4a38-5182-7212-bf96-b0ad511b81b2".to_string(),
-            created_at_utc: "2026-10-19T18:00:00Z".to_string(),
-            app_version: "0.1.0".to_string(),
-            trainer_version: "0.1.0".to_string(),
-            scenario_id: sc.id.clone(),
-            scenario_version: sc.version,
-            form: Some(0),
-            seed,
-            game_profile: "valorant.v1".to_string(),
-            mouse: MouseConfig {
-                dpi: 800,
-                sens: 0.35,
-                deg_per_count: 0.0245,
-            },
-            display: DisplayConfig {
-                width: 2560,
-                height: 1440,
-                hz: 165,
-                hfov: 103.0,
-                vfov: 70.53,
-            },
-            input: InputConfig {
-                est_polling_hz: 1000,
-            },
-            thresholds_version: "thresholds.v1".to_string(),
-            quality_flags: 0,
-        },
-        streams: AftStreams::default(),
-    };
-
-    session.streams.targets.records.push(TargetRecord {
-        id: 1,
-        spawn_t_us: 0,
-        despawn_t_us: 45_000_000,
-        kind: TargetKind::Sphere,
-        params: TargetParams {
-            radius_deg: 0.6,
-            initial_pos: [0.0, 0.0, 15.0],
-            path_spline: Some(spline_ron),
-        },
+    // Use SessionRecorder through the trainer engine flow
+    let mut recorder = SessionRecorder::new(RecorderSetup {
+        session_id: "018f4a38-5182-7212-bf96-b0ad511b81b2".to_string(),
+        scenario_id: sc.id.clone(),
+        form: Some(0),
+        seed,
+        dpi: 800,
+        sens: 0.35,
+        width: 2560,
+        height: 1440,
+        hz: 165,
     });
 
+    let mut engine = LayoutEngineState::new(&sc, seed, 0);
+    let mut next_tid = 1;
+    let spawn_action = engine
+        .handle_tracking_spawn(&mut next_tid, 0, 15.0)
+        .expect("Failed to spawn tracking target");
+
+    // Record via SessionRecorder's real game path method
+    recorder.record_tracking_target_spawn(
+        spawn_action.target_id,
+        0,
+        45_000_000,
+        spawn_action.radius_deg,
+        spawn_action.initial_angles.yaw,
+        spawn_action.initial_angles.pitch,
+        spawn_action.spline_ron,
+    );
+
+    // Build session and write .aft
+    let session = recorder.build_session();
     let bytes = write_aft(&session).expect("Failed writing aft");
     let decoded = read_aft(&bytes).expect("Failed reading aft");
 

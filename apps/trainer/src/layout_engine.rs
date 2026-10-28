@@ -7,8 +7,10 @@
 //! - ConcurrentCluster (A6)
 
 use aim_core::geometry::SphericalTarget;
+use aim_core::ViewAngles;
 use aim_scenarios::generator::PeekTrial;
-use aim_scenarios::schema::TargetLayout;
+use aim_scenarios::schema::{TargetLayout, TrackingTrajectory};
+use aim_scenarios::trajectory::TrajectoryIntegrator;
 use aim_scenarios::{
     generate_cluster_candidates, generate_fitts_trials, generate_peek_trials, Scenario, Trial,
 };
@@ -65,6 +67,10 @@ pub enum LayoutEngineState {
     Tracking {
         target_id: u32,
         duration_s: f64,
+        target_radius_deg: f64,
+        trajectory: TrackingTrajectory,
+        seed: u64,
+        integrator: Box<TrajectoryIntegrator>,
         spawned: bool,
     },
     Cluster {
@@ -104,11 +110,22 @@ impl LayoutEngineState {
                     occluders_spawned: false,
                 }
             }
-            TargetLayout::Tracking { duration_s, .. } => Self::Tracking {
-                target_id: 1,
-                duration_s: *duration_s,
-                spawned: false,
-            },
+            TargetLayout::Tracking {
+                target_radius_deg,
+                trajectory,
+                duration_s,
+            } => {
+                let integrator = Box::new(TrajectoryIntegrator::new(trajectory.clone(), seed));
+                Self::Tracking {
+                    target_id: 1,
+                    duration_s: *duration_s,
+                    target_radius_deg: *target_radius_deg,
+                    trajectory: trajectory.clone(),
+                    seed,
+                    integrator,
+                    spawned: false,
+                }
+            }
             TargetLayout::ConcurrentCluster {
                 concurrent_count,
                 total_targets,
@@ -424,11 +441,64 @@ impl LayoutEngineState {
 
     // --- Tracking Handlers ---
 
-    pub fn handle_tracking_spawn(&mut self, _next_target_id: &mut u32) {}
+    pub fn handle_tracking_spawn(
+        &mut self,
+        next_target_id: &mut u32,
+        now_qpc_us: u64,
+        spawn_distance_m: f32,
+    ) -> Option<TrackingSpawnAction> {
+        if let Self::Tracking {
+            target_id,
+            target_radius_deg,
+            trajectory,
+            seed,
+            integrator,
+            spawned,
+            ..
+        } = self
+        {
+            if !*spawned {
+                *spawned = true;
+                let tid = *next_target_id;
+                *next_target_id += 1;
+                *target_id = tid;
+                let angles = integrator.angles_at(now_qpc_us);
+                let spline_ron = ron::to_string(&(trajectory.clone(), *seed))
+                    .expect("Failed serializing tracking spline");
+                Some(TrackingSpawnAction {
+                    target_id: tid,
+                    initial_angles: angles,
+                    radius_deg: *target_radius_deg,
+                    distance_m: spawn_distance_m,
+                    spline_ron,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
 
-    pub fn handle_tracking_hit(&mut self, _t_us: u64) {}
-
-    pub fn handle_tracking_timeout(&mut self, _now_qpc_us: u64) {}
+    pub fn update_tracking_target(&mut self, now_qpc_us: u64) -> Option<(u32, ViewAngles, f64)> {
+        if let Self::Tracking {
+            target_id,
+            target_radius_deg,
+            integrator,
+            spawned,
+            ..
+        } = self
+        {
+            if *spawned {
+                let angles = integrator.angles_at(now_qpc_us);
+                Some((*target_id, angles, *target_radius_deg))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
 
     // --- Cluster Handlers ---
 
@@ -515,4 +585,13 @@ pub enum PeeksTimeoutOutcome {
         trial_elapsed_s: f64,
         completed: bool,
     },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackingSpawnAction {
+    pub target_id: u32,
+    pub initial_angles: ViewAngles,
+    pub radius_deg: f64,
+    pub distance_m: f32,
+    pub spline_ron: String,
 }

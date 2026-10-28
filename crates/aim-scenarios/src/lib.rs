@@ -16,4 +16,4 @@ pub use schema::{
     DistanceAnchor, FittsGrid, HitRule, Scenario, ScenarioKind, TargetLayout, TargetShape,
     TrackingTrajectory,
 };
-pub use trajectory::{generate_strafe_reversals, target_angles_at};
+pub use trajectory::{generate_strafe_reversals, target_angles_at, TrajectoryIntegrator};

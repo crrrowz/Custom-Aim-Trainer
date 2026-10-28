@@ -3,7 +3,7 @@
 //! Based on ChaCha8 with 53-bit IEEE-754 mantissa sampling and unbiased rejection sampling.
 //! Outputs are locked across compiler versions to guarantee parallel-form retest fairness.
 
-use rand_chacha::ChaCha8Rng;
+pub use rand_chacha::ChaCha8Rng;
 use rand_core::{Rng, SeedableRng};
 
 /// Create a ChaCha8Rng initialized with the given 64-bit seed.
