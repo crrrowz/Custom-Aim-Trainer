@@ -32,7 +32,8 @@ use trainer::ScenarioResource;
 #[derive(Resource)]
 pub struct TrainerConfig {
     pub scenario: String,
-    pub seed: u64,
+    pub seed: Option<u64>,
+    pub form: Option<u32>,
     pub dpi: u32,
     pub sens: f64,
     pub duration_s: f64,
@@ -82,7 +83,8 @@ pub struct TrainerState {
 
 fn parse_cli_args() -> TrainerConfig {
     let mut scenario = "assess.v1.flick_static".to_string();
-    let mut seed = 1337u64;
+    let mut cli_seed: Option<u64> = None;
+    let mut form: Option<u32> = None;
     let mut dpi = 800u32;
     let mut sens = 0.35f64;
     let mut duration_s = 288.0f64;
@@ -102,7 +104,22 @@ fn parse_cli_args() -> TrainerConfig {
                 i += 2;
             }
             "--seed" if i + 1 < args.len() => {
-                seed = args[i + 1].parse().unwrap_or(seed);
+                cli_seed = Some(args[i + 1].parse().unwrap_or_else(|e| {
+                    eprintln!("ERROR: Invalid --seed '{}': {}", args[i + 1], e);
+                    std::process::exit(1);
+                }));
+                i += 2;
+            }
+            "--form" if i + 1 < args.len() => {
+                let parsed_form: u32 = args[i + 1].parse().unwrap_or_else(|e| {
+                    eprintln!("ERROR: Invalid --form '{}': {}", args[i + 1], e);
+                    std::process::exit(1);
+                });
+                if parsed_form > 4 {
+                    eprintln!("ERROR: --form must be in range 0..4, got {}", parsed_form);
+                    std::process::exit(1);
+                }
+                form = Some(parsed_form);
                 i += 2;
             }
             "--dpi" if i + 1 < args.len() => {
@@ -147,6 +164,11 @@ fn parse_cli_args() -> TrainerConfig {
         }
     }
 
+    if cli_seed.is_some() && form.is_some() {
+        eprintln!("ERROR: Arguments '--form' and '--seed' are mutually exclusive. Provide either '--form <0..4>' or '--seed <u64>', not both.");
+        std::process::exit(1);
+    }
+
     // Fix 4: Validate mutually incompatible configurations
     if backend == "dx12" && fullscreen_exclusive {
         eprintln!(
@@ -157,7 +179,8 @@ fn parse_cli_args() -> TrainerConfig {
 
     TrainerConfig {
         scenario,
-        seed,
+        seed: cli_seed,
+        form,
         dpi,
         sens,
         duration_s,
@@ -181,13 +204,8 @@ fn resolve_scenario_file(scenario_name: &str) -> Option<PathBuf> {
 }
 
 /// Loads the scenario definition referenced by the CLI args.
-/// Exits with error for an unknown scenario.
+/// Validates the scenario and derives the seed.
 fn load_scenario(config: &TrainerConfig) -> (Scenario, ScenarioSeed) {
-    let cli_seed = ScenarioSeed {
-        seed: config.seed,
-        form: None,
-    };
-
     let sc = match resolve_scenario_file(&config.scenario) {
         Some(path) => {
             let ron_str = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -222,7 +240,26 @@ fn load_scenario(config: &TrainerConfig) -> (Scenario, ScenarioSeed) {
         }
     };
 
-    (sc, cli_seed)
+    if let Err(err) = sc.validate() {
+        eprintln!("ERROR: Scenario '{}' validation failed: {}", sc.id, err);
+        std::process::exit(1);
+    }
+
+    let scenario_seed = if let Some(form) = config.form {
+        ScenarioSeed {
+            seed: aim_scenarios::derive_scenario_seed(form as usize, &sc.id),
+            form: Some(form),
+        }
+    } else if let Some(seed) = config.seed {
+        ScenarioSeed { seed, form: None }
+    } else {
+        ScenarioSeed {
+            seed: aim_scenarios::derive_scenario_seed(0, &sc.id),
+            form: Some(0),
+        }
+    };
+
+    (sc, scenario_seed)
 }
 
 fn setup_trainer(
