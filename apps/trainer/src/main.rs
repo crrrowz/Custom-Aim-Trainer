@@ -433,6 +433,21 @@ fn drain_and_evaluate_input_system(
     let actions =
         trainer::replay::replay_input(&mut current_angles, &batch, primary_id, deg_per_count);
 
+    // Update active tracking target positions incrementally BEFORE evaluating this frame's clicks
+    if let Some((tracking_id, new_angles, radius_deg)) = state
+        .layout_engine
+        .update_tracking_target(render_start_t_us)
+    {
+        let spawn_dist = state.scenario_def.spawn_distance_m as f32;
+        let new_pos = trainer::target::angles_to_world_pos(new_angles, spawn_dist);
+        for (_, mut marker, mut transform, _) in &mut target_query {
+            if marker.target_id == tracking_id {
+                marker.spherical = aim_core::geometry::SphericalTarget::new(new_angles, radius_deg);
+                transform.translation = new_pos;
+            }
+        }
+    }
+
     // Fix 1: True per-event input latency metric: render_start_t_us - event.t_us for events applied in this frame
     for action in actions {
         match action {
@@ -756,7 +771,7 @@ fn drain_and_evaluate_input_system(
                 state.recorder.record_tracking_target_spawn(
                     action.target_id,
                     now_qpc_us,
-                    now_qpc_us + 45_000_000,
+                    action.despawn_t_us,
                     action.radius_deg,
                     action.initial_angles.yaw,
                     action.initial_angles.pitch,

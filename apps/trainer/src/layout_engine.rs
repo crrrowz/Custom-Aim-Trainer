@@ -73,6 +73,7 @@ pub enum LayoutEngineState {
         target_radius_deg: f64,
         trajectory: TrackingTrajectory,
         seed: u64,
+        spawn_t_us: u64,
         integrator: Box<TrajectoryIntegrator>,
         spawned: bool,
     },
@@ -127,6 +128,7 @@ impl LayoutEngineState {
                     target_radius_deg: *target_radius_deg,
                     trajectory: trajectory.clone(),
                     seed,
+                    spawn_t_us: 0,
                     integrator,
                     spawned: false,
                 }
@@ -458,9 +460,11 @@ impl LayoutEngineState {
     ) -> Option<TrackingSpawnAction> {
         if let Self::Tracking {
             target_id,
+            duration_s,
             target_radius_deg,
             trajectory,
             seed,
+            spawn_t_us,
             integrator,
             spawned,
             ..
@@ -468,10 +472,12 @@ impl LayoutEngineState {
         {
             if !*spawned {
                 *spawned = true;
+                *spawn_t_us = now_qpc_us;
                 let tid = *next_target_id;
                 *next_target_id += 1;
                 *target_id = tid;
-                let angles = integrator.angles_at(now_qpc_us);
+                let angles = integrator.angles_at(0);
+                let despawn_t_us = now_qpc_us + (*duration_s * 1_000_000.0) as u64;
                 let spline_ron = ron::to_string(&(trajectory.clone(), *seed))
                     .expect("Failed serializing tracking spline");
                 Some(TrackingSpawnAction {
@@ -480,6 +486,7 @@ impl LayoutEngineState {
                     radius_deg: *target_radius_deg,
                     distance_m: spawn_distance_m,
                     spline_ron,
+                    despawn_t_us,
                 })
             } else {
                 None
@@ -493,13 +500,15 @@ impl LayoutEngineState {
         if let Self::Tracking {
             target_id,
             target_radius_deg,
+            spawn_t_us,
             integrator,
             spawned,
             ..
         } = self
         {
             if *spawned {
-                let angles = integrator.angles_at(now_qpc_us);
+                let rel_t_us = now_qpc_us.saturating_sub(*spawn_t_us);
+                let angles = integrator.angles_at(rel_t_us);
                 Some((*target_id, angles, *target_radius_deg))
             } else {
                 None
@@ -717,6 +726,7 @@ pub struct TrackingSpawnAction {
     pub radius_deg: f64,
     pub distance_m: f32,
     pub spline_ron: String,
+    pub despawn_t_us: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
