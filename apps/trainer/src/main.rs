@@ -604,6 +604,11 @@ fn drain_and_evaluate_input_system(
         fps_cam.angles = current_angles;
     }
 
+    // Record the view stream every frame (camera yaw/pitch at render_start_t_us)
+    state
+        .recorder
+        .record_view(render_start_t_us, current_angles.yaw, current_angles.pitch);
+
     let assets = match assets {
         Some(a) => a,
         None => return,
