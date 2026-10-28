@@ -35,6 +35,7 @@ pub struct PeekTargetMarker {
     pub peek_speed_mps: f64,
     pub spawn_distance_m: f32,
     pub spawn_t_us: u64,
+    pub emergence_t_us: u64,
 }
 
 #[derive(Component)]

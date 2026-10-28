@@ -82,7 +82,15 @@ fn test_scripted_input_head_level_peeks_pitch_recording() {
         _ => panic!("Expected SpawnPeekTarget"),
     };
 
-    // Calculate exact pitch at spawn timestamp using replay
+    // Calculate exact pitch at spawn timestamp using the shared lib function
+    let recorded_pitch = trainer::replay::crosshair_pitch_at_qpc_instant(
+        &initial_angles,
+        &scripted_events,
+        peek_spawn_t,
+        Some(1),
+        deg_per_count,
+    );
+
     let spawn_angles = angles_at_timestamp(
         &initial_angles,
         &scripted_events,
@@ -94,12 +102,16 @@ fn test_scripted_input_head_level_peeks_pitch_recording() {
     // At t=15_000, only the first event at t=10_000 (dy = -100) has occurred:
     // pitch should be exactly 0.0 + (-(-100) * 0.0245) = 2.45 degrees!
     assert!(
-        (spawn_angles.pitch - 2.45).abs() < 1e-6,
-        "Spawn pitch at t=15000us must equal 2.45°, got {}",
-        spawn_angles.pitch
+        (recorded_pitch - 2.45).abs() < 1e-6,
+        "Recorded pitch at t=15000us must equal 2.45°, got {}",
+        recorded_pitch
+    );
+    assert!(
+        (spawn_angles.pitch - recorded_pitch).abs() < 1e-9,
+        "angles_at_timestamp and crosshair_pitch_at_qpc_instant must match"
     );
 
-    recorder.record_view(peek_spawn_t, spawn_angles.yaw, spawn_angles.pitch);
+    recorder.record_view(peek_spawn_t, spawn_angles.yaw, recorded_pitch);
     recorder.record_peek_target_spawn(
         next_tid - 1,
         peek_spawn_t,

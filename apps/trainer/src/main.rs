@@ -381,7 +381,12 @@ fn drain_and_evaluate_input_system(
     mut state: ResMut<TrainerState>,
     assets: Option<Res<TargetAssets>>,
     mut camera_query: Query<&mut FpsCamera>,
-    mut target_query: Query<(Entity, &mut ActiveTargetMarker, &mut Transform)>,
+    mut target_query: Query<(
+        Entity,
+        &mut ActiveTargetMarker,
+        &mut Transform,
+        Option<&mut trainer::layout_engine::PeekTargetMarker>,
+    )>,
 ) {
     let deg_per_count = VALORANT_YAW_DEG_PER_COUNT * config.sens;
     let render_start_t_us = state.clock.now_us();
@@ -447,7 +452,21 @@ fn drain_and_evaluate_input_system(
                 let mut hit_target_id = None;
                 let mut hitzone = HitZone::None;
 
-                for (entity, marker, _) in &target_query {
+                for (entity, marker, _, peek_opt) in &target_query {
+                    // Respect wall occlusion for peek targets
+                    if let Some(peek) = peek_opt {
+                        let half_wall_ang =
+                            ((0.5 / peek.spawn_distance_m as f64).asin()).to_degrees();
+                        let is_occluded = if peek.occluder_yaw > 0.0 {
+                            angles_at_click.yaw >= peek.occluder_yaw - half_wall_ang
+                        } else {
+                            angles_at_click.yaw <= peek.occluder_yaw + half_wall_ang
+                        };
+                        if is_occluded {
+                            continue;
+                        }
+                    }
+
                     let hit_res = marker.spherical.intersect_ray(angles_at_click);
 
                     if hit_res.is_hit {
@@ -538,7 +557,7 @@ fn drain_and_evaluate_input_system(
                             state.misses_count
                         );
 
-                        for (entity, _, _) in &target_query {
+                        for (entity, _, _, _) in &target_query {
                             commands.entity(entity).despawn();
                         }
                     } else if let PeeksMissOutcome::PeekMiss {
@@ -555,7 +574,7 @@ fn drain_and_evaluate_input_system(
                             state.misses_count
                         );
 
-                        for (entity, _, _) in &target_query {
+                        for (entity, _, _, _) in &target_query {
                             commands.entity(entity).despawn();
                         }
                     }
@@ -584,11 +603,30 @@ fn drain_and_evaluate_input_system(
     {
         let spawn_dist = state.scenario_def.spawn_distance_m as f32;
         let new_pos = trainer::target::angles_to_world_pos(new_angles, spawn_dist);
-        for (_, mut marker, mut transform) in &mut target_query {
+        for (_, mut marker, mut transform, _) in &mut target_query {
             if marker.target_id == tracking_id {
                 marker.spherical = aim_core::geometry::SphericalTarget::new(new_angles, radius_deg);
                 transform.translation = new_pos;
             }
+        }
+    }
+
+    // Update active peek target emergence positions
+    for (_, mut marker, mut transform, peek_opt) in &mut target_query {
+        if let Some(peek) = peek_opt {
+            let elapsed_s = (now_qpc_us.saturating_sub(peek.emergence_t_us) as f64) / 1_000_000.0;
+            let peek_speed_deg_s =
+                (peek.peek_speed_mps / peek.spawn_distance_m as f64).to_degrees();
+            let inward_sign = if peek.occluder_yaw > 0.0 { -1.0 } else { 1.0 };
+            let current_yaw = peek.target_yaw + inward_sign * elapsed_s * peek_speed_deg_s;
+            let current_angles = aim_core::camera::ViewAngles::new(current_yaw, peek.pitch);
+            marker.spherical = aim_core::geometry::SphericalTarget::new(
+                current_angles,
+                marker.spherical.radius_deg,
+            )
+            .with_head_zone(false);
+            transform.translation =
+                trainer::target::angles_to_world_pos(current_angles, peek.spawn_distance_m);
         }
     }
 
@@ -675,6 +713,14 @@ fn drain_and_evaluate_input_system(
                             distance_m,
                             target_id,
                             now_qpc_s,
+                            now_qpc_us,
+                        );
+                        let spawn_pitch = trainer::replay::crosshair_pitch_at_qpc_instant(
+                            &cam_angles_start,
+                            &batch,
+                            now_qpc_us,
+                            primary_id,
+                            deg_per_count,
                         );
                         let spawn_angles = trainer::replay::angles_at_timestamp(
                             &cam_angles_start,
@@ -683,11 +729,9 @@ fn drain_and_evaluate_input_system(
                             primary_id,
                             deg_per_count,
                         );
-                        state.recorder.record_view(
-                            now_qpc_us,
-                            spawn_angles.yaw,
-                            spawn_angles.pitch,
-                        );
+                        state
+                            .recorder
+                            .record_view(now_qpc_us, spawn_angles.yaw, spawn_pitch);
                         state.recorder.record_peek_target_spawn(
                             target_id,
                             now_qpc_us,
@@ -767,7 +811,7 @@ fn drain_and_evaluate_input_system(
             state.misses_count
         );
 
-        for (entity, _, _) in &target_query {
+        for (entity, _, _, _) in &target_query {
             commands.entity(entity).despawn();
         }
     } else if let PeeksTimeoutOutcome::TimedOut {
@@ -786,7 +830,7 @@ fn drain_and_evaluate_input_system(
             state.misses_count
         );
 
-        for (entity, _, _) in &target_query {
+        for (entity, _, _, _) in &target_query {
             commands.entity(entity).despawn();
         }
     }

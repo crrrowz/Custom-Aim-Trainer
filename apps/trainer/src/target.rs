@@ -267,6 +267,7 @@ pub fn spawn_trial_target(
 }
 
 /// Spawns an emerging peek target at its dynamic angle for A3.
+/// Starts emerging from the wall's inner edge (facing center).
 pub fn spawn_peek_target(
     commands: &mut Commands,
     assets: &TargetAssets,
@@ -274,20 +275,41 @@ pub fn spawn_peek_target(
     distance_m: f32,
     target_id: u32,
     now_s: f64,
+    spawn_t_us: u64,
 ) {
-    let angles = ViewAngles::new(trial.occluder_yaw_deg, trial.noisy_pitch_deg);
+    let half_wall_ang = ((0.5 / distance_m as f64).asin()).to_degrees();
+    // Inner edge direction: toward center 0.0°
+    let initial_yaw = if trial.occluder_yaw_deg > 0.0 {
+        trial.occluder_yaw_deg - half_wall_ang
+    } else {
+        trial.occluder_yaw_deg + half_wall_ang
+    };
+    let initial_angles = ViewAngles::new(initial_yaw, trial.noisy_pitch_deg);
     let linear_radius = distance_m * (trial.target_radius_deg as f32).to_radians().sin();
 
     commands.spawn((
         Mesh3d(assets.trial_mesh.clone()),
         MeshMaterial3d(assets.trial_material.clone()),
-        Transform::from_translation(angles_to_world_pos(angles, distance_m))
+        Transform::from_translation(angles_to_world_pos(initial_angles, distance_m))
             .with_scale(Vec3::splat(linear_radius)),
         ActiveTargetMarker {
             target_id,
-            spherical: SphericalTarget::new(angles, trial.target_radius_deg).with_head_zone(false),
+            spherical: SphericalTarget::new(initial_angles, trial.target_radius_deg)
+                .with_head_zone(false),
             is_home_target: false,
             spawn_time_s: now_s,
+        },
+        crate::layout_engine::PeekTargetMarker {
+            trial_idx: trial.index,
+            target_id,
+            spherical: SphericalTarget::new(initial_angles, trial.target_radius_deg),
+            occluder_yaw: trial.occluder_yaw_deg,
+            target_yaw: initial_yaw,
+            pitch: trial.noisy_pitch_deg,
+            peek_speed_mps: trial.peek_speed_mps,
+            spawn_distance_m: distance_m,
+            spawn_t_us,
+            emergence_t_us: spawn_t_us,
         },
     ));
 }

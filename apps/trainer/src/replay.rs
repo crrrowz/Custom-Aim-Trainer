@@ -79,3 +79,22 @@ pub fn angles_at_timestamp(
     }
     angles
 }
+
+/// Computes the crosshair pitch at an exact QPC timestamp by replaying raw input events
+/// up to that timestamp against an initial ViewAngles.
+pub fn crosshair_pitch_at_qpc_instant(
+    initial_angles: &ViewAngles,
+    events: &[RawInputEvent],
+    target_qpc_us: u64,
+    primary_id: Option<usize>,
+    deg_per_count: f64,
+) -> f64 {
+    let angles = angles_at_timestamp(
+        initial_angles,
+        events,
+        target_qpc_us,
+        primary_id,
+        deg_per_count,
+    );
+    angles.pitch
+}
