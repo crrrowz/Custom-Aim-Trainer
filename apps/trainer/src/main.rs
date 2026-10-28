@@ -11,7 +11,8 @@ use bevy::render::settings::{Backends, RenderCreation, WgpuSettings};
 use bevy::render::RenderPlugin;
 use bevy::window::{
     CursorGrabMode, CursorOptions, Monitor, MonitorSelection, PresentMode, PrimaryMonitor,
-    PrimaryWindow, RawHandleWrapper, VideoModeSelection, WindowFocused, WindowMode,
+    PrimaryWindow, RawHandleWrapper, VideoModeSelection, WindowCloseRequested, WindowFocused,
+    WindowMode,
 };
 use bevy::winit::{UpdateMode, WinitSettings};
 use std::collections::HashMap;
@@ -1042,27 +1043,47 @@ fn session_lifecycle_system(
             );
         }
 
-        let target_path = config.output_path.clone().unwrap_or_else(|| {
-            PathBuf::from(format!("session-{}.aft", state.recorder.setup.session_id))
-        });
+        save_session_telemetry(&mut state, &config, !completed_all);
 
-        match state.recorder.save_to_file(&target_path) {
-            Ok(bytes) => {
-                println!(
-                    "\nTelemetry successfully written to: {} ({:.1} KB)",
-                    target_path.display(),
-                    bytes as f64 / 1024.0
-                );
-            }
-            Err(e) => {
-                eprintln!(
-                    "\nFailed writing telemetry to {}: {}",
-                    target_path.display(),
-                    e
-                );
-            }
+        exit.write(AppExit::Success);
+    }
+}
+
+fn save_session_telemetry(state: &mut TrainerState, config: &TrainerConfig, is_aborted: bool) {
+    if is_aborted {
+        state.recorder.quality_flags |= quality_flags::ABORTED;
+    }
+    let target_path = config.output_path.clone().unwrap_or_else(|| {
+        PathBuf::from(format!("session-{}.aft", state.recorder.setup.session_id))
+    });
+
+    match state.recorder.save_to_file(&target_path) {
+        Ok(bytes) => {
+            println!(
+                "\nTelemetry successfully written to: {} ({:.1} KB)",
+                target_path.display(),
+                bytes as f64 / 1024.0
+            );
         }
+        Err(e) => {
+            eprintln!(
+                "\nFailed writing telemetry to {}: {}",
+                target_path.display(),
+                e
+            );
+        }
+    }
+}
 
+fn window_close_system(
+    mut close_events: MessageReader<WindowCloseRequested>,
+    mut state: ResMut<TrainerState>,
+    config: Res<TrainerConfig>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    for _ in close_events.read() {
+        println!("\nWindow close requested. Saving partial session...");
+        save_session_telemetry(&mut state, &config, true);
         exit.write(AppExit::Success);
     }
 }
@@ -1094,7 +1115,7 @@ fn pause_menu_toggle_system(
 fn pause_menu_button_system(
     mut commands: Commands,
     mut pause_manager: ResMut<PauseManager>,
-    state: Res<TrainerState>,
+    mut state: ResMut<TrainerState>,
     mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     q_overlay: Query<Entity, With<PauseOverlayRoot>>,
     mut interaction_query: Query<
@@ -1114,25 +1135,8 @@ fn pause_menu_button_system(
                     despawn_pause_menu(&mut commands, &q_overlay);
                 }
                 PauseButtonAction::QuitAndSave => {
-                    let target_path = config.output_path.clone().unwrap_or_else(|| {
-                        PathBuf::from(format!("session-{}.aft", state.recorder.setup.session_id))
-                    });
-                    match state.recorder.save_to_file(&target_path) {
-                        Ok(bytes) => {
-                            println!(
-                                "\nTelemetry successfully written to: {} ({:.1} KB)",
-                                target_path.display(),
-                                bytes as f64 / 1024.0
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "\nFailed writing telemetry to {}: {}",
-                                target_path.display(),
-                                e
-                            );
-                        }
-                    }
+                    println!("\nQuit & Save requested. Saving partial session...");
+                    save_session_telemetry(&mut state, &config, true);
                     exit.write(AppExit::Success);
                 }
                 PauseButtonAction::QuitWithoutSaving => {
@@ -1243,7 +1247,14 @@ fn main() {
                     .chain(),
             ),
         )
-        .add_systems(Update, (pause_menu_toggle_system, pause_menu_button_system))
+        .add_systems(
+            Update,
+            (
+                window_close_system,
+                pause_menu_toggle_system,
+                pause_menu_button_system,
+            ),
+        )
         .add_systems(
             PostUpdate,
             (track_frame_time_system, session_lifecycle_system),
