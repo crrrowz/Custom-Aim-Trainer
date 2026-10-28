@@ -1,0 +1,12 @@
+[package]
+name = "aft-dump"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aim-core = { path = "../../crates/aim-core" }
+aim-telemetry = { path = "../../crates/aim-telemetry" }
+aim-scenarios = { path = "../../crates/aim-scenarios" }
+ron = "0.8"

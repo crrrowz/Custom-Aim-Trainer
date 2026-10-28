@@ -11,6 +11,7 @@ members = [
     "crates/aim-llm",
     "crates/aim-wasm",
     "apps/trainer",
+    "tools/aft-dump",
 ]
 
 [workspace.package]
