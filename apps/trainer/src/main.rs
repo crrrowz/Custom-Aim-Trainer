@@ -1071,7 +1071,7 @@ fn pause_menu_toggle_system(
     mut commands: Commands,
     keyboard: Res<ButtonInput<KeyCode>>,
     mut pause_manager: ResMut<PauseManager>,
-    state: Res<TrainerState>,
+    mut state: ResMut<TrainerState>,
     mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     q_overlay: Query<Entity, With<PauseOverlayRoot>>,
 ) {
@@ -1079,6 +1079,7 @@ fn pause_menu_toggle_system(
         let now_us = state.clock.now_us();
         pause_manager.toggle_pause(now_us);
         if pause_manager.is_paused {
+            state.recorder.flag_paused();
             set_cursor_lock(&mut q_cursor, false);
             spawn_pause_menu(&mut commands);
         } else {

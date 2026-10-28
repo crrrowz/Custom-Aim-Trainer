@@ -51,6 +51,10 @@ impl SessionRecorder {
         self.quality_flags |= quality_flags::FOCUS_LOST;
     }
 
+    pub fn flag_paused(&mut self) {
+        self.quality_flags |= quality_flags::PAUSED;
+    }
+
     pub fn record_input(&mut self, t_us: u64, dx: i32, dy: i32) {
         self.streams.input.t_us.push(t_us);
         self.streams.input.dx.push(dx);
