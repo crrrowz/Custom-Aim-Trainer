@@ -200,15 +200,17 @@ pub fn setup_target_assets(
 }
 
 /// Convert spherical angular coordinates (yaw, pitch) and radial distance into a 3D Vec3 coordinate.
+/// Matches the camera coordinate frame: forward = (sin y·cos p, sin p, -cos y·cos p).
 pub fn angles_to_world_pos(angles: ViewAngles, distance_m: f32) -> Vec3 {
-    let yaw_rad = angles.yaw.to_radians() as f32;
-    let pitch_rad = angles.pitch.to_radians() as f32;
+    let yaw_rad = angles.yaw.to_radians();
+    let pitch_rad = angles.pitch.to_radians();
     let cos_pitch = pitch_rad.cos();
+    let dist_f64 = distance_m as f64;
 
     Vec3::new(
-        yaw_rad.sin() * cos_pitch * distance_m,
-        pitch_rad.sin() * distance_m,
-        yaw_rad.cos() * cos_pitch * distance_m,
+        (yaw_rad.sin() * cos_pitch * dist_f64) as f32,
+        (pitch_rad.sin() * dist_f64) as f32,
+        (-yaw_rad.cos() * cos_pitch * dist_f64) as f32,
     )
 }
 

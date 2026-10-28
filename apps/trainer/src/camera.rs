@@ -21,6 +21,13 @@ pub fn valorant_projection(aspect: f64) -> PerspectiveProjection {
     }
 }
 
+/// Computes the camera orientation Quat from ViewAngles.
+pub fn camera_rotation_from_angles(angles: ViewAngles) -> Quat {
+    let yaw_rad = angles.yaw.to_radians();
+    let pitch_rad = angles.pitch.to_radians();
+    Quat::from_euler(EulerRot::YXZ, (-yaw_rad) as f32, pitch_rad as f32, 0.0)
+}
+
 /// Spawns the VALORANT 3D camera.
 pub fn spawn_fps_camera(mut commands: Commands) {
     let aspect = 16.0 / 9.0;
@@ -29,7 +36,7 @@ pub fn spawn_fps_camera(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
         Projection::Perspective(proj),
-        Transform::from_xyz(0.0, 0.0, 0.0).looking_at(Vec3::new(0.0, 0.0, 1.0), Vec3::Y),
+        Transform::from_xyz(0.0, 0.0, 0.0).looking_at(Vec3::new(0.0, 0.0, -1.0), Vec3::Y),
         FpsCamera::default(),
     ));
 }
@@ -62,10 +69,7 @@ pub fn spawn_crosshair_ui(mut commands: Commands) {
 /// Synchronizes the Camera's Transform with its `FpsCamera` orientation.
 pub fn sync_camera_transform(mut query: Query<(&FpsCamera, &mut Transform)>) {
     for (fps_cam, mut transform) in &mut query {
-        let yaw_rad = fps_cam.angles.yaw.to_radians() as f32;
-        let pitch_rad = fps_cam.angles.pitch.to_radians() as f32;
-
-        transform.rotation = Quat::from_euler(EulerRot::YXZ, -yaw_rad, pitch_rad, 0.0);
+        transform.rotation = camera_rotation_from_angles(fps_cam.angles);
     }
 }
 
