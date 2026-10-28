@@ -132,6 +132,15 @@ impl LayoutEngineState {
         }
     }
 
+    pub fn total_trials_or_targets(&self) -> usize {
+        match self {
+            Self::Fitts { trials, .. } => trials.len(),
+            Self::Peeks { trials, .. } => trials.len(),
+            Self::Tracking { .. } => 1,
+            Self::Cluster { total_targets, .. } => *total_targets as usize,
+        }
+    }
+
     pub fn is_completed(&self) -> bool {
         match self {
             Self::Fitts {
@@ -152,4 +161,194 @@ impl LayoutEngineState {
             } => *spawned_count >= *total_targets,
         }
     }
+
+    // --- Fitts Handlers ---
+
+    pub fn handle_fitts_spawn(
+        &mut self,
+        next_target_id: &mut u32,
+        now_qpc_us: u64,
+        spawn_distance_m: f32,
+    ) -> Option<FittsSpawnAction> {
+        if let Self::Fitts {
+            trials,
+            current_idx,
+            phase,
+            trial_start_t_us,
+        } = self
+        {
+            if *current_idx >= trials.len() {
+                return None;
+            }
+            let tid = *next_target_id;
+            *next_target_id += 1;
+            match phase {
+                FittsPhase::AwaitingHomeTarget => Some(FittsSpawnAction::SpawnHome {
+                    target_id: tid,
+                    distance_m: spawn_distance_m,
+                }),
+                FittsPhase::AwaitingTrialTarget => {
+                    let trial = trials[*current_idx].clone();
+                    *trial_start_t_us = now_qpc_us;
+                    Some(FittsSpawnAction::SpawnTrial {
+                        target_id: tid,
+                        trial,
+                        distance_m: spawn_distance_m,
+                    })
+                }
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn handle_fitts_hit(&mut self, is_home_target: bool, t_us: u64) -> Option<FittsHitOutcome> {
+        if let Self::Fitts {
+            trials,
+            current_idx,
+            phase,
+            trial_start_t_us,
+        } = self
+        {
+            if is_home_target {
+                *phase = FittsPhase::AwaitingTrialTarget;
+                Some(FittsHitOutcome::HomeHit)
+            } else {
+                let trial_elapsed_s = (t_us.saturating_sub(*trial_start_t_us) as f64) / 1_000_000.0;
+                let trial_idx = *current_idx;
+                *current_idx += 1;
+                let completed = *current_idx >= trials.len();
+                if !completed {
+                    *phase = FittsPhase::AwaitingHomeTarget;
+                }
+                Some(FittsHitOutcome::TrialHit {
+                    trial_idx,
+                    trial_elapsed_s,
+                    completed,
+                })
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn handle_fitts_miss(&mut self) -> FittsMissOutcome {
+        if let Self::Fitts {
+            trials,
+            current_idx,
+            phase,
+            ..
+        } = self
+        {
+            if *phase == FittsPhase::AwaitingTrialTarget {
+                let trial_idx = *current_idx;
+                *current_idx += 1;
+                let completed = *current_idx >= trials.len();
+                if !completed {
+                    *phase = FittsPhase::AwaitingHomeTarget;
+                }
+                FittsMissOutcome::TrialMiss {
+                    trial_idx,
+                    completed,
+                }
+            } else {
+                FittsMissOutcome::Ignored
+            }
+        } else {
+            FittsMissOutcome::Ignored
+        }
+    }
+
+    pub fn handle_fitts_timeout(&mut self, now_qpc_us: u64) -> FittsTimeoutOutcome {
+        if let Self::Fitts {
+            trials,
+            current_idx,
+            phase,
+            trial_start_t_us,
+        } = self
+        {
+            if *phase == FittsPhase::AwaitingTrialTarget && *current_idx < trials.len() {
+                let timeout_s = trials[*current_idx].trial_timeout_s;
+                let trial_elapsed_s =
+                    (now_qpc_us.saturating_sub(*trial_start_t_us) as f64) / 1_000_000.0;
+                if trial_elapsed_s >= timeout_s {
+                    let trial_idx = *current_idx;
+                    *current_idx += 1;
+                    let completed = *current_idx >= trials.len();
+                    if !completed {
+                        *phase = FittsPhase::AwaitingHomeTarget;
+                    }
+                    return FittsTimeoutOutcome::TimedOut {
+                        trial_idx,
+                        trial_elapsed_s,
+                        completed,
+                    };
+                }
+            }
+        }
+        FittsTimeoutOutcome::NoTimeout
+    }
+
+    // --- Peeks Handlers ---
+
+    pub fn handle_peeks_spawn(&mut self, _next_target_id: &mut u32, _now_qpc_us: u64) {}
+
+    pub fn handle_peeks_hit(&mut self, _target_id: u32, _t_us: u64) {}
+
+    pub fn handle_peeks_timeout(&mut self, _now_qpc_us: u64) {}
+
+    // --- Tracking Handlers ---
+
+    pub fn handle_tracking_spawn(&mut self, _next_target_id: &mut u32) {}
+
+    pub fn handle_tracking_hit(&mut self, _t_us: u64) {}
+
+    pub fn handle_tracking_timeout(&mut self, _now_qpc_us: u64) {}
+
+    // --- Cluster Handlers ---
+
+    pub fn handle_cluster_spawn(&mut self, _next_target_id: &mut u32) {}
+
+    pub fn handle_cluster_hit(&mut self, _target_id: u32) {}
+
+    pub fn handle_cluster_timeout(&mut self, _now_qpc_us: u64) {}
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FittsSpawnAction {
+    SpawnHome {
+        target_id: u32,
+        distance_m: f32,
+    },
+    SpawnTrial {
+        target_id: u32,
+        trial: Trial,
+        distance_m: f32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FittsHitOutcome {
+    HomeHit,
+    TrialHit {
+        trial_idx: usize,
+        trial_elapsed_s: f64,
+        completed: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FittsMissOutcome {
+    Ignored,
+    TrialMiss { trial_idx: usize, completed: bool },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FittsTimeoutOutcome {
+    NoTimeout,
+    TimedOut {
+        trial_idx: usize,
+        trial_elapsed_s: f64,
+        completed: bool,
+    },
 }

@@ -4,7 +4,7 @@
 
 use aim_core::geometry::HitZoneType;
 use aim_core::sensitivity::VALORANT_YAW_DEG_PER_COUNT;
-use aim_scenarios::{generate_trials, Scenario, Trial};
+use aim_scenarios::Scenario;
 use aim_telemetry::format::{quality_flags, HitZone};
 use bevy::prelude::*;
 use bevy::render::settings::{Backends, RenderCreation, WgpuSettings};
@@ -19,6 +19,9 @@ use std::num::NonZero;
 use std::path::PathBuf;
 use trainer::camera::{spawn_crosshair_ui, spawn_fps_camera, sync_camera_transform, FpsCamera};
 use trainer::clock::SessionClock;
+use trainer::layout_engine::{
+    FittsHitOutcome, FittsMissOutcome, FittsSpawnAction, FittsTimeoutOutcome, LayoutEngineState,
+};
 use trainer::raw_input::RawInputWorker;
 use trainer::recorder::{self, SessionRecorder};
 use trainer::target::{
@@ -50,13 +53,6 @@ pub struct ScenarioSeed {
     pub form: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AssessmentPhase {
-    AwaitingHomeTarget,
-    AwaitingTrialTarget,
-    Completed,
-}
-
 #[derive(Resource)]
 pub struct TrainerState {
     pub clock: SessionClock,
@@ -76,15 +72,12 @@ pub struct TrainerState {
     pub non_primary_events: u64,
     pub warmup_events_collected: u64,
 
-    // Task 1.9 & Scenario state machine
+    // Scenario definition & layout engine state machine
     pub scenario_def: Scenario,
-    pub trials: Vec<Trial>,
-    pub current_trial_idx: usize,
-    pub phase: AssessmentPhase,
+    pub layout_engine: LayoutEngineState,
     pub next_target_id: u32,
     pub hits_count: u32,
     pub misses_count: u32,
-    pub trial_start_t_us: u64,
 }
 
 fn parse_cli_args() -> TrainerConfig {
@@ -177,37 +170,59 @@ fn parse_cli_args() -> TrainerConfig {
     }
 }
 
-/// Loads the scenario definition referenced by the CLI args, falling back to
-/// the embedded `assess.v1.flick_static` definition. Returns the scenario and
-/// the seed to drive trial generation with.
-fn load_scenario(config: &TrainerConfig) -> (Scenario, ScenarioSeed) {
-    const FALLBACK_RON: &str =
-        include_str!("../../../content/scenarios/assess.v1.flick_static.ron");
-    let parse_fallback = || -> Scenario {
-        ron::from_str(FALLBACK_RON).expect("Failed parsing assess.v1.flick_static.ron")
-    };
+fn resolve_scenario_file(scenario_name: &str) -> Option<PathBuf> {
+    let candidates = [
+        PathBuf::from(scenario_name),
+        PathBuf::from(format!("{}.ron", scenario_name)),
+        PathBuf::from(format!("content/scenarios/{}.ron", scenario_name)),
+        PathBuf::from(format!("content/scenarios/assess.v1.{}.ron", scenario_name)),
+    ];
+    candidates.into_iter().find(|p| p.is_file())
+}
 
+/// Loads the scenario definition referenced by the CLI args.
+/// Exits with error for an unknown scenario.
+fn load_scenario(config: &TrainerConfig) -> (Scenario, ScenarioSeed) {
     let cli_seed = ScenarioSeed {
         seed: config.seed,
         form: None,
     };
 
-    if config.scenario == "assess.v1.flick_static" {
-        return (parse_fallback(), cli_seed);
-    }
-
-    let path = format!("content/scenarios/{}.ron", config.scenario);
-    match std::fs::read_to_string(&path) {
-        Ok(ron_str) => {
-            let sc: Scenario = ron::from_str(&ron_str).expect("Failed parsing scenario file");
-            let seed = ScenarioSeed {
-                seed: aim_scenarios::derive_scenario_seed(0, &sc.id),
-                form: Some(0),
-            };
-            (sc, seed)
+    let sc = match resolve_scenario_file(&config.scenario) {
+        Some(path) => {
+            let ron_str = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                eprintln!(
+                    "ERROR: Failed reading scenario file '{}': {}",
+                    path.display(),
+                    e
+                );
+                std::process::exit(1);
+            });
+            ron::from_str::<Scenario>(&ron_str).unwrap_or_else(|e| {
+                eprintln!(
+                    "ERROR: Failed parsing scenario file '{}': {}",
+                    path.display(),
+                    e
+                );
+                std::process::exit(1);
+            })
         }
-        Err(_) => (parse_fallback(), cli_seed),
-    }
+        None => {
+            if config.scenario == "assess.v1.flick_static" || config.scenario == "flick_static" {
+                const FALLBACK_RON: &str =
+                    include_str!("../../../content/scenarios/assess.v1.flick_static.ron");
+                ron::from_str(FALLBACK_RON).expect("Failed parsing fallback flick_static.ron")
+            } else {
+                eprintln!(
+                    "ERROR: Unknown scenario '{}'. Scenario definition not found in content/scenarios/.",
+                    config.scenario
+                );
+                std::process::exit(1);
+            }
+        }
+    };
+
+    (sc, cli_seed)
 }
 
 fn setup_trainer(
@@ -234,9 +249,8 @@ fn setup_trainer(
     // The scenario was resolved before the app ran so that this crate's
     // Startup systems (asset setup) can branch on its layout.
     let scenario_def = scenario_res.0.clone();
-    let trials = generate_trials(&scenario_def, scenario_seed.seed);
-
     let initial_t = clock.now_us();
+    let layout_engine = LayoutEngineState::new(&scenario_def, scenario_seed.seed, initial_t);
 
     commands.insert_resource(TrainerState {
         clock,
@@ -256,13 +270,10 @@ fn setup_trainer(
         warmup_events_collected: 0,
 
         scenario_def,
-        trials,
-        current_trial_idx: 0,
-        phase: AssessmentPhase::AwaitingHomeTarget,
+        layout_engine,
         next_target_id: 1,
         hits_count: 0,
         misses_count: 0,
-        trial_start_t_us: initial_t,
     });
 }
 
@@ -409,50 +420,53 @@ fn drain_and_evaluate_input_system(
 
                         commands.entity(entity).despawn();
 
-                        if marker.is_home_target {
-                            state.phase = AssessmentPhase::AwaitingTrialTarget;
-                        } else {
-                            state.hits_count += 1;
-                            let trial_elapsed =
-                                SessionClock::us_to_s(t_us.saturating_sub(state.trial_start_t_us));
-                            println!(
-                                "[Trial {}/96] HIT! Time: {:.3}s (Dist: {:.2}°). Hits: {}, Misses: {}",
-                                state.current_trial_idx + 1,
-                                trial_elapsed,
-                                hit_res.angular_distance_deg,
-                                state.hits_count,
-                                state.misses_count
-                            );
-
-                            state.current_trial_idx += 1;
-                            if state.current_trial_idx < state.trials.len() {
-                                state.phase = AssessmentPhase::AwaitingHomeTarget;
-                            } else {
-                                state.phase = AssessmentPhase::Completed;
+                        let total_trials = state.layout_engine.total_trials_or_targets();
+                        match state
+                            .layout_engine
+                            .handle_fitts_hit(marker.is_home_target, t_us)
+                        {
+                            Some(FittsHitOutcome::HomeHit) => {}
+                            Some(FittsHitOutcome::TrialHit {
+                                trial_idx,
+                                trial_elapsed_s,
+                                completed: _,
+                            }) => {
+                                state.hits_count += 1;
+                                println!(
+                                    "[Trial {}/{}] HIT! Time: {:.3}s (Dist: {:.2}°). Hits: {}, Misses: {}",
+                                    trial_idx + 1,
+                                    total_trials,
+                                    trial_elapsed_s,
+                                    hit_res.angular_distance_deg,
+                                    state.hits_count,
+                                    state.misses_count
+                                );
                             }
+                            None => {}
                         }
                         break;
                     }
                 }
 
-                if hit_target_id.is_none() && state.phase == AssessmentPhase::AwaitingTrialTarget {
-                    state.misses_count += 1;
-                    println!(
-                        "[Trial {}/96] MISS! Total Hits: {}, Misses: {}",
-                        state.current_trial_idx + 1,
-                        state.hits_count,
-                        state.misses_count
-                    );
+                if hit_target_id.is_none() {
+                    let total_trials = state.layout_engine.total_trials_or_targets();
+                    if let FittsMissOutcome::TrialMiss {
+                        trial_idx,
+                        completed: _,
+                    } = state.layout_engine.handle_fitts_miss()
+                    {
+                        state.misses_count += 1;
+                        println!(
+                            "[Trial {}/{}] MISS! Total Hits: {}, Misses: {}",
+                            trial_idx + 1,
+                            total_trials,
+                            state.hits_count,
+                            state.misses_count
+                        );
 
-                    for (entity, _) in &target_query {
-                        commands.entity(entity).despawn();
-                    }
-
-                    state.current_trial_idx += 1;
-                    if state.current_trial_idx < state.trials.len() {
-                        state.phase = AssessmentPhase::AwaitingHomeTarget;
-                    } else {
-                        state.phase = AssessmentPhase::Completed;
+                        for (entity, _) in &target_query {
+                            commands.entity(entity).despawn();
+                        }
                     }
                 }
 
@@ -473,80 +487,71 @@ fn drain_and_evaluate_input_system(
     let now_qpc_us = state.clock.now_us();
     let now_qpc_s = SessionClock::us_to_s(now_qpc_us);
 
-    if target_query.iter().next().is_none() && state.phase != AssessmentPhase::Completed {
-        let tid = state.next_target_id;
-        state.next_target_id += 1;
+    if target_query.iter().next().is_none() && !state.layout_engine.is_completed() {
+        let spawn_dist = state.scenario_def.spawn_distance_m as f32;
+        let mut next_tid = state.next_target_id;
+        let maybe_action =
+            state
+                .layout_engine
+                .handle_fitts_spawn(&mut next_tid, now_qpc_us, spawn_dist);
+        state.next_target_id = next_tid;
 
-        match state.phase {
-            AssessmentPhase::AwaitingHomeTarget => {
-                spawn_home_target(
-                    &mut commands,
-                    &assets,
-                    state.scenario_def.spawn_distance_m as f32,
-                    tid,
-                    now_qpc_s,
-                );
-                state
-                    .recorder
-                    .record_target_spawn(tid, now_qpc_us, 0, 0.5, 0.0, 0.0);
-            }
-            AssessmentPhase::AwaitingTrialTarget => {
-                if state.current_trial_idx < state.trials.len() {
-                    let trial = state.trials[state.current_trial_idx].clone();
+        if let Some(action) = maybe_action {
+            match action {
+                FittsSpawnAction::SpawnHome {
+                    target_id,
+                    distance_m,
+                } => {
+                    spawn_home_target(&mut commands, &assets, distance_m, target_id, now_qpc_s);
+                    state
+                        .recorder
+                        .record_target_spawn(target_id, now_qpc_us, 0, 0.5, 0.0, 0.0);
+                }
+                FittsSpawnAction::SpawnTrial {
+                    target_id,
+                    trial,
+                    distance_m,
+                } => {
                     spawn_trial_target(
                         &mut commands,
                         &assets,
                         &trial,
-                        state.scenario_def.spawn_distance_m as f32,
-                        tid,
+                        distance_m,
+                        target_id,
                         now_qpc_s,
                     );
                     state.recorder.record_target_spawn(
-                        tid,
+                        target_id,
                         now_qpc_us,
                         0,
                         trial.radius_deg,
                         trial.yaw_deg,
                         trial.pitch_deg,
                     );
-                    state.trial_start_t_us = now_qpc_us;
-                } else {
-                    state.phase = AssessmentPhase::Completed;
                 }
             }
-            AssessmentPhase::Completed => {}
         }
     }
 
-    if state.phase == AssessmentPhase::AwaitingTrialTarget {
-        let timeout_s = if state.current_trial_idx < state.trials.len() {
-            state.trials[state.current_trial_idx].trial_timeout_s
-        } else {
-            3.0
-        };
-        let trial_elapsed_s =
-            SessionClock::us_to_s(now_qpc_us.saturating_sub(state.trial_start_t_us));
-        if trial_elapsed_s >= timeout_s {
-            state.misses_count += 1;
-            println!(
-                "[Trial {}/{}] TIMEOUT ({:.2}s). Total Hits: {}, Misses: {}",
-                state.current_trial_idx + 1,
-                state.trials.len(),
-                trial_elapsed_s,
-                state.hits_count,
-                state.misses_count
-            );
+    let total_trials = state.layout_engine.total_trials_or_targets();
+    if let FittsTimeoutOutcome::TimedOut {
+        trial_idx,
+        trial_elapsed_s,
+        completed: _,
+    } = state.layout_engine.handle_fitts_timeout(now_qpc_us)
+    {
+        state.misses_count += 1;
+        println!(
+            "[Trial {}/{}] TIMEOUT ({:.2}s). Total Hits: {}, Misses: {}",
+            trial_idx + 1,
+            total_trials,
+            trial_elapsed_s,
+            state.hits_count,
+            state.misses_count
+        );
 
-            for (entity, _) in &target_query {
-                commands.entity(entity).despawn();
-            }
-
-            state.current_trial_idx += 1;
-            if state.current_trial_idx < state.trials.len() {
-                state.phase = AssessmentPhase::AwaitingHomeTarget;
-            } else {
-                state.phase = AssessmentPhase::Completed;
-            }
+        for (entity, _) in &target_query {
+            commands.entity(entity).despawn();
         }
     }
 }
@@ -565,17 +570,18 @@ fn session_lifecycle_system(
     mut exit: MessageWriter<AppExit>,
 ) {
     let elapsed_s = SessionClock::us_to_s(state.clock.now_us());
-    let completed_all = state.phase == AssessmentPhase::Completed;
+    let completed_all = state.layout_engine.is_completed();
 
     if elapsed_s >= config.duration_s || completed_all {
+        let total_count = state.layout_engine.total_trials_or_targets();
         println!("\n=== AimForge Trainer Session Completed ===");
         println!("Elapsed time: {:.2}s", elapsed_s);
         println!(
             "Assessment Status: {}",
             if completed_all {
-                "COMPLETED (All 96 trials finished)"
+                format!("COMPLETED (All {} trials finished)", total_count)
             } else {
-                "TIMEOUT / ABORTED"
+                "TIMEOUT / ABORTED".to_string()
             }
         );
         println!(
