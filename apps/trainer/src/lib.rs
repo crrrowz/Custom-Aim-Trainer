@@ -3,6 +3,7 @@
 pub mod camera;
 pub mod clock;
 pub mod layout_engine;
+pub mod pause;
 pub mod raw_input;
 pub mod recorder;
 pub mod replay;

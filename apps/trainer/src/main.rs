@@ -23,6 +23,10 @@ use trainer::layout_engine::{
     FittsHitOutcome, FittsMissOutcome, FittsSpawnAction, FittsTimeoutOutcome, LayoutEngineState,
     PeeksHitOutcome, PeeksMissOutcome, PeeksSpawnAction, PeeksTimeoutOutcome,
 };
+use trainer::pause::{
+    despawn_pause_menu, set_cursor_lock, spawn_pause_menu, PauseButtonAction, PauseManager,
+    PauseOverlayRoot,
+};
 use trainer::raw_input::RawInputWorker;
 use trainer::recorder::{self, SessionRecorder};
 use trainer::target::{
@@ -291,6 +295,8 @@ fn setup_trainer(
     let initial_t = clock.now_us();
     let layout_engine = LayoutEngineState::new(&scenario_def, scenario_seed.seed, initial_t);
 
+    commands.insert_resource(PauseManager::new());
+
     commands.insert_resource(TrainerState {
         clock,
         worker,
@@ -357,13 +363,16 @@ fn sync_display_info_system(
 fn handle_window_focus(
     mut focus_events: MessageReader<WindowFocused>,
     mut state: ResMut<TrainerState>,
+    pause_manager: Res<PauseManager>,
     mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
 ) {
     for ev in focus_events.read() {
         if let Some(mut cursor) = q_cursor.iter_mut().next() {
             if ev.focused {
-                cursor.grab_mode = CursorGrabMode::Confined;
-                cursor.visible = false;
+                if !pause_manager.is_paused {
+                    cursor.grab_mode = CursorGrabMode::Confined;
+                    cursor.visible = false;
+                }
             } else {
                 cursor.grab_mode = CursorGrabMode::None;
                 cursor.visible = true;
@@ -379,6 +388,7 @@ fn drain_and_evaluate_input_system(
     mut commands: Commands,
     config: Res<TrainerConfig>,
     mut state: ResMut<TrainerState>,
+    pause_manager: Res<PauseManager>,
     assets: Option<Res<TargetAssets>>,
     mut camera_query: Query<&mut FpsCamera>,
     mut target_query: Query<(
@@ -389,7 +399,10 @@ fn drain_and_evaluate_input_system(
     )>,
 ) {
     let deg_per_count = VALORANT_YAW_DEG_PER_COUNT * config.sens;
-    let render_start_t_us = state.clock.now_us();
+    let now_qpc_us = state.clock.now_us();
+    let render_start_t_us = now_qpc_us;
+    let now_active_us = pause_manager.active_time_us(now_qpc_us);
+    let now_active_s = SessionClock::us_to_s(now_active_us);
 
     let mut batch = Vec::new();
     while let Ok(event) = state.worker.receiver.try_recv() {
@@ -407,6 +420,10 @@ fn drain_and_evaluate_input_system(
         }
         state.device_last_t.insert(event.device_id, event.t_us);
         batch.push(event);
+    }
+
+    if pause_manager.is_paused {
+        return;
     }
 
     if state.primary_device.is_none() {
@@ -434,9 +451,8 @@ fn drain_and_evaluate_input_system(
         trainer::replay::replay_input(&mut current_angles, &batch, primary_id, deg_per_count);
 
     // Update active tracking target positions incrementally BEFORE evaluating this frame's clicks
-    if let Some((tracking_id, new_angles, radius_deg)) = state
-        .layout_engine
-        .update_tracking_target(render_start_t_us)
+    if let Some((tracking_id, new_angles, radius_deg)) =
+        state.layout_engine.update_tracking_target(now_active_us)
     {
         let spawn_dist = state.scenario_def.spawn_distance_m as f32;
         let new_pos = trainer::target::angles_to_world_pos(new_angles, spawn_dist);
@@ -614,12 +630,9 @@ fn drain_and_evaluate_input_system(
         None => return,
     };
 
-    let now_qpc_us = state.clock.now_us();
-    let now_qpc_s = SessionClock::us_to_s(now_qpc_us);
-
     // Update active tracking target positions incrementally
     if let Some((tracking_id, new_angles, radius_deg)) =
-        state.layout_engine.update_tracking_target(now_qpc_us)
+        state.layout_engine.update_tracking_target(now_active_us)
     {
         let spawn_dist = state.scenario_def.spawn_distance_m as f32;
         let new_pos = trainer::target::angles_to_world_pos(new_angles, spawn_dist);
@@ -634,7 +647,8 @@ fn drain_and_evaluate_input_system(
     // Update active peek target emergence positions
     for (_, mut marker, mut transform, peek_opt) in &mut target_query {
         if let Some(peek) = peek_opt {
-            let elapsed_s = (now_qpc_us.saturating_sub(peek.emergence_t_us) as f64) / 1_000_000.0;
+            let elapsed_s =
+                (now_active_us.saturating_sub(peek.emergence_t_us) as f64) / 1_000_000.0;
             let peek_speed_deg_s =
                 (peek.peek_speed_mps / peek.spawn_distance_m as f64).to_degrees();
             let inward_sign = if peek.occluder_yaw > 0.0 { -1.0 } else { 1.0 };
@@ -659,18 +673,18 @@ fn drain_and_evaluate_input_system(
             let maybe_fitts =
                 state
                     .layout_engine
-                    .handle_fitts_spawn(&mut next_tid, now_qpc_us, spawn_dist);
+                    .handle_fitts_spawn(&mut next_tid, now_active_us, spawn_dist);
             let maybe_peeks = if maybe_fitts.is_none() {
                 state
                     .layout_engine
-                    .handle_peeks_spawn(&mut next_tid, now_qpc_us, spawn_dist)
+                    .handle_peeks_spawn(&mut next_tid, now_active_us, spawn_dist)
             } else {
                 None
             };
             let maybe_tracking = if maybe_fitts.is_none() && maybe_peeks.is_none() {
                 state
                     .layout_engine
-                    .handle_tracking_spawn(&mut next_tid, now_qpc_us, spawn_dist)
+                    .handle_tracking_spawn(&mut next_tid, now_active_us, spawn_dist)
             } else {
                 None
             };
@@ -682,10 +696,21 @@ fn drain_and_evaluate_input_system(
                         target_id,
                         distance_m,
                     } => {
-                        spawn_home_target(&mut commands, &assets, distance_m, target_id, now_qpc_s);
-                        state
-                            .recorder
-                            .record_target_spawn(target_id, now_qpc_us, 0, 0.5, 0.0, 0.0);
+                        spawn_home_target(
+                            &mut commands,
+                            &assets,
+                            distance_m,
+                            target_id,
+                            now_active_s,
+                        );
+                        state.recorder.record_target_spawn(
+                            target_id,
+                            now_active_us,
+                            0,
+                            0.5,
+                            0.0,
+                            0.0,
+                        );
                     }
                     FittsSpawnAction::SpawnTrial {
                         target_id,
@@ -698,11 +723,11 @@ fn drain_and_evaluate_input_system(
                             &trial,
                             distance_m,
                             target_id,
-                            now_qpc_s,
+                            now_active_s,
                         );
                         state.recorder.record_target_spawn(
                             target_id,
-                            now_qpc_us,
+                            now_active_us,
                             0,
                             trial.radius_deg,
                             trial.yaw_deg,
@@ -716,10 +741,21 @@ fn drain_and_evaluate_input_system(
                         target_id,
                         distance_m,
                     } => {
-                        spawn_home_target(&mut commands, &assets, distance_m, target_id, now_qpc_s);
-                        state
-                            .recorder
-                            .record_target_spawn(target_id, now_qpc_us, 0, 0.5, 0.0, 0.0);
+                        spawn_home_target(
+                            &mut commands,
+                            &assets,
+                            distance_m,
+                            target_id,
+                            now_active_s,
+                        );
+                        state.recorder.record_target_spawn(
+                            target_id,
+                            now_active_us,
+                            0,
+                            0.5,
+                            0.0,
+                            0.0,
+                        );
                     }
                     PeeksSpawnAction::SpawnPeekTarget {
                         target_id,
@@ -732,29 +768,29 @@ fn drain_and_evaluate_input_system(
                             &trial,
                             distance_m,
                             target_id,
-                            now_qpc_s,
-                            now_qpc_us,
+                            now_active_s,
+                            now_active_us,
                         );
                         let spawn_pitch = trainer::replay::crosshair_pitch_at_qpc_instant(
                             &cam_angles_start,
                             &batch,
-                            now_qpc_us,
+                            now_active_us,
                             primary_id,
                             deg_per_count,
                         );
                         let spawn_angles = trainer::replay::angles_at_timestamp(
                             &cam_angles_start,
                             &batch,
-                            now_qpc_us,
+                            now_active_us,
                             primary_id,
                             deg_per_count,
                         );
                         state
                             .recorder
-                            .record_view(now_qpc_us, spawn_angles.yaw, spawn_pitch);
+                            .record_view(now_active_us, spawn_angles.yaw, spawn_pitch);
                         state.recorder.record_peek_target_spawn(
                             target_id,
-                            now_qpc_us,
+                            now_active_us,
                             0,
                             trial.target_radius_deg,
                             trial.occluder_yaw_deg,
@@ -771,11 +807,11 @@ fn drain_and_evaluate_input_system(
                     action.radius_deg,
                     action.distance_m,
                     action.target_id,
-                    now_qpc_s,
+                    now_active_s,
                 );
                 state.recorder.record_tracking_target_spawn(
                     action.target_id,
-                    now_qpc_us,
+                    now_active_us,
                     action.despawn_t_us,
                     action.radius_deg,
                     action.initial_angles.yaw,
@@ -801,11 +837,11 @@ fn drain_and_evaluate_input_system(
                 cluster_action.radius_deg,
                 cluster_action.distance_m,
                 cluster_action.target_id,
-                now_qpc_s,
+                now_active_s,
             );
             state.recorder.record_target_spawn(
                 cluster_action.target_id,
-                now_qpc_us,
+                now_active_us,
                 0,
                 cluster_action.radius_deg,
                 cluster_action.angles.yaw,
@@ -819,7 +855,7 @@ fn drain_and_evaluate_input_system(
         trial_idx,
         trial_elapsed_s,
         completed: _,
-    } = state.layout_engine.handle_fitts_timeout(now_qpc_us)
+    } = state.layout_engine.handle_fitts_timeout(now_active_us)
     {
         state.misses_count += 1;
         println!(
@@ -838,7 +874,7 @@ fn drain_and_evaluate_input_system(
         trial_idx,
         trial_elapsed_s,
         completed: _,
-    } = state.layout_engine.handle_peeks_timeout(now_qpc_us)
+    } = state.layout_engine.handle_peeks_timeout(now_active_us)
     {
         state.misses_count += 1;
         println!(
@@ -867,9 +903,11 @@ fn track_frame_time_system(mut state: ResMut<TrainerState>) {
 fn session_lifecycle_system(
     config: Res<TrainerConfig>,
     mut state: ResMut<TrainerState>,
+    pause_manager: Res<PauseManager>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    let elapsed_s = SessionClock::us_to_s(state.clock.now_us());
+    let now_qpc_us = state.clock.now_us();
+    let elapsed_s = SessionClock::us_to_s(pause_manager.active_time_us(now_qpc_us));
     let completed_all = state.layout_engine.is_completed();
 
     if elapsed_s >= config.duration_s || completed_all {
@@ -1029,6 +1067,88 @@ fn session_lifecycle_system(
     }
 }
 
+fn pause_menu_toggle_system(
+    mut commands: Commands,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut pause_manager: ResMut<PauseManager>,
+    state: Res<TrainerState>,
+    mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    q_overlay: Query<Entity, With<PauseOverlayRoot>>,
+) {
+    if keyboard.just_pressed(KeyCode::Escape) {
+        let now_us = state.clock.now_us();
+        pause_manager.toggle_pause(now_us);
+        if pause_manager.is_paused {
+            set_cursor_lock(&mut q_cursor, false);
+            spawn_pause_menu(&mut commands);
+        } else {
+            set_cursor_lock(&mut q_cursor, true);
+            despawn_pause_menu(&mut commands, &q_overlay);
+        }
+    }
+}
+
+#[allow(deprecated)]
+#[allow(clippy::too_many_arguments)]
+fn pause_menu_button_system(
+    mut commands: Commands,
+    mut pause_manager: ResMut<PauseManager>,
+    state: Res<TrainerState>,
+    mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    q_overlay: Query<Entity, With<PauseOverlayRoot>>,
+    mut interaction_query: Query<
+        (&Interaction, &PauseButtonAction, &mut BackgroundColor),
+        Changed<Interaction>,
+    >,
+    mut exit: MessageWriter<AppExit>,
+    config: Res<TrainerConfig>,
+) {
+    for (interaction, action, mut bg_color) in &mut interaction_query {
+        match *interaction {
+            Interaction::Pressed => match action {
+                PauseButtonAction::Resume => {
+                    let now_us = state.clock.now_us();
+                    pause_manager.resume(now_us);
+                    set_cursor_lock(&mut q_cursor, true);
+                    despawn_pause_menu(&mut commands, &q_overlay);
+                }
+                PauseButtonAction::QuitAndSave => {
+                    let target_path = config.output_path.clone().unwrap_or_else(|| {
+                        PathBuf::from(format!("session-{}.aft", state.recorder.setup.session_id))
+                    });
+                    match state.recorder.save_to_file(&target_path) {
+                        Ok(bytes) => {
+                            println!(
+                                "\nTelemetry successfully written to: {} ({:.1} KB)",
+                                target_path.display(),
+                                bytes as f64 / 1024.0
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "\nFailed writing telemetry to {}: {}",
+                                target_path.display(),
+                                e
+                            );
+                        }
+                    }
+                    exit.write(AppExit::Success);
+                }
+                PauseButtonAction::QuitWithoutSaving => {
+                    println!("\nSession aborted by user without saving.");
+                    exit.write(AppExit::Success);
+                }
+            },
+            Interaction::Hovered => {
+                *bg_color = BackgroundColor(Color::srgb(0.35, 0.35, 0.35));
+            }
+            Interaction::None => {
+                *bg_color = BackgroundColor(Color::srgb(0.2, 0.2, 0.2));
+            }
+        }
+    }
+}
+
 fn lock_cursor_startup(mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindow>>) {
     if let Some(mut cursor) = q_cursor.iter_mut().next() {
         cursor.grab_mode = CursorGrabMode::Confined;
@@ -1122,6 +1242,7 @@ fn main() {
                     .chain(),
             ),
         )
+        .add_systems(Update, (pause_menu_toggle_system, pause_menu_button_system))
         .add_systems(
             PostUpdate,
             (track_frame_time_system, session_lifecycle_system),
