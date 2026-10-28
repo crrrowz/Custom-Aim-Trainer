@@ -9,6 +9,7 @@ pub mod raw_input;
 pub mod recorder;
 pub mod replay;
 pub mod target;
+pub mod ui_tokens;
 
 use aim_scenarios::Scenario;
 use bevy::prelude::Resource;

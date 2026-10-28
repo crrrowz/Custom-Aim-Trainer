@@ -26,7 +26,7 @@ use trainer::layout_engine::{
 };
 use trainer::pause::{
     despawn_pause_menu, set_cursor_lock, spawn_pause_menu, PauseButtonAction, PauseManager,
-    PauseOverlayRoot,
+    PauseMenuNavigation, PauseOverlayRoot,
 };
 use trainer::raw_input::RawInputWorker;
 use trainer::recorder::{self, SessionRecorder};
@@ -34,6 +34,7 @@ use trainer::target::{
     setup_target_assets, spawn_cluster_target, spawn_home_target, spawn_peek_target,
     spawn_tracking_target, spawn_trial_target, ActiveTargetMarker, TargetAssets,
 };
+use trainer::ui_tokens::{COLOR_BTN_HOVER, COLOR_BTN_IDLE};
 use trainer::ScenarioResource;
 
 #[derive(Resource)]
@@ -298,6 +299,13 @@ fn setup_trainer(
     let layout_engine = LayoutEngineState::new(&scenario_def, scenario_seed.seed, initial_t);
 
     commands.insert_resource(PauseManager::new());
+    commands.insert_resource(PauseMenuNavigation {
+        focused_index: 0,
+        is_confirming_discard: false,
+        saving_timer: None,
+        session_duration_s: config.duration_s,
+        scenario_name: scenario_def.id.clone(),
+    });
 
     commands.insert_resource(TrainerState {
         clock,
@@ -1092,26 +1100,38 @@ fn window_close_system(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pause_menu_toggle_system(
     mut commands: Commands,
     keyboard: Res<ButtonInput<KeyCode>>,
     mut pause_manager: ResMut<PauseManager>,
+    mut nav: ResMut<PauseMenuNavigation>,
     mut state: ResMut<TrainerState>,
     ui_fonts: Res<trainer::fonts::UiFonts>,
     mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     q_overlay: Query<Entity, With<PauseOverlayRoot>>,
+    config: Res<TrainerConfig>,
 ) {
     if keyboard.just_pressed(KeyCode::Escape) {
         let now_us = state.clock.now_us();
-        pause_manager.toggle_pause(now_us);
         if pause_manager.is_paused {
-            state.recorder.flag_paused();
-            state
-                .recorder
-                .record_key(now_us, aim_telemetry::format::KeyCode::Unknown(0x1B), true);
-            set_cursor_lock(&mut q_cursor, false);
-            spawn_pause_menu(&mut commands, &ui_fonts);
-        } else {
+            if nav.is_confirming_discard {
+                nav.is_confirming_discard = false;
+                nav.focused_index = 0;
+                despawn_pause_menu(&mut commands, &q_overlay);
+                let elapsed_s = SessionClock::us_to_s(pause_manager.active_time_us(now_us));
+                spawn_pause_menu(
+                    &mut commands,
+                    &ui_fonts,
+                    &config.scenario,
+                    elapsed_s,
+                    config.duration_s,
+                    &nav,
+                );
+                return;
+            }
+
+            pause_manager.resume(now_us);
             state
                 .recorder
                 .record_key(now_us, aim_telemetry::format::KeyCode::Unknown(0x1B), false);
@@ -1121,6 +1141,25 @@ fn pause_menu_toggle_system(
                 .void_in_flight_trial_on_resume(resume_active_us);
             set_cursor_lock(&mut q_cursor, true);
             despawn_pause_menu(&mut commands, &q_overlay);
+        } else {
+            pause_manager.pause(now_us);
+            nav.focused_index = 0;
+            nav.is_confirming_discard = false;
+            nav.saving_timer = None;
+            state.recorder.flag_paused();
+            state
+                .recorder
+                .record_key(now_us, aim_telemetry::format::KeyCode::Unknown(0x1B), true);
+            set_cursor_lock(&mut q_cursor, false);
+            let elapsed_s = SessionClock::us_to_s(pause_manager.active_time_us(now_us));
+            spawn_pause_menu(
+                &mut commands,
+                &ui_fonts,
+                &config.scenario,
+                elapsed_s,
+                config.duration_s,
+                &nav,
+            );
         }
     }
 }
@@ -1129,8 +1168,12 @@ fn pause_menu_toggle_system(
 #[allow(clippy::too_many_arguments)]
 fn pause_menu_button_system(
     mut commands: Commands,
+    time: Res<Time>,
+    keyboard: Res<ButtonInput<KeyCode>>,
     mut pause_manager: ResMut<PauseManager>,
+    mut nav: ResMut<PauseMenuNavigation>,
     mut state: ResMut<TrainerState>,
+    ui_fonts: Res<trainer::fonts::UiFonts>,
     mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     q_overlay: Query<Entity, With<PauseOverlayRoot>>,
     mut interaction_query: Query<
@@ -1140,41 +1183,148 @@ fn pause_menu_button_system(
     mut exit: MessageWriter<AppExit>,
     config: Res<TrainerConfig>,
 ) {
+    if !pause_manager.is_paused {
+        return;
+    }
+
+    // Handle saving countdown timer
+    if let Some(timer) = nav.saving_timer.as_mut() {
+        *timer += time.delta_secs();
+        if *timer >= 0.6 {
+            exit.write(AppExit::Success);
+        }
+        return;
+    }
+
+    let mut action_to_trigger = None;
+
+    // Keyboard navigation: Up/Down arrow moves focus, Enter activates
+    let max_index = if nav.is_confirming_discard { 1 } else { 2 };
+    let mut focus_changed = false;
+
+    if keyboard.just_pressed(KeyCode::ArrowUp) {
+        if nav.focused_index > 0 {
+            nav.focused_index -= 1;
+        } else {
+            nav.focused_index = max_index;
+        }
+        focus_changed = true;
+    } else if keyboard.just_pressed(KeyCode::ArrowDown) {
+        if nav.focused_index < max_index {
+            nav.focused_index += 1;
+        } else {
+            nav.focused_index = 0;
+        }
+        focus_changed = true;
+    } else if keyboard.just_pressed(KeyCode::Enter) {
+        if nav.is_confirming_discard {
+            action_to_trigger = match nav.focused_index {
+                0 => Some(PauseButtonAction::ConfirmCancel),
+                1 => Some(PauseButtonAction::ConfirmDiscard),
+                _ => None,
+            };
+        } else {
+            action_to_trigger = match nav.focused_index {
+                0 => Some(PauseButtonAction::Resume),
+                1 => Some(PauseButtonAction::QuitAndSave),
+                2 => Some(PauseButtonAction::QuitWithoutSaving),
+                _ => None,
+            };
+        }
+    }
+
     for (interaction, action, mut bg_color) in &mut interaction_query {
         match *interaction {
-            Interaction::Pressed => match action {
-                PauseButtonAction::Resume => {
-                    let now_us = state.clock.now_us();
-                    pause_manager.resume(now_us);
-                    state.recorder.record_key(
-                        now_us,
-                        aim_telemetry::format::KeyCode::Unknown(0x1B),
-                        false,
-                    );
-                    let resume_active_us = pause_manager.active_time_us(now_us);
-                    state
-                        .layout_engine
-                        .void_in_flight_trial_on_resume(resume_active_us);
-                    set_cursor_lock(&mut q_cursor, true);
-                    despawn_pause_menu(&mut commands, &q_overlay);
-                }
-                PauseButtonAction::QuitAndSave => {
-                    println!("\nQuit & Save requested. Saving partial session...");
-                    save_session_telemetry(&mut state, &config, true);
-                    exit.write(AppExit::Success);
-                }
-                PauseButtonAction::QuitWithoutSaving => {
-                    println!("\nSession aborted by user without saving.");
-                    exit.write(AppExit::Success);
-                }
-            },
+            Interaction::Pressed => {
+                action_to_trigger = Some(*action);
+            }
             Interaction::Hovered => {
-                *bg_color = BackgroundColor(Color::srgb(0.35, 0.35, 0.35));
+                *bg_color = BackgroundColor(COLOR_BTN_HOVER);
             }
             Interaction::None => {
-                *bg_color = BackgroundColor(Color::srgb(0.2, 0.2, 0.2));
+                *bg_color = BackgroundColor(COLOR_BTN_IDLE);
             }
         }
+    }
+
+    if let Some(action) = action_to_trigger {
+        let now_us = state.clock.now_us();
+        match action {
+            PauseButtonAction::Resume => {
+                pause_manager.resume(now_us);
+                state.recorder.record_key(
+                    now_us,
+                    aim_telemetry::format::KeyCode::Unknown(0x1B),
+                    false,
+                );
+                let resume_active_us = pause_manager.active_time_us(now_us);
+                state
+                    .layout_engine
+                    .void_in_flight_trial_on_resume(resume_active_us);
+                set_cursor_lock(&mut q_cursor, true);
+                despawn_pause_menu(&mut commands, &q_overlay);
+            }
+            PauseButtonAction::QuitAndSave => {
+                println!("\nQuit & Save requested. Saving partial session...");
+                save_session_telemetry(&mut state, &config, true);
+                nav.saving_timer = Some(0.0);
+                despawn_pause_menu(&mut commands, &q_overlay);
+                let elapsed_s = SessionClock::us_to_s(pause_manager.active_time_us(now_us));
+                spawn_pause_menu(
+                    &mut commands,
+                    &ui_fonts,
+                    &config.scenario,
+                    elapsed_s,
+                    config.duration_s,
+                    &nav,
+                );
+            }
+            PauseButtonAction::QuitWithoutSaving => {
+                // Show confirmation inside the same card
+                nav.is_confirming_discard = true;
+                nav.focused_index = 0; // Default focus on Cancel
+                despawn_pause_menu(&mut commands, &q_overlay);
+                let elapsed_s = SessionClock::us_to_s(pause_manager.active_time_us(now_us));
+                spawn_pause_menu(
+                    &mut commands,
+                    &ui_fonts,
+                    &config.scenario,
+                    elapsed_s,
+                    config.duration_s,
+                    &nav,
+                );
+            }
+            PauseButtonAction::ConfirmCancel => {
+                nav.is_confirming_discard = false;
+                nav.focused_index = 0;
+                despawn_pause_menu(&mut commands, &q_overlay);
+                let elapsed_s = SessionClock::us_to_s(pause_manager.active_time_us(now_us));
+                spawn_pause_menu(
+                    &mut commands,
+                    &ui_fonts,
+                    &config.scenario,
+                    elapsed_s,
+                    config.duration_s,
+                    &nav,
+                );
+            }
+            PauseButtonAction::ConfirmDiscard => {
+                println!("\nSession aborted by user without saving.");
+                exit.write(AppExit::Success);
+            }
+        }
+    } else if focus_changed {
+        let now_us = state.clock.now_us();
+        despawn_pause_menu(&mut commands, &q_overlay);
+        let elapsed_s = SessionClock::us_to_s(pause_manager.active_time_us(now_us));
+        spawn_pause_menu(
+            &mut commands,
+            &ui_fonts,
+            &config.scenario,
+            elapsed_s,
+            config.duration_s,
+            &nav,
+        );
     }
 }
 
