@@ -450,6 +450,22 @@ impl LayoutEngineState {
         PeeksTimeoutOutcome::NoTimeout
     }
 
+    pub fn void_in_flight_trial_on_resume(&mut self, resume_active_us: u64) {
+        match self {
+            Self::Fitts {
+                trial_start_t_us, ..
+            } => {
+                *trial_start_t_us = resume_active_us;
+            }
+            Self::Peeks {
+                trial_start_t_us, ..
+            } => {
+                *trial_start_t_us = resume_active_us;
+            }
+            _ => {}
+        }
+    }
+
     // --- Tracking Handlers ---
 
     pub fn handle_tracking_spawn(

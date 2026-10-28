@@ -2,8 +2,8 @@
 
 use aim_core::sensitivity::VALORANT_YAW_DEG_PER_COUNT;
 use aim_telemetry::format::{
-    quality_flags, AftHeader, AftSession, AftStreams, DisplayConfig, HitZone, InputConfig,
-    MouseConfig, ShotRecord, TargetKind, TargetParams, TargetRecord,
+    quality_flags, AftHeader, AftSession, AftStreams, DisplayConfig, HitZone, InputConfig, KeyCode,
+    KeyRecord, MouseConfig, ShotRecord, TargetKind, TargetParams, TargetRecord,
 };
 use aim_telemetry::write_aft;
 use std::path::PathBuf;
@@ -53,6 +53,13 @@ impl SessionRecorder {
 
     pub fn flag_paused(&mut self) {
         self.quality_flags |= quality_flags::PAUSED;
+    }
+
+    pub fn record_key(&mut self, t_us: u64, key: KeyCode, down: bool) {
+        self.streams
+            .keys
+            .records
+            .push(KeyRecord { t_us, key, down });
     }
 
     pub fn record_input(&mut self, t_us: u64, dx: i32, dy: i32) {
