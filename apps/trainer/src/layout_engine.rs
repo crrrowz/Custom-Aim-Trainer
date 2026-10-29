@@ -38,6 +38,48 @@ pub struct PeekTargetMarker {
     pub emergence_t_us: u64,
 }
 
+impl PeekTargetMarker {
+    /// Yaw angle of the inner edge of the occluder wall facing center (0.0°).
+    pub fn wall_edge_yaw(&self) -> f64 {
+        let half_wall_ang = ((0.5 / self.spawn_distance_m as f64).asin()).to_degrees();
+        if self.occluder_yaw > 0.0 {
+            self.occluder_yaw - half_wall_ang
+        } else {
+            self.occluder_yaw + half_wall_ang
+        }
+    }
+
+    /// Returns true if a given yaw angle lies behind the occluder wall.
+    pub fn is_yaw_behind_wall(&self, yaw_deg: f64) -> bool {
+        let edge = self.wall_edge_yaw();
+        if self.occluder_yaw > 0.0 {
+            yaw_deg >= edge
+        } else {
+            yaw_deg <= edge
+        }
+    }
+
+    /// Evaluates target ViewAngles at timestamp `click_t_us` based on peek speed.
+    pub fn target_angles_at(&self, click_t_us: u64) -> ViewAngles {
+        let elapsed_s = (click_t_us.saturating_sub(self.emergence_t_us) as f64) / 1_000_000.0;
+        let peek_speed_deg_s = (self.peek_speed_mps / self.spawn_distance_m as f64).to_degrees();
+        let inward_sign = if self.occluder_yaw > 0.0 { -1.0 } else { 1.0 };
+        let current_yaw = self.target_yaw + inward_sign * elapsed_s * peek_speed_deg_s;
+        ViewAngles::new(current_yaw, self.pitch)
+    }
+
+    /// Evaluates a shot ray at QPC instant `click_t_us`:
+    /// Returns `(is_hit, is_occluded)`.
+    /// The shot is a hit only if it intersects the target sphere and is not occluded behind the wall.
+    pub fn evaluate_shot(&self, click_angles: ViewAngles, click_t_us: u64) -> (bool, bool) {
+        let current_angles = self.target_angles_at(click_t_us);
+        let spherical = SphericalTarget::new(current_angles, self.spherical.radius_deg);
+        let hit_res = spherical.intersect_ray(click_angles);
+        let is_occluded = self.is_yaw_behind_wall(click_angles.yaw);
+        (hit_res.is_hit && !is_occluded, is_occluded)
+    }
+}
+
 #[derive(Component)]
 pub struct NeutralSlitMarker;
 
