@@ -81,9 +81,6 @@ impl PeekTargetMarker {
 }
 
 #[derive(Component)]
-pub struct NeutralSlitMarker;
-
-#[derive(Component)]
 pub struct ClusterTargetMarker {
     pub target_id: u32,
     pub spherical: SphericalTarget,

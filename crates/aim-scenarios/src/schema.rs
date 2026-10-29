@@ -185,4 +185,26 @@ impl Scenario {
 
         Ok(())
     }
+
+    /// Parses and validates a scenario from a RON string.
+    ///
+    /// Fails immediately if the RON syntax is invalid or if scenario validation rules fail.
+    pub fn from_ron_str(s: &str) -> Result<Self, String> {
+        let sc: Self = ron::from_str(s).map_err(|e| format!("Failed parsing scenario RON: {e}"))?;
+        sc.validate()?;
+        Ok(sc)
+    }
+}
+
+/// Convenience loader function for aim-scenarios that parses and validates a scenario.
+pub fn load_scenario(s: &str) -> Result<Scenario, String> {
+    Scenario::from_ron_str(s)
+}
+
+impl std::str::FromStr for Scenario {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_ron_str(s)
+    }
 }
