@@ -9,98 +9,99 @@ pub use reader::{
 };
 pub use writer::{delta_encode_u64, write_aft, WriteError};
 
+/// Constructs a canonical sample session for testing across crates and tools.
+pub fn sample_session() -> AftSession {
+    AftSession {
+        header: AftHeader {
+            session_id: "018f4a38-5182-7212-bf96-b0ad511b81b2".to_string(),
+            created_at_utc: "2026-10-19T08:30:00Z".to_string(),
+            app_version: "0.1.0".to_string(),
+            trainer_version: "0.1.0".to_string(),
+            scenario_id: "assess.v1.flick_static".to_string(),
+            scenario_version: 1,
+            form: Some(2),
+            seed: 987654321,
+            game_profile: "valorant.v1".to_string(),
+            mouse: MouseConfig {
+                dpi: 800,
+                sens: 0.35,
+                deg_per_count: 0.07 * 0.35,
+            },
+            display: DisplayConfig {
+                width: 1920,
+                height: 1080,
+                hz: 240,
+                hfov: 103.0,
+                vfov: 70.53,
+            },
+            input: InputConfig {
+                est_polling_hz: 1000,
+            },
+            thresholds_version: "thresholds.v1".to_string(),
+            quality_flags: 0,
+        },
+        streams: AftStreams {
+            input: InputStream {
+                t_us: vec![1000, 2000, 3000, 4000, 5000],
+                dx: vec![0, 1, 3, -1, 0],
+                dy: vec![0, -1, 0, 2, 0],
+            },
+            frames: FrameStream {
+                t_us: vec![4166, 8333, 12500],
+                present_t_us: vec![4300, 8450, 12620],
+            },
+            view: ViewStream {
+                t_us: vec![1000, 2000, 3000],
+                yaw_deg: vec![0.0, 0.0245, 0.098],
+                pitch_deg: vec![0.0, -0.0245, -0.0245],
+            },
+            targets: TargetStream {
+                records: vec![TargetRecord {
+                    id: 1,
+                    spawn_t_us: 1000,
+                    despawn_t_us: 450000,
+                    kind: TargetKind::Sphere,
+                    params: TargetParams {
+                        radius_deg: 0.5,
+                        initial_pos: [10.0, 0.0, 15.0],
+                        path_spline: None,
+                    },
+                }],
+            },
+            shots: ShotStream {
+                records: vec![ShotRecord {
+                    t_us: 450000,
+                    hit_target_id: Some(1),
+                    hitzone: HitZone::Head,
+                }],
+            },
+            keys: KeyStream {
+                records: vec![
+                    KeyRecord {
+                        t_us: 2000,
+                        key: KeyCode::KeyD,
+                        down: true,
+                    },
+                    KeyRecord {
+                        t_us: 250000,
+                        key: KeyCode::KeyD,
+                        down: false,
+                    },
+                ],
+            },
+            player: PlayerStream {
+                t_us: vec![1000, 2000, 3000],
+                vel_x: vec![0.0, 1.2, 5.4],
+                vel_z: vec![0.0, 0.0, 0.0],
+            },
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
-
-    fn sample_session() -> AftSession {
-        AftSession {
-            header: AftHeader {
-                session_id: "018f4a38-5182-7212-bf96-b0ad511b81b2".to_string(),
-                created_at_utc: "2026-10-19T08:30:00Z".to_string(),
-                app_version: "0.1.0".to_string(),
-                trainer_version: "0.1.0".to_string(),
-                scenario_id: "assess.v1.flick_static".to_string(),
-                scenario_version: 1,
-                form: Some(2),
-                seed: 987654321,
-                game_profile: "valorant.v1".to_string(),
-                mouse: MouseConfig {
-                    dpi: 800,
-                    sens: 0.35,
-                    deg_per_count: 0.07 * 0.35,
-                },
-                display: DisplayConfig {
-                    width: 1920,
-                    height: 1080,
-                    hz: 240,
-                    hfov: 103.0,
-                    vfov: 70.53,
-                },
-                input: InputConfig {
-                    est_polling_hz: 1000,
-                },
-                thresholds_version: "thresholds.v1".to_string(),
-                quality_flags: 0,
-            },
-            streams: AftStreams {
-                input: InputStream {
-                    t_us: vec![1000, 2000, 3000, 4000, 5000],
-                    dx: vec![0, 1, 3, -1, 0],
-                    dy: vec![0, -1, 0, 2, 0],
-                },
-                frames: FrameStream {
-                    t_us: vec![4166, 8333, 12500],
-                    present_t_us: vec![4300, 8450, 12620],
-                },
-                view: ViewStream {
-                    t_us: vec![1000, 2000, 3000],
-                    yaw_deg: vec![0.0, 0.0245, 0.098],
-                    pitch_deg: vec![0.0, -0.0245, -0.0245],
-                },
-                targets: TargetStream {
-                    records: vec![TargetRecord {
-                        id: 1,
-                        spawn_t_us: 1000,
-                        despawn_t_us: 450000,
-                        kind: TargetKind::Sphere,
-                        params: TargetParams {
-                            radius_deg: 0.5,
-                            initial_pos: [10.0, 0.0, 15.0],
-                            path_spline: None,
-                        },
-                    }],
-                },
-                shots: ShotStream {
-                    records: vec![ShotRecord {
-                        t_us: 450000,
-                        hit_target_id: Some(1),
-                        hitzone: HitZone::Head,
-                    }],
-                },
-                keys: KeyStream {
-                    records: vec![
-                        KeyRecord {
-                            t_us: 2000,
-                            key: KeyCode::KeyD,
-                            down: true,
-                        },
-                        KeyRecord {
-                            t_us: 250000,
-                            key: KeyCode::KeyD,
-                            down: false,
-                        },
-                    ],
-                },
-                player: PlayerStream {
-                    t_us: vec![1000, 2000, 3000],
-                    vel_x: vec![0.0, 1.2, 5.4],
-                    vel_z: vec![0.0, 0.0, 0.0],
-                },
-            },
-        }
-    }
 
     #[test]
     fn test_roundtrip_aft() {
