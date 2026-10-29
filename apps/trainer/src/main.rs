@@ -25,8 +25,8 @@ use trainer::layout_engine::{
     PeeksHitOutcome, PeeksMissOutcome, PeeksSpawnAction, PeeksTimeoutOutcome,
 };
 use trainer::pause::{
-    despawn_pause_menu, execute_pause, execute_resume, should_auto_pause_on_focus_loss,
-    spawn_pause_menu, PauseButtonAction, PauseCause, PauseManager, PauseMenuNavigation,
+    apply_focus_change, despawn_pause_menu, execute_pause, execute_resume, spawn_pause_menu,
+    FocusOutcome, PauseButtonAction, PauseCause, PauseManager, PauseMenuNavigation,
     PauseOverlayRoot,
 };
 use trainer::raw_input::RawInputWorker;
@@ -399,28 +399,31 @@ fn handle_window_focus(
                 cursor.visible = true;
             }
 
-            if state.initial_startup_done {
-                state.recorder.flag_focus_lost();
-            }
-
+            let startup_done = state.initial_startup_done;
             let is_completed = state.layout_engine.is_completed();
-            if should_auto_pause_on_focus_loss(
-                state.initial_startup_done,
+            let now_us = state.clock.now_us();
+            let outcome = apply_focus_change(
+                &mut pause_manager,
+                &mut state.recorder,
+                false,
+                startup_done,
                 is_completed,
-                pause_manager.is_paused,
-            ) {
-                let now_us = state.clock.now_us();
-                execute_pause(
+                now_us,
+            );
+
+            if outcome == FocusOutcome::Paused {
+                nav.focused_index = 0;
+                nav.is_confirming_discard = false;
+                nav.saving_timer = None;
+                let elapsed_s = SessionClock::us_to_s(pause_manager.active_time_us(now_us));
+                spawn_pause_menu(
                     &mut commands,
-                    &mut pause_manager,
-                    &mut nav,
-                    &mut state.recorder,
-                    &mut q_cursor,
                     &ui_fonts,
                     &config.scenario,
+                    elapsed_s,
                     config.duration_s,
-                    now_us,
-                    PauseCause::FocusLost,
+                    &nav,
+                    Some(PauseCause::FocusLost),
                 );
             }
         }

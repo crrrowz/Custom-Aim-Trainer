@@ -79,6 +79,53 @@ pub fn should_auto_pause_on_focus_loss(
     initial_startup_done && !is_completed && !is_paused
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusOutcome {
+    Paused,
+    NoChange,
+}
+
+/// Pure helper for pause transition (recording key + setting flags + setting cause).
+pub fn apply_pause(
+    pm: &mut PauseManager,
+    recorder: &mut crate::recorder::SessionRecorder,
+    now_us: u64,
+    cause: PauseCause,
+) -> bool {
+    if pm.is_paused {
+        return false;
+    }
+    pm.pause_with_cause(now_us, cause);
+    recorder.flag_paused();
+    recorder.record_key(now_us, aim_telemetry::format::KeyCode::Unknown(0x1B), true);
+    true
+}
+
+/// Pure per-event decision for window focus changes.
+/// Manages pause transitions and recorder quality flags without depending on Bevy UI/world entities.
+pub fn apply_focus_change(
+    pm: &mut PauseManager,
+    recorder: &mut crate::recorder::SessionRecorder,
+    focused: bool,
+    startup_done: bool,
+    completed: bool,
+    now_us: u64,
+) -> FocusOutcome {
+    if focused {
+        FocusOutcome::NoChange
+    } else {
+        if startup_done {
+            recorder.flag_focus_lost();
+        }
+        if should_auto_pause_on_focus_loss(startup_done, completed, pm.is_paused) {
+            apply_pause(pm, recorder, now_us, PauseCause::FocusLost);
+            FocusOutcome::Paused
+        } else {
+            FocusOutcome::NoChange
+        }
+    }
+}
+
 #[derive(Component)]
 pub struct PauseOverlayRoot;
 
@@ -133,15 +180,12 @@ pub fn execute_pause(
     now_us: u64,
     cause: PauseCause,
 ) {
-    if pause_manager.is_paused {
+    if !apply_pause(pause_manager, recorder, now_us, cause) {
         return;
     }
-    pause_manager.pause_with_cause(now_us, cause);
     nav.focused_index = 0;
     nav.is_confirming_discard = false;
     nav.saving_timer = None;
-    recorder.flag_paused();
-    recorder.record_key(now_us, aim_telemetry::format::KeyCode::Unknown(0x1B), true);
     set_cursor_lock(q_cursor, false);
     let elapsed_s = crate::clock::SessionClock::us_to_s(pause_manager.active_time_us(now_us));
     spawn_pause_menu(
