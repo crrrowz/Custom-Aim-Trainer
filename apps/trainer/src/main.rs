@@ -91,13 +91,13 @@ pub struct TrainerState {
     pub session_saved: bool,
 }
 
-fn parse_cli_args() -> TrainerConfig {
+fn parse_cli_args() -> (TrainerConfig, Option<f64>) {
     let mut scenario = "assess.v1.flick_static".to_string();
     let mut cli_seed: Option<u64> = None;
     let mut form: Option<u32> = None;
     let mut dpi = 800u32;
     let mut sens = 0.35f64;
-    let mut duration_s = 288.0f64;
+    let mut duration_override: Option<f64> = None;
     let mut windowed = false;
     let mut fullscreen_exclusive = false;
     let mut backend = "auto".to_string();
@@ -141,7 +141,10 @@ fn parse_cli_args() -> TrainerConfig {
                 i += 2;
             }
             "--duration" if i + 1 < args.len() => {
-                duration_s = args[i + 1].parse().unwrap_or(duration_s);
+                duration_override = Some(args[i + 1].parse().unwrap_or_else(|e| {
+                    eprintln!("ERROR: Invalid --duration '{}': {}", args[i + 1], e);
+                    std::process::exit(1);
+                }));
                 i += 2;
             }
             "--backend" if i + 1 < args.len() => {
@@ -187,80 +190,43 @@ fn parse_cli_args() -> TrainerConfig {
         std::process::exit(1);
     }
 
-    TrainerConfig {
-        scenario,
-        seed: cli_seed,
-        form,
-        dpi,
-        sens,
-        duration_s,
-        windowed,
-        fullscreen_exclusive,
-        backend,
-        present_mode_str,
-        max_frame_latency,
-        output_path,
-    }
-}
-
-fn resolve_scenario_file(scenario_name: &str) -> Option<PathBuf> {
-    let candidates = [
-        PathBuf::from(scenario_name),
-        PathBuf::from(format!("{}.ron", scenario_name)),
-        PathBuf::from(format!("content/scenarios/{}.ron", scenario_name)),
-        PathBuf::from(format!("content/scenarios/assess.v1.{}.ron", scenario_name)),
-    ];
-    candidates.into_iter().find(|p| p.is_file())
+    (
+        TrainerConfig {
+            scenario,
+            seed: cli_seed,
+            form,
+            dpi,
+            sens,
+            duration_s: 288.0,
+            windowed,
+            fullscreen_exclusive,
+            backend,
+            present_mode_str,
+            max_frame_latency,
+            output_path,
+        },
+        duration_override,
+    )
 }
 
 /// Loads the scenario definition referenced by the CLI args.
 /// Validates the scenario and derives the seed.
-fn load_scenario(config: &TrainerConfig) -> (Scenario, ScenarioSeed) {
-    let sc = match resolve_scenario_file(&config.scenario) {
-        Some(path) => {
-            let ron_str = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                eprintln!(
-                    "ERROR: Failed reading scenario file '{}': {}",
-                    path.display(),
-                    e
-                );
-                std::process::exit(1);
-            });
-            ron::from_str::<Scenario>(&ron_str).unwrap_or_else(|e| {
-                eprintln!(
-                    "ERROR: Failed parsing scenario file '{}': {}",
-                    path.display(),
-                    e
-                );
-                std::process::exit(1);
-            })
-        }
-        None => {
-            if config.scenario == "assess.v1.flick_static" || config.scenario == "flick_static" {
-                const FALLBACK_RON: &str =
-                    include_str!("../../../content/scenarios/assess.v1.flick_static.ron");
-                ron::from_str(FALLBACK_RON).expect("Failed parsing fallback flick_static.ron")
-            } else {
-                eprintln!(
-                    "ERROR: Unknown scenario '{}'. Scenario definition not found in content/scenarios/.",
-                    config.scenario
-                );
-                std::process::exit(1);
-            }
-        }
-    };
-
-    if let Err(err) = sc.validate() {
-        eprintln!("ERROR: Scenario '{}' validation failed: {}", sc.id, err);
+fn load_scenario(
+    scenario_id: &str,
+    form: Option<u32>,
+    seed: Option<u64>,
+) -> (Scenario, ScenarioSeed) {
+    let sc = trainer::load_scenario_by_id(scenario_id).unwrap_or_else(|e| {
+        eprintln!("ERROR: {}", e);
         std::process::exit(1);
-    }
+    });
 
-    let scenario_seed = if let Some(form) = config.form {
+    let scenario_seed = if let Some(form) = form {
         ScenarioSeed {
             seed: aim_scenarios::derive_scenario_seed(form as usize, &sc.id),
             form: Some(form),
         }
-    } else if let Some(seed) = config.seed {
+    } else if let Some(seed) = seed {
         ScenarioSeed { seed, form: None }
     } else {
         ScenarioSeed {
@@ -1376,8 +1342,9 @@ fn lock_cursor_startup(mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindo
 }
 
 fn main() {
-    let config = parse_cli_args();
-    let (scenario_def, scenario_seed) = load_scenario(&config);
+    let (mut config, duration_override) = parse_cli_args();
+    let (scenario_def, scenario_seed) = load_scenario(&config.scenario, config.form, config.seed);
+    config.duration_s = trainer::resolve_scenario_duration(&scenario_def, duration_override);
 
     let window_mode = if config.windowed {
         WindowMode::Windowed
