@@ -134,28 +134,55 @@ pub struct Scenario {
 }
 
 impl Scenario {
-    /// Validates that layout and hit_rule are mutually compatible.
+    /// Validates that layout and hit_rule are mutually compatible and layout geometry is valid.
     pub fn validate(&self) -> Result<(), String> {
         match (&self.layout, self.hit_rule) {
             (TargetLayout::Tracking { .. }, HitRule::SingleShotKill) => {
-                Err(format!(
+                return Err(format!(
                     "Invalid scenario '{}': Tracking layout requires ContinuousTracking, cannot use SingleShotKill",
                     self.id
-                ))
+                ));
             }
             (TargetLayout::Fitts { .. }, HitRule::ContinuousTracking) => {
-                Err(format!(
+                return Err(format!(
                     "Invalid scenario '{}': Fitts layout requires SingleShotKill, cannot use ContinuousTracking",
                     self.id
-                ))
+                ));
             }
             (TargetLayout::HeadLevelPeeks { .. }, HitRule::ContinuousTracking) => {
-                Err(format!(
+                return Err(format!(
                     "Invalid scenario '{}': HeadLevelPeeks layout requires SingleShotKill, cannot use ContinuousTracking",
                     self.id
-                ))
+                ));
             }
-            _ => Ok(()),
+            _ => {}
         }
+
+        if let TargetLayout::ConcurrentCluster {
+            distance_bins_deg,
+            octants,
+            max_yaw_deg,
+            max_pitch_deg,
+            ..
+        } = &self.layout
+        {
+            for &dist in distance_bins_deg {
+                for oct in 0..*octants {
+                    let bearing_deg = oct as f64 * (360.0 / *octants as f64);
+                    let (yaw, pitch) =
+                        crate::generator::target_angles_from_bearing(dist, bearing_deg);
+                    let signed_yaw = if yaw > 180.0 { yaw - 360.0 } else { yaw };
+                    if signed_yaw.abs() > *max_yaw_deg + 1e-6 || pitch.abs() > *max_pitch_deg + 1e-6
+                    {
+                        return Err(format!(
+                            "Invalid scenario '{}': declared distance bin {}° at octant {} (yaw {:.2}°, pitch {:.2}°) cannot fit within max_yaw {}° / max_pitch {}°",
+                            self.id, dist, oct, signed_yaw, pitch, max_yaw_deg, max_pitch_deg
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
