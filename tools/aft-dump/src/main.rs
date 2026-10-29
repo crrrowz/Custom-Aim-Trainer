@@ -1,3 +1,5 @@
+mod summary;
+
 use aim_core::camera::{angular_distance, ViewAngles};
 use aim_core::sensitivity::VALORANT_YAW_DEG_PER_COUNT;
 use aim_scenarios::schema::TrackingTrajectory;
@@ -7,6 +9,66 @@ use aim_telemetry::read_aft;
 use std::env;
 use std::fs;
 use std::path::Path;
+use summary::{compute_session_summary, SessionSummary};
+
+pub fn print_session_summary(path: &Path, summary: &SessionSummary) {
+    println!("=== AFT Summary: {} ===", path.display());
+    println!("Scenario: {}", summary.scenario_id);
+    println!("Form: {:?}", summary.form);
+    println!("Seed: {:#x} ({})", summary.seed, summary.seed);
+    println!("DPI: {}", summary.dpi);
+    println!("Sens: {}", summary.sens);
+    println!("Polling Hz: {}", summary.est_polling_hz);
+    println!(
+        "Quality Flags: {} ({:#x})",
+        summary.quality_flags_decoded, summary.quality_flags
+    );
+
+    println!("\n--- Pauses ---");
+    if summary.pauses.is_empty() {
+        println!("No pause intervals recorded.");
+    } else {
+        for (i, &(p_start, p_end)) in summary.pauses.iter().enumerate() {
+            let dur_s = (p_end - p_start) as f64 / 1_000_000.0;
+            println!(
+                "Pause #{}: {:.3}s .. {:.3}s (duration: {:.3}s)",
+                i + 1,
+                p_start as f64 / 1_000_000.0,
+                p_end as f64 / 1_000_000.0,
+                dur_s
+            );
+        }
+    }
+
+    println!("\n--- Durations ---");
+    println!(
+        "Wall Duration: {:.3}s",
+        summary.wall_duration_us as f64 / 1_000_000.0
+    );
+    println!(
+        "Active Duration: {:.3}s",
+        summary.active_duration_us as f64 / 1_000_000.0
+    );
+
+    println!("\n--- Shots & Accuracy ---");
+    println!(
+        "Shots: {}, Hits: {}, Misses: {}, Accuracy: {:.1}%",
+        summary.total_shots, summary.total_hits, summary.total_misses, summary.accuracy_pct
+    );
+
+    println!("\n--- Per-Trial Reaction Times (pauses subtracted) ---");
+    if summary.trial_reaction_times_us.is_empty() {
+        println!("No trials recorded.");
+    } else {
+        for (i, &rt) in summary.trial_reaction_times_us.iter().enumerate() {
+            match rt {
+                Some(rt_us) => println!("Trial #{}: {:.1} ms", i + 1, rt_us as f64 / 1_000.0),
+                None => println!("Trial #{}: No movement detected", i + 1),
+            }
+        }
+    }
+    println!();
+}
 
 fn dump_session(path: &Path, session: &AftSession) {
     println!("=== AFT Dump: {} ===", path.display());
@@ -105,15 +167,30 @@ fn dump_session(path: &Path, session: &AftSession) {
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: aft-dump <file.aft> [more_files.aft...]");
+        eprintln!("Usage: aft-dump [--summary] <file.aft> [more_files.aft...]");
         std::process::exit(1);
     }
 
-    for file_arg in &args[1..] {
+    let summary_mode = args.iter().any(|arg| arg == "--summary");
+    let file_args: Vec<&String> = args[1..].iter().filter(|arg| *arg != "--summary").collect();
+
+    if file_args.is_empty() {
+        eprintln!("Usage: aft-dump [--summary] <file.aft> [more_files.aft...]");
+        std::process::exit(1);
+    }
+
+    for file_arg in file_args {
         let path = Path::new(file_arg);
         match fs::read(path) {
             Ok(bytes) => match read_aft(&bytes) {
-                Ok(session) => dump_session(path, &session),
+                Ok(session) => {
+                    if summary_mode {
+                        let summary = compute_session_summary(&session);
+                        print_session_summary(path, &summary);
+                    } else {
+                        dump_session(path, &session);
+                    }
+                }
                 Err(e) => eprintln!("Failed parsing aft from {}: {}", path.display(), e),
             },
             Err(e) => eprintln!("Failed reading file {}: {}", path.display(), e),
