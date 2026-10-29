@@ -68,6 +68,17 @@ impl PauseManager {
     }
 }
 
+/// Pure rule governing auto-pause on focus loss:
+/// Auto-pause only when startup is done, session is not completed, and not already paused.
+#[inline]
+pub fn should_auto_pause_on_focus_loss(
+    initial_startup_done: bool,
+    is_completed: bool,
+    is_paused: bool,
+) -> bool {
+    initial_startup_done && !is_completed && !is_paused
+}
+
 #[derive(Component)]
 pub struct PauseOverlayRoot;
 

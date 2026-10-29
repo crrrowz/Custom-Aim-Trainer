@@ -46,4 +46,5 @@ pub mod strings {
     pub const SAVING: &str = "Saving…";
     pub const SAVED: &str = "Saved";
     pub const NOTICE_FOCUS_LOST: &str = "Paused — the game window lost focus";
+    pub const NOTICE_FOCUS_LOST_AR: &str = "متوقف مؤقتاً — خرجت من نافذة اللعبة";
 }

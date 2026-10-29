@@ -25,8 +25,9 @@ use trainer::layout_engine::{
     PeeksHitOutcome, PeeksMissOutcome, PeeksSpawnAction, PeeksTimeoutOutcome,
 };
 use trainer::pause::{
-    despawn_pause_menu, execute_pause, execute_resume, spawn_pause_menu, PauseButtonAction,
-    PauseCause, PauseManager, PauseMenuNavigation, PauseOverlayRoot,
+    despawn_pause_menu, execute_pause, execute_resume, should_auto_pause_on_focus_loss,
+    spawn_pause_menu, PauseButtonAction, PauseCause, PauseManager, PauseMenuNavigation,
+    PauseOverlayRoot,
 };
 use trainer::raw_input::RawInputWorker;
 use trainer::recorder::{self, SessionRecorder};
@@ -371,25 +372,55 @@ fn sync_display_info_system(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_window_focus(
+    mut commands: Commands,
     mut focus_events: MessageReader<WindowFocused>,
     mut state: ResMut<TrainerState>,
-    pause_manager: Res<PauseManager>,
+    mut pause_manager: ResMut<PauseManager>,
+    mut nav: ResMut<PauseMenuNavigation>,
     mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    ui_fonts: Res<trainer::fonts::UiFonts>,
+    config: Res<TrainerConfig>,
 ) {
     for ev in focus_events.read() {
-        if let Some(mut cursor) = q_cursor.iter_mut().next() {
-            if ev.focused {
+        if ev.focused {
+            if let Some(mut cursor) = q_cursor.iter_mut().next() {
                 if !pause_manager.is_paused {
                     cursor.grab_mode = CursorGrabMode::Confined;
                     cursor.visible = false;
                 }
-            } else {
+            }
+        } else {
+            // Free the cursor whenever focus is lost
+            if let Some(mut cursor) = q_cursor.iter_mut().next() {
                 cursor.grab_mode = CursorGrabMode::None;
                 cursor.visible = true;
-                if state.initial_startup_done {
-                    state.recorder.flag_focus_lost();
-                }
+            }
+
+            if state.initial_startup_done {
+                state.recorder.flag_focus_lost();
+            }
+
+            let is_completed = state.layout_engine.is_completed();
+            if should_auto_pause_on_focus_loss(
+                state.initial_startup_done,
+                is_completed,
+                pause_manager.is_paused,
+            ) {
+                let now_us = state.clock.now_us();
+                execute_pause(
+                    &mut commands,
+                    &mut pause_manager,
+                    &mut nav,
+                    &mut state.recorder,
+                    &mut q_cursor,
+                    &ui_fonts,
+                    &config.scenario,
+                    config.duration_s,
+                    now_us,
+                    PauseCause::FocusLost,
+                );
             }
         }
     }
