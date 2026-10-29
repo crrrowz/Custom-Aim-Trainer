@@ -25,9 +25,9 @@ use trainer::layout_engine::{
     PeeksHitOutcome, PeeksMissOutcome, PeeksSpawnAction, PeeksTimeoutOutcome,
 };
 use trainer::pause::{
-    apply_focus_change, despawn_pause_menu, execute_pause, execute_resume, spawn_pause_menu,
-    FocusOutcome, PauseButtonAction, PauseCause, PauseManager, PauseMenuNavigation,
-    PauseOverlayRoot,
+    apply_focus_change, despawn_pause_menu, execute_pause, execute_resume, show_pause_menu,
+    spawn_pause_menu, FocusOutcome, PauseButtonAction, PauseCause, PauseManager,
+    PauseMenuNavigation, PauseOverlayRoot,
 };
 use trainer::raw_input::RawInputWorker;
 use trainer::recorder::{self, SessionRecorder};
@@ -378,17 +378,14 @@ fn handle_window_focus(
             );
 
             if outcome == FocusOutcome::Paused {
-                nav.focused_index = 0;
-                nav.is_confirming_discard = false;
-                nav.saving_timer = None;
                 let elapsed_s = SessionClock::us_to_s(pause_manager.active_time_us(now_us));
-                spawn_pause_menu(
+                show_pause_menu(
                     &mut commands,
                     &ui_fonts,
                     &config.scenario,
                     elapsed_s,
                     config.duration_s,
-                    &nav,
+                    &mut nav,
                     Some(PauseCause::FocusLost),
                 );
             }

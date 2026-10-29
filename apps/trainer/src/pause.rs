@@ -167,6 +167,30 @@ pub struct FocusableButton {
     pub index: usize,
 }
 
+/// Helper to reset pause navigation state and spawn the pause menu UI overlay.
+pub fn show_pause_menu(
+    commands: &mut Commands,
+    ui_fonts: &UiFonts,
+    scenario_name: &str,
+    elapsed_s: f64,
+    duration_s: f64,
+    nav: &mut PauseMenuNavigation,
+    cause: Option<PauseCause>,
+) {
+    nav.focused_index = 0;
+    nav.is_confirming_discard = false;
+    nav.saving_timer = None;
+    spawn_pause_menu(
+        commands,
+        ui_fonts,
+        scenario_name,
+        elapsed_s,
+        duration_s,
+        nav,
+        cause,
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn execute_pause(
     commands: &mut Commands,
@@ -183,12 +207,9 @@ pub fn execute_pause(
     if !apply_pause(pause_manager, recorder, now_us, cause) {
         return;
     }
-    nav.focused_index = 0;
-    nav.is_confirming_discard = false;
-    nav.saving_timer = None;
     set_cursor_lock(q_cursor, false);
     let elapsed_s = crate::clock::SessionClock::us_to_s(pause_manager.active_time_us(now_us));
-    spawn_pause_menu(
+    show_pause_menu(
         commands,
         ui_fonts,
         scenario_name,
