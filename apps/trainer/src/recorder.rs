@@ -197,7 +197,7 @@ impl SessionRecorder {
                     vfov,
                 },
                 input: InputConfig {
-                    est_polling_hz: 1000,
+                    est_polling_hz: estimate_polling_hz(&self.streams.input.t_us),
                 },
                 thresholds_version: "thresholds.v1".to_string(),
                 quality_flags: self.quality_flags,
@@ -215,4 +215,69 @@ impl SessionRecorder {
         std::fs::write(path, &bytes).map_err(aim_telemetry::WriteError::Io)?;
         Ok(bytes.len())
     }
+}
+
+/// Minimum number of valid inter-event intervals required to estimate polling rate.
+/// If fewer intervals are present, fallback to 1000 Hz.
+pub const MIN_POLLING_SAMPLES: usize = 10;
+
+/// Fallback polling rate in Hz when too few events are recorded.
+pub const DEFAULT_POLLING_HZ: u32 = 1000;
+
+/// Known standard mouse polling rates in Hz.
+pub const STANDARD_POLLING_RATES: [u32; 7] = [125, 250, 500, 1000, 2000, 4000, 8000];
+
+/// Estimates the mouse polling rate in Hz from a sequence of motion event timestamps (in microseconds).
+///
+/// Algorithm:
+/// 1. Computes consecutive inter-event intervals (dt = t[i] - t[i-1]).
+/// 2. Ignores non-positive intervals and idle gaps where dt > 50,000 us (50 ms).
+/// 3. If valid intervals < MIN_POLLING_SAMPLES (10), returns DEFAULT_POLLING_HZ (1000 Hz).
+/// 4. Computes the median interval.
+/// 5. Derives raw Hz = 1_000_000.0 / median_interval_us.
+/// 6. If raw Hz is within 10% of a standard rate (125, 250, 500, 1000, 2000, 4000, 8000),
+///    snaps to that standard rate.
+/// 7. Otherwise, returns raw Hz rounded to the nearest integer.
+pub fn estimate_polling_hz(timestamps: &[u64]) -> u32 {
+    if timestamps.len() < 2 {
+        return DEFAULT_POLLING_HZ;
+    }
+
+    let mut intervals = Vec::with_capacity(timestamps.len() - 1);
+    for window in timestamps.windows(2) {
+        if window[1] > window[0] {
+            let dt = window[1] - window[0];
+            // Ignore idle gaps > 50 ms (50,000 us)
+            if dt <= 50_000 {
+                intervals.push(dt);
+            }
+        }
+    }
+
+    if intervals.len() < MIN_POLLING_SAMPLES {
+        return DEFAULT_POLLING_HZ;
+    }
+
+    intervals.sort_unstable();
+    let n = intervals.len();
+    let median_us = if n % 2 == 1 {
+        intervals[n / 2] as f64
+    } else {
+        (intervals[n / 2 - 1] as f64 + intervals[n / 2] as f64) / 2.0
+    };
+
+    if median_us <= 0.0 {
+        return DEFAULT_POLLING_HZ;
+    }
+
+    let raw_hz = 1_000_000.0 / median_us;
+
+    for &std_hz in &STANDARD_POLLING_RATES {
+        let diff = (raw_hz - std_hz as f64).abs();
+        if diff <= std_hz as f64 * 0.10 {
+            return std_hz;
+        }
+    }
+
+    raw_hz.round().max(1.0) as u32
 }
