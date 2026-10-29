@@ -118,3 +118,20 @@ fn focus_pause_interval_excluded_from_active_time() {
     assert_ne!(session.header.quality_flags & quality_flags::PAUSED, 0);
     assert_ne!(session.header.quality_flags & quality_flags::FOCUS_LOST, 0);
 }
+
+#[test]
+fn raw_input_worker_focus_state_transitions() {
+    use trainer::raw_input::RawInputWorker;
+
+    // Window initially focused
+    RawInputWorker::set_window_focused(true);
+    assert!(RawInputWorker::is_window_focused());
+
+    // Focus lost -> flag flips to false (triggers THREAD_PRIORITY_NORMAL transition in worker thread)
+    RawInputWorker::set_window_focused(false);
+    assert!(!RawInputWorker::is_window_focused());
+
+    // Focus regained -> flag flips to true (triggers THREAD_PRIORITY_TIME_CRITICAL transition)
+    RawInputWorker::set_window_focused(true);
+    assert!(RawInputWorker::is_window_focused());
+}

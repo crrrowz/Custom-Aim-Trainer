@@ -20,7 +20,7 @@ use windows_sys::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows_sys::Win32::System::Threading::{
-    GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+    GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_NORMAL, THREAD_PRIORITY_TIME_CRITICAL,
 };
 use windows_sys::Win32::UI::Input::{
     GetRawInputData, GetRawInputDeviceInfoW, RegisterRawInputDevices, HRAWINPUT,
@@ -53,6 +53,7 @@ pub struct RawInputEvent {
 
 static TARGET_HWND: AtomicUsize = AtomicUsize::new(0);
 static ABSOLUTE_EVENTS_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static WINDOW_FOCUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 pub struct RawInputWorker {
     pub receiver: Receiver<RawInputEvent>,
@@ -69,6 +70,18 @@ impl RawInputWorker {
     /// Update the target Bevy window HWND so GetForegroundWindow() is accurately verified per event.
     pub fn set_target_hwnd(hwnd: HWND) {
         TARGET_HWND.store(hwnd as usize, Ordering::Relaxed);
+    }
+
+    /// Update whether the game window is currently focused.
+    /// When unfocused, the raw input thread priority lowers to NORMAL to save CPU/power,
+    /// and restores to TIME_CRITICAL once focus is regained.
+    pub fn set_window_focused(focused: bool) {
+        WINDOW_FOCUSED.store(focused, Ordering::Relaxed);
+    }
+
+    /// Read whether the window focus flag is currently set for the raw input thread.
+    pub fn is_window_focused() -> bool {
+        WINDOW_FOCUSED.load(Ordering::Relaxed)
     }
 
     /// Returns the number of absolute mouse events discarded (e.g. tablet or RDP).
@@ -182,8 +195,21 @@ impl RawInputWorker {
 
             hwnd_tx.send(hwnd as isize).unwrap();
 
+            let mut current_priority_time_critical = true;
             let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, 0 as HWND, 0, 0) > 0 {
+                // Dynamically throttle thread priority when the game window is unfocused to save power
+                let is_focused = WINDOW_FOCUSED.load(Ordering::Relaxed);
+                if is_focused != current_priority_time_critical {
+                    let new_priority = if is_focused {
+                        THREAD_PRIORITY_TIME_CRITICAL
+                    } else {
+                        THREAD_PRIORITY_NORMAL
+                    };
+                    SetThreadPriority(GetCurrentThread(), new_priority);
+                    current_priority_time_critical = is_focused;
+                }
+
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }

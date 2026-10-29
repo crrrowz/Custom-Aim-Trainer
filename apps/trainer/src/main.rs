@@ -384,6 +384,7 @@ fn handle_window_focus(
     config: Res<TrainerConfig>,
 ) {
     for ev in focus_events.read() {
+        RawInputWorker::set_window_focused(ev.focused);
         if ev.focused {
             if let Some(mut cursor) = q_cursor.iter_mut().next() {
                 if !pause_manager.is_paused {
@@ -1412,7 +1413,7 @@ fn main() {
         .insert_resource(scenario_seed)
         .insert_resource(WinitSettings {
             focused_mode: UpdateMode::Continuous,
-            unfocused_mode: UpdateMode::Continuous,
+            unfocused_mode: UpdateMode::reactive_low_power(std::time::Duration::from_millis(100)),
         })
         .add_plugins(
             DefaultPlugins
