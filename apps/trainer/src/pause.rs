@@ -4,6 +4,12 @@ use bevy::prelude::*;
 use bevy::text::FontSource;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseCause {
+    Manual,
+    FocusLost,
+}
+
 #[derive(Resource, Debug, Clone, Default)]
 pub struct PauseManager {
     pub is_paused: bool,
@@ -11,6 +17,7 @@ pub struct PauseManager {
     pub total_paused_us: u64,
     pub was_paused: bool,
     pub resume_qpc_us: u64,
+    pub pause_cause: Option<PauseCause>,
 }
 
 impl PauseManager {
@@ -32,15 +39,20 @@ impl PauseManager {
         if self.is_paused {
             self.resume(now_us);
         } else {
-            self.pause(now_us);
+            self.pause_with_cause(now_us, PauseCause::Manual);
         }
     }
 
     pub fn pause(&mut self, now_us: u64) {
+        self.pause_with_cause(now_us, PauseCause::Manual);
+    }
+
+    pub fn pause_with_cause(&mut self, now_us: u64, cause: PauseCause) {
         if !self.is_paused {
             self.is_paused = true;
             self.pause_start_us = Some(now_us);
             self.was_paused = true;
+            self.pause_cause = Some(cause);
         }
     }
 
@@ -51,6 +63,7 @@ impl PauseManager {
             }
             self.is_paused = false;
             self.resume_qpc_us = now_us;
+            self.pause_cause = None;
         }
     }
 }
@@ -96,6 +109,62 @@ pub struct FocusableButton {
     pub index: usize,
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn execute_pause(
+    commands: &mut Commands,
+    pause_manager: &mut PauseManager,
+    nav: &mut PauseMenuNavigation,
+    recorder: &mut crate::recorder::SessionRecorder,
+    q_cursor: &mut Query<&mut CursorOptions, With<PrimaryWindow>>,
+    ui_fonts: &UiFonts,
+    scenario_name: &str,
+    duration_s: f64,
+    now_us: u64,
+    cause: PauseCause,
+) {
+    if pause_manager.is_paused {
+        return;
+    }
+    pause_manager.pause_with_cause(now_us, cause);
+    nav.focused_index = 0;
+    nav.is_confirming_discard = false;
+    nav.saving_timer = None;
+    recorder.flag_paused();
+    recorder.record_key(now_us, aim_telemetry::format::KeyCode::Unknown(0x1B), true);
+    set_cursor_lock(q_cursor, false);
+    let elapsed_s = crate::clock::SessionClock::us_to_s(pause_manager.active_time_us(now_us));
+    spawn_pause_menu(
+        commands,
+        ui_fonts,
+        scenario_name,
+        elapsed_s,
+        duration_s,
+        nav,
+        Some(cause),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_resume(
+    commands: &mut Commands,
+    pause_manager: &mut PauseManager,
+    recorder: &mut crate::recorder::SessionRecorder,
+    layout_engine: &mut crate::layout_engine::LayoutEngineState,
+    q_cursor: &mut Query<&mut CursorOptions, With<PrimaryWindow>>,
+    q_overlay: &Query<Entity, With<PauseOverlayRoot>>,
+    now_us: u64,
+) {
+    if !pause_manager.is_paused {
+        return;
+    }
+    pause_manager.resume(now_us);
+    recorder.record_key(now_us, aim_telemetry::format::KeyCode::Unknown(0x1B), false);
+    let resume_active_us = pause_manager.active_time_us(now_us);
+    layout_engine.void_in_flight_trial_on_resume(resume_active_us);
+    set_cursor_lock(q_cursor, true);
+    despawn_pause_menu(commands, q_overlay);
+}
+
 pub fn spawn_pause_menu(
     commands: &mut Commands,
     ui_fonts: &UiFonts,
@@ -103,6 +172,7 @@ pub fn spawn_pause_menu(
     elapsed_s: f64,
     total_duration_s: f64,
     nav: &PauseMenuNavigation,
+    cause: Option<PauseCause>,
 ) {
     let elapsed_mins = (elapsed_s as u32) / 60;
     let elapsed_secs = (elapsed_s as u32) % 60;
@@ -194,6 +264,19 @@ pub fn spawn_pause_menu(
                             ui_fonts,
                         );
                     } else {
+                        // Notice on focus loss
+                        if cause == Some(PauseCause::FocusLost) {
+                            card.spawn((
+                                Text::new(strings::NOTICE_FOCUS_LOST),
+                                TextFont {
+                                    font: FontSource::Handle(ui_fonts.regular.clone()),
+                                    font_size: FontSize::Px(FONT_SIZE_SUBTITLE),
+                                    ..default()
+                                },
+                                TextColor(COLOR_ACCENT),
+                            ));
+                        }
+
                         // Title
                         card.spawn((
                             Text::new(strings::TITLE_PAUSED),

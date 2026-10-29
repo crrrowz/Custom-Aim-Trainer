@@ -45,4 +45,5 @@ pub mod strings {
     pub const BTN_DISCARD: &str = "Discard";
     pub const SAVING: &str = "Saving…";
     pub const SAVED: &str = "Saved";
+    pub const NOTICE_FOCUS_LOST: &str = "Paused — the game window lost focus";
 }

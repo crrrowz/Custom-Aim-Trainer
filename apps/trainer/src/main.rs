@@ -25,8 +25,8 @@ use trainer::layout_engine::{
     PeeksHitOutcome, PeeksMissOutcome, PeeksSpawnAction, PeeksTimeoutOutcome,
 };
 use trainer::pause::{
-    despawn_pause_menu, set_cursor_lock, spawn_pause_menu, PauseButtonAction, PauseManager,
-    PauseMenuNavigation, PauseOverlayRoot,
+    despawn_pause_menu, execute_pause, execute_resume, spawn_pause_menu, PauseButtonAction,
+    PauseCause, PauseManager, PauseMenuNavigation, PauseOverlayRoot,
 };
 use trainer::raw_input::RawInputWorker;
 use trainer::recorder::{self, SessionRecorder};
@@ -1127,38 +1127,37 @@ fn pause_menu_toggle_system(
                     elapsed_s,
                     config.duration_s,
                     &nav,
+                    pause_manager.pause_cause,
                 );
                 return;
             }
 
-            pause_manager.resume(now_us);
-            state
-                .recorder
-                .record_key(now_us, aim_telemetry::format::KeyCode::Unknown(0x1B), false);
-            let resume_active_us = pause_manager.active_time_us(now_us);
-            state
-                .layout_engine
-                .void_in_flight_trial_on_resume(resume_active_us);
-            set_cursor_lock(&mut q_cursor, true);
-            despawn_pause_menu(&mut commands, &q_overlay);
-        } else {
-            pause_manager.pause(now_us);
-            nav.focused_index = 0;
-            nav.is_confirming_discard = false;
-            nav.saving_timer = None;
-            state.recorder.flag_paused();
-            state
-                .recorder
-                .record_key(now_us, aim_telemetry::format::KeyCode::Unknown(0x1B), true);
-            set_cursor_lock(&mut q_cursor, false);
-            let elapsed_s = SessionClock::us_to_s(pause_manager.active_time_us(now_us));
-            spawn_pause_menu(
+            let TrainerState {
+                ref mut recorder,
+                ref mut layout_engine,
+                ..
+            } = *state;
+            execute_resume(
                 &mut commands,
+                &mut pause_manager,
+                recorder,
+                layout_engine,
+                &mut q_cursor,
+                &q_overlay,
+                now_us,
+            );
+        } else {
+            execute_pause(
+                &mut commands,
+                &mut pause_manager,
+                &mut nav,
+                &mut state.recorder,
+                &mut q_cursor,
                 &ui_fonts,
                 &config.scenario,
-                elapsed_s,
                 config.duration_s,
-                &nav,
+                now_us,
+                PauseCause::Manual,
             );
         }
     }
@@ -1251,18 +1250,20 @@ fn pause_menu_button_system(
         let now_us = state.clock.now_us();
         match action {
             PauseButtonAction::Resume => {
-                pause_manager.resume(now_us);
-                state.recorder.record_key(
+                let TrainerState {
+                    ref mut recorder,
+                    ref mut layout_engine,
+                    ..
+                } = *state;
+                execute_resume(
+                    &mut commands,
+                    &mut pause_manager,
+                    recorder,
+                    layout_engine,
+                    &mut q_cursor,
+                    &q_overlay,
                     now_us,
-                    aim_telemetry::format::KeyCode::Unknown(0x1B),
-                    false,
                 );
-                let resume_active_us = pause_manager.active_time_us(now_us);
-                state
-                    .layout_engine
-                    .void_in_flight_trial_on_resume(resume_active_us);
-                set_cursor_lock(&mut q_cursor, true);
-                despawn_pause_menu(&mut commands, &q_overlay);
             }
             PauseButtonAction::QuitAndSave => {
                 println!("\nQuit & Save requested. Saving partial session...");
@@ -1277,6 +1278,7 @@ fn pause_menu_button_system(
                     elapsed_s,
                     config.duration_s,
                     &nav,
+                    pause_manager.pause_cause,
                 );
             }
             PauseButtonAction::QuitWithoutSaving => {
@@ -1292,6 +1294,7 @@ fn pause_menu_button_system(
                     elapsed_s,
                     config.duration_s,
                     &nav,
+                    pause_manager.pause_cause,
                 );
             }
             PauseButtonAction::ConfirmCancel => {
@@ -1306,6 +1309,7 @@ fn pause_menu_button_system(
                     elapsed_s,
                     config.duration_s,
                     &nav,
+                    pause_manager.pause_cause,
                 );
             }
             PauseButtonAction::ConfirmDiscard => {
@@ -1324,6 +1328,7 @@ fn pause_menu_button_system(
             elapsed_s,
             config.duration_s,
             &nav,
+            pause_manager.pause_cause,
         );
     }
 }
