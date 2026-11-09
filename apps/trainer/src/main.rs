@@ -1687,7 +1687,8 @@ fn main() {
                 spawn_fps_camera,
                 spawn_crosshair_ui,
                 lock_cursor_startup,
-            ),
+            )
+                .chain(),
         )
         .add_systems(
             PreUpdate,
