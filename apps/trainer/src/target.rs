@@ -278,19 +278,20 @@ pub fn spawn_peek_target(
     spawn_t_us: u64,
 ) {
     let half_wall_ang = ((0.5 / distance_m as f64).asin()).to_degrees();
-    // Inner edge direction: toward center 0.0°
+    // Start fully behind the occluder edge so the target emerges smoothly into the open
     let initial_yaw = if trial.occluder_yaw_deg > 0.0 {
-        trial.occluder_yaw_deg - half_wall_ang
+        trial.occluder_yaw_deg - half_wall_ang + trial.target_radius_deg
     } else {
-        trial.occluder_yaw_deg + half_wall_ang
+        trial.occluder_yaw_deg + half_wall_ang - trial.target_radius_deg
     };
     let initial_angles = ViewAngles::new(initial_yaw, trial.noisy_pitch_deg);
-    let linear_radius = distance_m * (trial.target_radius_deg as f32).to_radians().sin();
+    let target_distance_m = distance_m + 0.25;
+    let linear_radius = target_distance_m * (trial.target_radius_deg as f32).to_radians().sin();
 
     commands.spawn((
         Mesh3d(assets.trial_mesh.clone()),
         MeshMaterial3d(assets.trial_material.clone()),
-        Transform::from_translation(angles_to_world_pos(initial_angles, distance_m))
+        Transform::from_translation(angles_to_world_pos(initial_angles, target_distance_m))
             .with_scale(Vec3::splat(linear_radius)),
         ActiveTargetMarker {
             target_id,

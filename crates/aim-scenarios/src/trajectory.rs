@@ -4,11 +4,21 @@ use crate::rng::{create_seeded_rng, sample_range_f64, sample_unit_f64, ChaCha8Rn
 use crate::schema::TrackingTrajectory;
 use aim_core::ViewAngles;
 
+use std::cell::RefCell;
+
+#[derive(Debug, Clone)]
+struct TrajectoryCheckpoint {
+    step: u64,
+    yaw_deg: f64,
+    pitch_deg: f64,
+    heading_rad: f64,
+    reflection_count: u64,
+}
+
 /// An incremental, O(1) per-frame trajectory integrator.
 ///
-/// Maintains simulation state across frames so subsequent calls only advance
-/// by the elapsed frame time (typically ~4-16ms) rather than re-integrating
-/// from t=0.
+/// Maintains simulation state and periodic checkpoints across frames so subsequent
+/// calls advance by the elapsed frame time rather than re-integrating from t=0.
 #[derive(Debug, Clone)]
 pub struct TrajectoryIntegrator {
     trajectory: TrackingTrajectory,
@@ -20,6 +30,7 @@ pub struct TrajectoryIntegrator {
     cs_pitch_deg: f64,
     cs_heading_rad: f64,
     pub cs_reflection_count: u64,
+    cs_checkpoints: Vec<TrajectoryCheckpoint>,
     // ReactiveStrafe state:
     rs_rng: ChaCha8Rng,
     rs_current_dir: f64,
@@ -53,6 +64,14 @@ impl TrajectoryIntegrator {
             _ => 0.0,
         };
 
+        let initial_checkpoint = TrajectoryCheckpoint {
+            step: 0,
+            yaw_deg: 0.0,
+            pitch_deg: 0.0,
+            heading_rad: 0.45,
+            reflection_count: 0,
+        };
+
         Self {
             trajectory,
             seed,
@@ -62,6 +81,7 @@ impl TrajectoryIntegrator {
             cs_pitch_deg: 0.0,
             cs_heading_rad: 0.45,
             cs_reflection_count: 0,
+            cs_checkpoints: vec![initial_checkpoint],
             rs_rng,
             rs_current_dir,
             rs_accum_s: 0.0,
@@ -93,7 +113,21 @@ impl TrajectoryIntegrator {
                 let remainder_s = (t_us % 200) as f64 / 1_000_000.0;
 
                 if target_full_steps < self.cs_committed_steps {
-                    self.reset();
+                    // Restore from closest prior checkpoint
+                    let idx = match self
+                        .cs_checkpoints
+                        .binary_search_by_key(&target_full_steps, |cp| cp.step)
+                    {
+                        Ok(i) => i,
+                        Err(i) => i.saturating_sub(1),
+                    };
+                    let cp = self.cs_checkpoints[idx].clone();
+                    self.cs_committed_steps = cp.step;
+                    self.cs_yaw_deg = cp.yaw_deg;
+                    self.cs_pitch_deg = cp.pitch_deg;
+                    self.cs_heading_rad = cp.heading_rad;
+                    self.cs_reflection_count = cp.reflection_count;
+                    self.cs_checkpoints.truncate(idx + 1);
                 }
 
                 while self.cs_committed_steps < target_full_steps {
@@ -139,6 +173,22 @@ impl TrajectoryIntegrator {
                     }
 
                     self.cs_committed_steps += 1;
+
+                    // Periodic checkpoints every 250 steps (50ms)
+                    if self.cs_committed_steps % 250 == 0
+                        && self
+                            .cs_checkpoints
+                            .last()
+                            .map_or(true, |last| last.step < self.cs_committed_steps)
+                    {
+                        self.cs_checkpoints.push(TrajectoryCheckpoint {
+                            step: self.cs_committed_steps,
+                            yaw_deg: self.cs_yaw_deg,
+                            pitch_deg: self.cs_pitch_deg,
+                            heading_rad: self.cs_heading_rad,
+                            reflection_count: self.cs_reflection_count,
+                        });
+                    }
                 }
 
                 if remainder_s > 0.0 {
@@ -192,8 +242,12 @@ impl TrajectoryIntegrator {
 
                 while self.rs_accum_s + self.rs_segment_dur < t_s {
                     self.rs_current_yaw += self.rs_current_dir * speed_deg_s * self.rs_segment_dur;
-                    if self.rs_current_yaw.abs() >= *max_yaw_deg {
-                        self.rs_current_yaw = self.rs_current_yaw.clamp(-max_yaw_deg, *max_yaw_deg);
+                    if self.rs_current_yaw > *max_yaw_deg {
+                        self.rs_current_yaw = 2.0 * max_yaw_deg - self.rs_current_yaw;
+                        self.rs_current_dir = -self.rs_current_dir;
+                    } else if self.rs_current_yaw < -*max_yaw_deg {
+                        self.rs_current_yaw = -2.0 * max_yaw_deg - self.rs_current_yaw;
+                        self.rs_current_dir = -self.rs_current_dir;
                     }
                     self.rs_current_dir = -self.rs_current_dir;
                     self.rs_accum_s += self.rs_segment_dur;
@@ -204,8 +258,14 @@ impl TrajectoryIntegrator {
                 }
 
                 let dt = t_s - self.rs_accum_s;
-                let current_yaw = (self.rs_current_yaw + self.rs_current_dir * speed_deg_s * dt)
-                    .clamp(-max_yaw_deg, *max_yaw_deg);
+                let raw_yaw = self.rs_current_yaw + self.rs_current_dir * speed_deg_s * dt;
+                let current_yaw = if raw_yaw > *max_yaw_deg {
+                    2.0 * max_yaw_deg - raw_yaw
+                } else if raw_yaw < -*max_yaw_deg {
+                    -2.0 * max_yaw_deg - raw_yaw
+                } else {
+                    raw_yaw
+                };
 
                 ViewAngles::new(current_yaw, *fixed_pitch_deg)
             }
@@ -217,9 +277,30 @@ impl TrajectoryIntegrator {
 ///
 /// Implements exact constant speed: integrates geodesic steps directly on the unit sphere
 /// ensuring `||v|| = speed_deg_s` everywhere within ±5% across the entire course.
+/// Uses thread-local cached integrators with internal checkpoint tables for fast, O(1) amortized evaluation.
 pub fn target_angles_at(trajectory: &TrackingTrajectory, seed: u64, t_us: u64) -> ViewAngles {
-    let mut integrator = TrajectoryIntegrator::new(trajectory.clone(), seed);
-    integrator.angles_at(t_us)
+    thread_local! {
+        static CACHE: RefCell<Vec<(TrackingTrajectory, u64, TrajectoryIntegrator)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some((_, _, integrator)) = cache
+            .iter_mut()
+            .find(|(t, s, _)| *s == seed && t == trajectory)
+        {
+            integrator.angles_at(t_us)
+        } else {
+            let mut integrator = TrajectoryIntegrator::new(trajectory.clone(), seed);
+            let angles = integrator.angles_at(t_us);
+            if cache.len() >= 8 {
+                cache.remove(0);
+            }
+            cache.push((trajectory.clone(), seed, integrator));
+            angles
+        }
+    })
 }
 
 /// Generates the sequence of reversal timestamps for a strafe tracking trajectory.

@@ -159,16 +159,24 @@ pub fn generate_cluster_candidates(scenario: &Scenario, seed: u64) -> Vec<(f64, 
         total_targets,
         distance_bins_deg,
         octants,
+        max_yaw_deg,
+        max_pitch_deg,
         ..
     } = &scenario.layout
     {
         let mut table = Vec::with_capacity(*total_targets as usize);
         let dist_count = distance_bins_deg.len();
+        let step_deg = 360.0 / *octants as f64;
 
         for i in 0..(*total_targets as usize) {
             let dist = distance_bins_deg[i % dist_count];
             let octant = (i as u32) % octants;
-            table.push((dist, octant));
+            let bearing_deg = octant as f64 * step_deg;
+            let (yaw, pitch) = target_angles_from_bearing(dist, bearing_deg);
+            let signed_yaw = if yaw > 180.0 { yaw - 360.0 } else { yaw };
+            if signed_yaw.abs() <= *max_yaw_deg + 1e-6 && pitch.abs() <= *max_pitch_deg + 1e-6 {
+                table.push((dist, octant));
+            }
         }
 
         let mut rng = create_seeded_rng(seed);
