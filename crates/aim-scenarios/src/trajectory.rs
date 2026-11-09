@@ -175,20 +175,19 @@ impl TrajectoryIntegrator {
                     self.cs_committed_steps += 1;
 
                     // Periodic checkpoints every 250 steps (50ms)
-                    if self.cs_committed_steps % 250 == 0 {
-                        if self
+                    if self.cs_committed_steps % 250 == 0
+                        && self
                             .cs_checkpoints
                             .last()
                             .map_or(true, |last| last.step < self.cs_committed_steps)
-                        {
-                            self.cs_checkpoints.push(TrajectoryCheckpoint {
-                                step: self.cs_committed_steps,
-                                yaw_deg: self.cs_yaw_deg,
-                                pitch_deg: self.cs_pitch_deg,
-                                heading_rad: self.cs_heading_rad,
-                                reflection_count: self.cs_reflection_count,
-                            });
-                        }
+                    {
+                        self.cs_checkpoints.push(TrajectoryCheckpoint {
+                            step: self.cs_committed_steps,
+                            yaw_deg: self.cs_yaw_deg,
+                            pitch_deg: self.cs_pitch_deg,
+                            heading_rad: self.cs_heading_rad,
+                            reflection_count: self.cs_reflection_count,
+                        });
                     }
                 }
 
@@ -282,7 +281,7 @@ impl TrajectoryIntegrator {
 pub fn target_angles_at(trajectory: &TrackingTrajectory, seed: u64, t_us: u64) -> ViewAngles {
     thread_local! {
         static CACHE: RefCell<Vec<(TrackingTrajectory, u64, TrajectoryIntegrator)>> =
-            RefCell::new(Vec::new());
+            const { RefCell::new(Vec::new()) };
     }
 
     CACHE.with(|cache| {
