@@ -52,6 +52,8 @@ pub struct TrainerConfig {
     pub dpi: u32,
     pub sens: f64,
     pub duration_s: f64,
+    /// `--duration`, applied to every stage of a battery.
+    pub duration_override: Option<f64>,
     pub windowed: bool,
     pub fullscreen_exclusive: bool,
     pub backend: String,
@@ -219,6 +221,7 @@ fn parse_cli_args() -> (TrainerConfig, Option<f64>) {
             dpi,
             sens,
             duration_s: 288.0,
+            duration_override: None,
             windowed,
             fullscreen_exclusive,
             backend,
@@ -1554,7 +1557,8 @@ fn flow_update_system(
                         load_scenario(&next_sc_id, config.form, config.seed);
                     config.scenario = next_sc_id.clone();
                     config.output_path = Some(next_out_path.clone());
-                    config.duration_s = trainer::resolve_scenario_duration(&next_sc_def, None);
+                    config.duration_s =
+                        trainer::resolve_scenario_duration(&next_sc_def, config.duration_override);
 
                     despawn_flow_overlay(&mut commands, &q_overlay);
 
@@ -1602,6 +1606,7 @@ fn flow_update_system(
 
 fn main() {
     let (mut config, duration_override) = parse_cli_args();
+    config.duration_override = duration_override;
     if let Some(ref bat) = config.battery {
         let stages = resolve_battery_stages(bat).unwrap_or_else(|e| {
             eprintln!("ERROR: {}", e);
