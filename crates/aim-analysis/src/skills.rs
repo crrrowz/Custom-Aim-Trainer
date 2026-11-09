@@ -1,11 +1,9 @@
 //! Skill estimates from a set of assessment sessions (03_DIAGNOSIS_ENGINE.md sections 3-4).
 //!
-//! S12 (counter-strafe) needs the A7 movement test, which does not exist yet, so it is never emitted.
-
 use crate::engagement::{build_trace, compute_engagement_metrics_with, median, EngagementMetrics};
 use crate::segment::AnalysisThresholds;
 use crate::{active_duration_between, extract_pause_intervals};
-use aim_scenarios::schema::TrackingTrajectory;
+use aim_scenarios::schema::{TrackingTrajectory, ACCURATE_SPEED_MPS};
 use aim_scenarios::trajectory::target_angles_at;
 use aim_telemetry::format::AftSession;
 use serde::{Deserialize, Serialize};
@@ -29,6 +27,7 @@ pub enum SkillId {
     S10HeadLevel,
     S11DirectionalBalance,
     S13Consistency,
+    S12CounterStrafe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +63,8 @@ pub struct Evidence {
     /// Weakest direction with enough evidence: (octant, z-score).
     pub weakest_octant: Option<(u8, f64)>,
     pub fatigue_per_trial: Option<f64>,
+    pub moving_shot_rate: Option<f64>,
+    pub median_stop_to_shot_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -105,6 +106,7 @@ fn anchor(skill: SkillId) -> Anchor {
         SkillId::S10HeadLevel => (3.0, 0.2),
         SkillId::S11DirectionalBalance => (4.0, 0.0),
         SkillId::S13Consistency => (0.7, 0.15),
+        SkillId::S12CounterStrafe => (0.4, 0.0),
     };
     Anchor { worst, best }
 }
@@ -558,6 +560,42 @@ pub fn analyze_sessions(sessions: &[AftSession], th: &AnalysisThresholds) -> Ski
                 Some(z.min(0.0).abs())
             }));
         }
+    }
+
+    // S12
+    let mut moving = Vec::new();
+    let mut stop_to_shot = Vec::new();
+    for (session, engagements) in per_session
+        .iter()
+        .filter(|(s, _)| is_scenario(s, "counter_strafe"))
+    {
+        let player = &session.streams.player;
+        for shot in engagements
+            .iter()
+            .filter(|e| !e.is_home)
+            .filter_map(|e| e.shot_t_us)
+        {
+            let i = player.t_us.partition_point(|&t| t <= shot);
+            if i == 0 {
+                continue;
+            }
+            moving.push(f64::from(u8::from(
+                player.vel_x[i - 1].abs() > ACCURATE_SPEED_MPS,
+            )));
+            if let Some(j) = (0..i)
+                .rev()
+                .find(|&j| player.vel_x[j].abs() > ACCURATE_SPEED_MPS)
+            {
+                stop_to_shot.push(shot.saturating_sub(player.t_us[j]) as f64 / 1000.0);
+            }
+        }
+    }
+    skills.extend(estimate(SkillId::S12CounterStrafe, moving.len(), &|i| {
+        Some(mean(&pick(&moving, i)))
+    }));
+    if !moving.is_empty() {
+        evidence.moving_shot_rate = Some(mean(&moving));
+        evidence.median_stop_to_shot_ms = median(&stop_to_shot);
     }
 
     // S13

@@ -62,6 +62,12 @@ impl SessionRecorder {
             .push(KeyRecord { t_us, key, down });
     }
 
+    pub fn record_player(&mut self, t_us: u64, velocity: f64) {
+        self.streams.player.t_us.push(t_us);
+        self.streams.player.vel_x.push(velocity);
+        self.streams.player.vel_z.push(0.0);
+    }
+
     pub fn record_input(&mut self, t_us: u64, dx: i32, dy: i32) {
         self.streams.input.t_us.push(t_us);
         self.streams.input.dx.push(dx);

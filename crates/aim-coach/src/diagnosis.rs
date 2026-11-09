@@ -1,4 +1,4 @@
-//! Rule-based diagnosis (03_DIAGNOSIS_ENGINE.md section 6). D11 and D12 need A7 and multi-day data.
+//! Rule-based diagnosis (03_DIAGNOSIS_ENGINE.md section 6). D12 needs multi-day data.
 
 use aim_analysis::{Reliability, SkillId, SkillProfile};
 use serde::{Deserialize, Serialize};
@@ -40,6 +40,7 @@ fn weights(skill: SkillId) -> (f64, f64) {
         SkillId::S10HeadLevel => (1.0, 1.0),
         SkillId::S11DirectionalBalance => (0.5, 0.7),
         SkillId::S13Consistency => (0.5, 0.4),
+        SkillId::S12CounterStrafe => (1.0, 1.0),
     }
 }
 
@@ -185,6 +186,15 @@ pub fn diagnose(profile: &SkillProfile) -> Vec<Finding> {
             (t - 200.0) / 250.0,
             vec![("S07.median_ms", t)],
             &["strafe_track_reactive"],
+        );
+    }
+    if let Some(rate) = e.moving_shot_rate.filter(|&r| r > 0.20) {
+        add(
+            "D11",
+            SkillId::S12CounterStrafe,
+            rate / 0.6,
+            vec![("S12.moving_shot_rate", rate)],
+            &["cs_drill"],
         );
     }
     if good(SkillId::S02FlickSpeed) && weak(SkillId::S03FlickPrecision) {

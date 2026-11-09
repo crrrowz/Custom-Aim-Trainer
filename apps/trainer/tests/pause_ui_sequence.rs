@@ -4,6 +4,7 @@ use trainer::pause::PauseMenuNavigation;
 fn test_show_pause_menu_resets_navigation_state() {
     let mut nav = PauseMenuNavigation {
         focused_index: 3,
+        click_guard_s: 0.0,
         is_confirming_discard: true,
         saving_timer: Some(1.5),
         session_duration_s: 100.0,

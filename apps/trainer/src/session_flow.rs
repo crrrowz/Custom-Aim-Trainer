@@ -131,9 +131,238 @@ impl SessionFlowEngine {
     }
 }
 
-/// Scenario instructions helper. Returns (title, line1, line2).
-pub fn scenario_instructions(scenario_id: &str) -> (&'static str, &'static str, &'static str) {
-    if scenario_id.contains("warmup") {
+/// The name a player sees for a scenario. Never shows an id or a file path.
+pub fn scenario_title(scenario_id: &str) -> &'static str {
+    scenario_instructions(scenario_id).0
+}
+
+fn drill_instructions(scenario_id: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    let name = scenario_id.strip_prefix("drill.")?;
+    Some(match name {
+        "deceleration_ladder" => (
+            "DECELERATION LADDER",
+            "Slow your flick down so the first movement stops on the target.",
+            "Targets shrink and get farther as you improve.",
+        ),
+        "commit_flick" => (
+            "COMMIT FLICK",
+            "Reach the target in one full movement.",
+            "Short time limit: do not stop early and crawl.",
+        ),
+        "consistency_grid" => (
+            "CONSISTENCY GRID",
+            "Same distance every time, in every direction.",
+            "Make each flick land the same way.",
+        ),
+        "micro_hold" => (
+            "MICRO HOLD",
+            "Small, close targets. Settle before you click.",
+            "Keep the crosshair still on the target.",
+        ),
+        "confirm_click" => (
+            "CONFIRM CLICK",
+            "Arrive first, then click.",
+            "Do not fire while the crosshair is still moving.",
+        ),
+        "timed_kill" => (
+            "TIMED KILL",
+            "Accurate is not enough: click before the window closes.",
+            "The time per target shrinks as you improve.",
+        ),
+        "head_level_hold" => (
+            "HEAD LEVEL HOLD",
+            "Keep your crosshair at head height before the target appears.",
+            "Do not drift up or down between peeks.",
+        ),
+        "peek_line" => (
+            "PEEK LINE",
+            "Targets emerge from the wall edges.",
+            "Hold the line and click as they appear.",
+        ),
+        "directional_flick" => (
+            "DIRECTIONAL FLICK",
+            "Flicks in every direction.",
+            "Pay attention to the direction that feels slowest.",
+        ),
+        "strafe_track_reactive" => (
+            "REACTIVE STRAFE",
+            "Stay on a target that keeps changing direction.",
+            "React to each reversal as fast as you can.",
+        ),
+        "smooth_track" => (
+            "SMOOTH TRACK",
+            "Keep the crosshair on the moving target.",
+            "Smooth, steady hand speed.",
+        ),
+        "reflex_dot" => (
+            "REFLEX DOT",
+            "Targets appear close to the centre.",
+            "Start moving the moment you see one.",
+        ),
+        "precision_first" => (
+            "PRECISION FIRST",
+            "Small targets. Accuracy matters more than speed.",
+            "Slow down until you stop missing.",
+        ),
+        "speed_push" => (
+            "SPEED PUSH",
+            "Large targets, tight time limit.",
+            "Move faster than feels comfortable.",
+        ),
+        "cs_drill" => (
+            "COUNTER-STRAFE",
+            "Move with A and D, and stop before you click.",
+            "Tap the opposite key to stop quickly.",
+        ),
+        "warmup" => (
+            "WARM-UP",
+            "Large targets at moderate distances.",
+            "Get your hand moving. This one is not measured.",
+        ),
+        _ => return None,
+    })
+}
+
+type Instructions = (&'static str, &'static str, &'static str);
+
+/// Scenario instructions in the player's language. Returns (title, line1, line2).
+pub fn scenario_instructions(scenario_id: &str) -> Instructions {
+    if strings::is_arabic() {
+        arabic_instructions(scenario_id)
+    } else {
+        english_instructions(scenario_id)
+    }
+}
+
+pub fn arabic_instructions(scenario_id: &str) -> Instructions {
+    let key = scenario_id.rsplit('.').next().unwrap_or(scenario_id);
+    match key {
+        "warmup" => (
+            "إحماء",
+            "أهداف كبيرة على مسافات متوسطة.",
+            "سخّن يدك. هذا الاختبار ما ينحسب.",
+        ),
+        "flick_static" => (
+            "الفليك الثابت",
+            "صيب كل هدف بفليك سريع ومضبوط.",
+            "ارجع للمركز بين الأهداف.",
+        ),
+        "micro_precision" => (
+            "الدقة الصغيرة",
+            "تصحيحات صغيرة ودقيقة.",
+            "أهداف صغيرة وقريبة تقيس تحكم الأصابع.",
+        ),
+        "head_level_peeks" => (
+            "الظهور على مستوى الرأس",
+            "خلي مؤشرك على مستوى الرأس وانقر من يطلع الهدف.",
+            "لا تحرك مؤشرك لفوق أو جوه.",
+        ),
+        "smooth_track" => (
+            "التتبع السلس",
+            "خلي المؤشر على الهدف المتحرك.",
+            "حركة يد ناعمة وثابتة.",
+        ),
+        "strafe_track" => (
+            "تتبع strafe",
+            "رد بسرعة على تغيير الاتجاه المفاجئ.",
+            "ابقى على الهدف بأقل تأخير.",
+        ),
+        "multi_switch" => (
+            "التبديل بين الأهداف",
+            "اقتل الأهداف واحد ورا الثاني بسرعة.",
+            "ابدي بالأقرب وانتقل بانسيابية.",
+        ),
+        "counter_strafe" => (
+            "الإيقاف قبل الإطلاق",
+            "تحرك بـ A و D وتوقف قبل ما تنقر.",
+            "الطلقة أثناء الحركة ما تنحسب.",
+        ),
+        "deceleration_ladder" => (
+            "سلّم التخفيف",
+            "خفف حركتك حتى توقف الحركة الأولى على الهدف.",
+            "إذا تجاوزت الهدف كثير ما تنحسب.",
+        ),
+        "commit_flick" => (
+            "فليك كامل",
+            "وصل للهدف بحركة وحدة كاملة.",
+            "الوقت قصير: لا توقف قبله وتزحف.",
+        ),
+        "consistency_grid" => (
+            "شبكة الثبات",
+            "نفس المسافة بكل مرة وبكل اتجاه.",
+            "خلي كل حركة تنتهي بنفس الشكل.",
+        ),
+        "micro_hold" => (
+            "تثبيت دقيق",
+            "أهداف صغيرة قريبة. اثبت قبل النقر.",
+            "إذا المؤشر يتحرك وقت النقرة ما تنحسب.",
+        ),
+        "confirm_click" => (
+            "نقر بعد الوصول",
+            "وصل أول وبعدين انقر.",
+            "النقرة والمؤشر يتحرك ما تنحسب.",
+        ),
+        "timed_kill" => (
+            "قتل موقوت",
+            "الدقة وحدها ما تكفي: انقر قبل ما ينتهي الوقت.",
+            "الوقت يقصر كل ما تتحسن.",
+        ),
+        "head_level_hold" => (
+            "ثبات مستوى الرأس",
+            "خلي مؤشرك على مستوى الرأس قبل ما يطلع الهدف.",
+            "لا تنزل ولا تصعد بين الأهداف.",
+        ),
+        "peek_line" => (
+            "خط الظهور",
+            "الأهداف تطلع من حواف الجدار.",
+            "اثبت على الخط وانقر وقت تطلع.",
+        ),
+        "directional_flick" => (
+            "فليك الاتجاهات",
+            "أغلب الأهداف باتجاهك الضعيف.",
+            "ركز على الاتجاه اللي تحسه أبطأ.",
+        ),
+        "strafe_track_reactive" => (
+            "تتبع strafe",
+            "ابقى على هدف يغير اتجاهه.",
+            "رد بأسرع ما تكدر على كل تغيير.",
+        ),
+        "reflex_dot" => (
+            "نقطة رد الفعل",
+            "الأهداف تطلع قريب من المركز.",
+            "تحرك أول ما تشوف الهدف.",
+        ),
+        "precision_first" => (
+            "الدقة أولاً",
+            "أهداف صغيرة. الدقة أهم من السرعة.",
+            "بطّئ لحد ما توقف الأخطاء.",
+        ),
+        "speed_push" => (
+            "دفع السرعة",
+            "أهداف كبيرة ووقت قليل.",
+            "تحرك أسرع من المريح.",
+        ),
+        "cs_drill" => (
+            "تمرين الإيقاف",
+            "تحرك بـ A و D وتوقف قبل النقر.",
+            "اضغط الاتجاه المعاكس حتى توقف بسرعة.",
+        ),
+        "practice" => ("جلسة مخصصة", "إعدادات أهدافك.", "صيب أكثر ما تكدر."),
+        _ => ("تمرين", "صيب الأهداف بسرعة ودقة.", "خلي مؤشرك ثابت."),
+    }
+}
+
+fn english_instructions(scenario_id: &str) -> Instructions {
+    if let Some(drill) = drill_instructions(scenario_id) {
+        return drill;
+    }
+    if scenario_id.starts_with("custom.") {
+        (
+            "CUSTOM PRACTICE",
+            "Your own target settings.",
+            "Hit as many as you can.",
+        )
+    } else if scenario_id.contains("warmup") {
         (
             "WARM-UP",
             "Acclimate to sensor tracking and click rhythm.",
@@ -168,6 +397,12 @@ pub fn scenario_instructions(scenario_id: &str) -> (&'static str, &'static str, 
             "STRAFE TRACKING",
             "React swiftly to sudden erratic directional reversals.",
             "Counter strafing target with minimal latency.",
+        )
+    } else if scenario_id.contains("counter_strafe") {
+        (
+            "COUNTER-STRAFE",
+            "Move with A and D, and stop before you click.",
+            "A shot fired while moving does not count.",
         )
     } else if scenario_id.contains("multi_switch") {
         (
@@ -397,7 +632,8 @@ pub fn spawn_instructions_overlay(
                     if let Some((current, total)) = battery_info {
                         card.spawn((
                             Text::new(format!(
-                                "BATTERY ASSESSMENT • STAGE {}/{}",
+                                "{} {}/{}",
+                                strings::stage_label(),
                                 current + 1,
                                 total
                             )),
@@ -421,17 +657,6 @@ pub fn spawn_instructions_overlay(
                         TextColor(COLOR_TEXT_PRIMARY),
                     ));
 
-                    // Subtitle / Scenario ID
-                    card.spawn((
-                        Text::new(scenario_id),
-                        TextFont {
-                            font: FontSource::Handle(ui_fonts.regular.clone()),
-                            font_size: FontSize::Px(FONT_SIZE_SUBTITLE),
-                            ..default()
-                        },
-                        TextColor(COLOR_TEXT_MUTED),
-                    ));
-
                     // Instructions 1 & 2
                     card.spawn((
                         Text::new(format!("{}\n{}", line1, line2)),
@@ -440,12 +665,13 @@ pub fn spawn_instructions_overlay(
                             font_size: FontSize::Px(FONT_SIZE_BUTTON),
                             ..default()
                         },
-                        TextColor(COLOR_TEXT_PRIMARY),
+                        TextLayout::justify(Justify::Center),
+                        TextColor(COLOR_TEXT_MUTED),
                     ));
 
                     // Action hint: Click or press Space to start
                     card.spawn((
-                        Text::new(strings::INSTRUCTIONS_START_HINT),
+                        Text::new(strings::instructions_start_hint()),
                         TextFont {
                             font: FontSource::Handle(ui_fonts.semibold.clone()),
                             font_size: FontSize::Px(FONT_SIZE_BUTTON),
@@ -456,7 +682,7 @@ pub fn spawn_instructions_overlay(
 
                     // Footer hint: Esc Quit without saving
                     card.spawn((
-                        Text::new(strings::INSTRUCTIONS_ESC_HINT),
+                        Text::new(strings::instructions_esc_hint()),
                         TextFont {
                             font: FontSource::Handle(ui_fonts.regular.clone()),
                             font_size: FontSize::Px(FONT_SIZE_FOOTER),
@@ -526,7 +752,7 @@ pub fn spawn_countdown_overlay(
                     ));
 
                     card.spawn((
-                        Text::new(strings::INSTRUCTIONS_ESC_HINT),
+                        Text::new(strings::instructions_esc_hint()),
                         TextFont {
                             font: FontSource::Handle(ui_fonts.regular.clone()),
                             font_size: FontSize::Px(FONT_SIZE_FOOTER),
@@ -535,6 +761,43 @@ pub fn spawn_countdown_overlay(
                         TextColor(COLOR_TEXT_MUTED),
                     ));
                 });
+        });
+}
+
+fn spawn_stat(parent: &mut ChildSpawnerCommands, ui_fonts: &UiFonts, value: &str, label: &str) {
+    parent
+        .spawn((
+            Node {
+                flex_grow: 1.0,
+                flex_basis: Val::Px(0.0),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: SPACE_XS,
+                padding: UiRect::axes(SPACE_SM, SPACE_LG),
+                border_radius: BorderRadius::all(RADIUS_BUTTON),
+                ..default()
+            },
+            BackgroundColor(COLOR_BTN_IDLE),
+        ))
+        .with_children(|stat| {
+            stat.spawn((
+                Text::new(value),
+                TextFont {
+                    font: FontSource::Handle(ui_fonts.semibold.clone()),
+                    font_size: FontSize::Px(FONT_SIZE_STAT),
+                    ..default()
+                },
+                TextColor(COLOR_TEXT_PRIMARY),
+            ));
+            stat.spawn((
+                Text::new(label),
+                TextFont {
+                    font: FontSource::Handle(ui_fonts.regular.clone()),
+                    font_size: FontSize::Px(FONT_SIZE_FOOTER),
+                    ..default()
+                },
+                TextColor(COLOR_TEXT_MUTED),
+            ));
         });
 }
 
@@ -577,7 +840,7 @@ pub fn spawn_results_overlay(
                 .with_children(|card| {
                     // Header
                     card.spawn((
-                        Text::new(strings::RESULTS_TITLE),
+                        Text::new(strings::results_title()),
                         TextFont {
                             font: FontSource::Handle(ui_fonts.semibold.clone()),
                             font_size: FontSize::Px(FONT_SIZE_TITLE),
@@ -588,7 +851,7 @@ pub fn spawn_results_overlay(
 
                     // Scenario name
                     card.spawn((
-                        Text::new(&summary.scenario_name),
+                        Text::new(scenario_title(&summary.scenario_name)),
                         TextFont {
                             font: FontSource::Handle(ui_fonts.regular.clone()),
                             font_size: FontSize::Px(FONT_SIZE_SUBTITLE),
@@ -597,34 +860,31 @@ pub fn spawn_results_overlay(
                         TextColor(COLOR_TEXT_MUTED),
                     ));
 
-                    // Stats lines
                     let rt_str = match summary.median_rt_ms {
-                        Some(ms) => format!("{:.1} ms", ms),
-                        None => "N/A".to_string(),
+                        Some(ms) => format!("{:.0} ms", ms),
+                        None => "—".to_string(),
                     };
+                    let accuracy = format!("{:.0}%", summary.accuracy_pct);
+                    let hits = format!("{} / {}", summary.hits, summary.total_shots);
 
-                    let stats_text = format!(
-                        "Hits: {}\nMisses: {}\nAccuracy: {:.1}%\nMedian RT: {}\nSession Length: {:.1}s",
-                        summary.hits,
-                        summary.misses,
-                        summary.accuracy_pct,
-                        rt_str,
-                        summary.session_duration_s
-                    );
+                    card.spawn(Node {
+                        width: Val::Percent(100.0),
+                        justify_content: JustifyContent::SpaceBetween,
+                        column_gap: SPACE_SM,
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        spawn_stat(row, ui_fonts, &accuracy, strings::stat_accuracy());
+                        spawn_stat(row, ui_fonts, &hits, strings::stat_hits());
+                        spawn_stat(row, ui_fonts, &rt_str, strings::stat_reaction());
+                    });
 
                     card.spawn((
-                        Text::new(stats_text),
-                        TextFont {
-                            font: FontSource::Handle(ui_fonts.regular.clone()),
-                            font_size: FontSize::Px(FONT_SIZE_BUTTON),
-                            ..default()
-                        },
-                        TextColor(COLOR_TEXT_PRIMARY),
-                    ));
-
-                    // Saved to path
-                    card.spawn((
-                        Text::new(format!("Saved to: {}", summary.saved_path)),
+                        Text::new(format!(
+                            "{}  •  {:.0}s",
+                            strings::saved(),
+                            summary.session_duration_s
+                        )),
                         TextFont {
                             font: FontSource::Handle(ui_fonts.regular.clone()),
                             font_size: FontSize::Px(FONT_SIZE_FOOTER),
@@ -635,9 +895,9 @@ pub fn spawn_results_overlay(
 
                     // Footer hint
                     let hint = if is_battery && has_next {
-                        "Enter / Space  Next Scenario   •   Esc  Stop Battery"
+                        strings::results_next_hint()
                     } else {
-                        strings::RESULTS_FOOTER_HINT
+                        strings::results_footer_hint()
                     };
 
                     card.spawn((
@@ -651,4 +911,26 @@ pub fn spawn_results_overlay(
                     ));
                 });
         });
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    #[test]
+    fn players_never_see_an_id() {
+        for id in [
+            "drill.warmup",
+            "drill.confirm_click",
+            "custom.practice",
+            "assess.v1.flick_static",
+        ] {
+            let title = english_instructions(id).0;
+            assert!(!title.contains('.') && !title.contains('\\'), "{title}");
+        }
+        assert_eq!(
+            english_instructions("drill.confirm_click").0,
+            "CONFIRM CLICK"
+        );
+    }
 }

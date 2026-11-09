@@ -2,8 +2,8 @@
 //! The trainer process sits behind `TrainerRunner` so the whole loop can be tested without a game window.
 
 use aim_analysis::{
-    analyze_sessions, compute_engagement_metrics, time_on_target, AnalysisThresholds, SkillId,
-    SkillProfile,
+    analyze_sessions, compute_engagement_metrics, session_detail, time_on_target,
+    AnalysisThresholds, SessionDetail, SkillId, SkillProfile,
 };
 use aim_coach::diagnosis::{diagnose, Finding};
 use aim_coach::drills::{build_custom, build_drill, CustomTargets};
@@ -109,6 +109,11 @@ pub struct AssessmentRecord {
     pub sens: f64,
     pub profile: SkillProfile,
     pub findings: Vec<Finding>,
+    #[serde(default)]
+    pub at_ms: u64,
+    /// Recordings of each test, oldest stage first.
+    #[serde(default)]
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -129,6 +134,13 @@ pub struct PracticeRecord {
     pub name: String,
     pub hit_rate: f64,
     pub difficulty: Option<f64>,
+    #[serde(default)]
+    pub at_ms: u64,
+    #[serde(default)]
+    pub file: Option<String>,
+    /// Target type, for custom practice.
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -245,6 +257,7 @@ impl ProcessRunner {
             targets.push(r.join("target"));
         }
         for t in targets {
+            candidates.push(t.join("play").join(exe_name()));
             candidates.push(t.join("release").join(exe_name()));
             candidates.push(t.join("debug").join(exe_name()));
         }
@@ -286,7 +299,7 @@ fn read_session(path: &Path) -> Res<AftSession> {
     read_aft(&bytes).map_err(|e| format!("Could not read {}: {e:?}", path.display()))
 }
 
-fn read_sessions_in(dir: &Path) -> Res<Vec<AftSession>> {
+fn recordings_in(dir: &Path) -> Res<Vec<PathBuf>> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .map_err(err)?
         .flatten()
@@ -294,7 +307,13 @@ fn read_sessions_in(dir: &Path) -> Res<Vec<AftSession>> {
         .filter(|p| p.extension().is_some_and(|e| e == "aft"))
         .collect();
     files.sort();
-    files.iter().map(|p| read_session(p)).collect()
+    Ok(files)
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// Success of each trial in one drill, in order. Tracking has no trials, so its time on target is
@@ -383,6 +402,8 @@ impl<R: TrainerRunner> Engine<R> {
             s.dpi.to_string(),
             "--sens".to_string(),
             s.sens.to_string(),
+            "--locale".to_string(),
+            s.locale.clone(),
         ];
         if s.windowed {
             args.push("--windowed".to_string());
@@ -406,7 +427,11 @@ impl<R: TrainerRunner> Engine<R> {
         ]);
         self.runner.run(&args)?;
 
-        let sessions = read_sessions_in(&dir)?;
+        let files = recordings_in(&dir)?;
+        let sessions = files
+            .iter()
+            .map(|p| read_session(p))
+            .collect::<Res<Vec<_>>>()?;
         if sessions.is_empty() {
             return Err("The assessment was stopped before anything was recorded.".to_string());
         }
@@ -419,6 +444,11 @@ impl<R: TrainerRunner> Engine<R> {
             sens: s.sens,
             profile,
             findings,
+            at_ms: now_ms(),
+            files: files
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
         };
         self.store.add_assessment(today(), &record).map_err(err)?;
         Ok(record)
@@ -457,7 +487,7 @@ impl<R: TrainerRunner> Engine<R> {
         scenario: &Scenario,
         seconds: f64,
         name: &str,
-    ) -> Res<Vec<bool>> {
+    ) -> Res<(Vec<bool>, String)> {
         let s = self.settings()?;
         let dir = self.new_run_dir("practice")?;
         let ron_path = dir.join(format!("{name}.ron"));
@@ -478,7 +508,10 @@ impl<R: TrainerRunner> Engine<R> {
         if !output.is_file() {
             return Err("The drill was stopped before anything was recorded.".to_string());
         }
-        Ok(trial_outcomes(&read_session(&output)?))
+        Ok((
+            trial_outcomes(&read_session(&output)?),
+            output.to_string_lossy().into_owned(),
+        ))
     }
 
     /// Plays the next drill of today's session and moves the difficulty for that drill.
@@ -498,9 +531,12 @@ impl<R: TrainerRunner> Engine<R> {
 
         let mut levels = self.levels()?;
         let start = levels.get(&item.drill).copied().unwrap_or(START_DIFFICULTY);
-        let scenario = build_drill(&item.drill, start, item.varied, seconds)
+        let mut scenario = build_drill(&item.drill, start, item.varied, seconds)
             .ok_or_else(|| format!("Unknown drill: {}", item.drill))?;
-        let outcomes = self.run_scenario_file(&scenario, seconds, &item.drill)?;
+        if item.drill == "directional_flick" {
+            scenario.rules.weak_octant = weak_octant(&plan.findings);
+        }
+        let (outcomes, file) = self.run_scenario_file(&scenario, seconds, &item.drill)?;
 
         let mut staircase = Staircase::new(start, STAIRCASE_TARGET, STAIRCASE_STEP);
         outcomes.iter().for_each(|&w| staircase.update(w));
@@ -514,6 +550,9 @@ impl<R: TrainerRunner> Engine<R> {
                     name: item.drill,
                     hit_rate: hit_rate(&outcomes),
                     difficulty: Some(staircase.d),
+                    at_ms: now_ms(),
+                    file: Some(file),
+                    mode: None,
                 },
             )
             .map_err(err)?;
@@ -574,7 +613,7 @@ impl<R: TrainerRunner> Engine<R> {
 
     pub fn run_custom(&mut self, targets: &CustomTargets) -> Res<()> {
         let scenario = build_custom(targets)?;
-        let outcomes = self.run_scenario_file(&scenario, targets.duration_s, "custom")?;
+        let (outcomes, file) = self.run_scenario_file(&scenario, targets.duration_s, "custom")?;
         self.store
             .add_practice(
                 today(),
@@ -583,6 +622,9 @@ impl<R: TrainerRunner> Engine<R> {
                     name: "custom".to_string(),
                     hit_rate: hit_rate(&outcomes),
                     difficulty: None,
+                    at_ms: now_ms(),
+                    file: Some(file),
+                    mode: Some(format!("{:?}", targets.mode).to_lowercase()),
                 },
             )
             .map_err(err)
@@ -598,7 +640,7 @@ impl<R: TrainerRunner> Engine<R> {
         let seconds = 90.0;
         let scenario = build_drill(name, level, true, seconds)
             .ok_or_else(|| format!("Unknown drill: {name}"))?;
-        let outcomes = self.run_scenario_file(&scenario, seconds, name)?;
+        let (outcomes, file) = self.run_scenario_file(&scenario, seconds, name)?;
         self.store
             .add_practice(
                 today(),
@@ -607,9 +649,22 @@ impl<R: TrainerRunner> Engine<R> {
                     name: name.to_string(),
                     hit_rate: hit_rate(&outcomes),
                     difficulty: None,
+                    at_ms: now_ms(),
+                    file: Some(file),
+                    mode: None,
                 },
             )
             .map_err(err)
+    }
+
+    /// Full analysis of one recording. Only files inside the app's own data folder can be opened.
+    pub fn session_detail(&self, path: &str) -> Res<SessionDetail> {
+        let file = Path::new(path).canonicalize().map_err(err)?;
+        let home = self.data_dir.canonicalize().map_err(err)?;
+        if !file.starts_with(home) {
+            return Err("That recording is outside the app's data folder.".to_string());
+        }
+        Ok(session_detail(&read_session(&file)?))
     }
 
     fn coach_input(&self, s: &Settings) -> Res<Value> {
@@ -776,6 +831,16 @@ impl<R: TrainerRunner> Engine<R> {
             settings,
         })
     }
+}
+
+fn weak_octant(findings: &[Finding]) -> Option<u32> {
+    findings
+        .iter()
+        .find(|f| f.id == "D9")?
+        .evidence
+        .iter()
+        .find(|(k, _)| k == "S11.octant")
+        .map(|(_, v)| *v as u32)
 }
 
 fn compare(
@@ -998,6 +1063,22 @@ mod tests {
             e.view().unwrap().plan.unwrap().state,
             PlanState::Active { block: 2, .. }
         ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn recordings_can_be_opened_for_analysis_but_only_our_own() {
+        let (mut e, dir) = engine("detail", 1.1);
+        e.run_assessment().unwrap();
+        let view = e.view().unwrap();
+        let file = view.latest.unwrap().files[0].clone();
+        let detail = e.session_detail(&file).unwrap();
+        assert_eq!(detail.targets, 96);
+        let flick = &detail.flicks[0];
+        assert!(!flick.path.is_empty());
+        assert!(flick.onset_ms.unwrap() < flick.primary_end_ms.unwrap());
+        assert!(flick.endpoint.is_some());
+        assert!(e.session_detail("C:/Windows/win.ini").is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 

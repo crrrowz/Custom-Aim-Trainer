@@ -42,3 +42,10 @@ opt-level = 3
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+
+# Same speed in the game as release, without the slow final optimisation step.
+[profile.play]
+inherits = "release"
+lto = "off"
+codegen-units = 16
+incremental = true

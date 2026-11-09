@@ -4,11 +4,13 @@
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = "D:\cargo-target\aimforge" }
+# Leave two cores free so the PC stays usable during a build.
+$env:CARGO_BUILD_JOBS = [Math]::Max(1, [Environment]::ProcessorCount - 2)
 $env:AIMFORGE_ROOT = $root
-$env:AIMFORGE_TRAINER = Join-Path $env:CARGO_TARGET_DIR "release\trainer.exe"
+$env:AIMFORGE_TRAINER = Join-Path $env:CARGO_TARGET_DIR "play\trainer.exe"
 
 Set-Location $root
-cargo build --release -p trainer
+cargo build --profile play -p trainer
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $ui = Join-Path $root "apps\desktop\ui"

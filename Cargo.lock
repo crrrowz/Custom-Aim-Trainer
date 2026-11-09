@@ -134,6 +134,7 @@ dependencies = [
  "aim-core",
  "aim-scenarios",
  "proptest",
+ "ron 0.8.1",
  "serde",
 ]
 

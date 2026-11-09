@@ -21,6 +21,7 @@ fn test_concurrent_cluster_validate_fails_when_bin_cannot_fit() {
             duration_s: 45.0,
         },
         hit_rule: HitRule::SingleShotKill,
+        rules: Default::default(),
     };
 
     let res = invalid_sc.validate();
@@ -56,6 +57,7 @@ fn test_concurrent_cluster_validate_succeeds_when_all_bins_fit() {
             duration_s: 45.0,
         },
         hit_rule: HitRule::SingleShotKill,
+        rules: Default::default(),
     };
 
     assert!(valid_sc.validate().is_ok());

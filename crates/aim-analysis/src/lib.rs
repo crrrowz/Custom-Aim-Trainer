@@ -224,10 +224,12 @@ pub fn compute_session_summary(session: &AftSession) -> SessionSummary {
     }
 }
 
+pub mod detail;
 pub mod engagement;
 pub mod segment;
 pub mod skills;
 
+pub use detail::{session_detail, SessionDetail};
 pub use engagement::{
     compute_engagement_metrics, compute_engagement_metrics_with, compute_flick_metrics,
     EngagementMetrics, FlickMetrics,

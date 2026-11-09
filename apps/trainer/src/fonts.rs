@@ -21,6 +21,13 @@ pub fn setup_ui_fonts(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
     let arabic_regular = fonts.add(Font::from_bytes(ARABIC_REGULAR_BYTES.to_vec()));
     let arabic_semibold = fonts.add(Font::from_bytes(ARABIC_SEMIBOLD_BYTES.to_vec()));
 
+    // Plex Arabic also carries Latin glyphs, so one font covers a whole Arabic screen.
+    let (regular, semibold) = if crate::ui_tokens::strings::is_arabic() {
+        (arabic_regular.clone(), arabic_semibold.clone())
+    } else {
+        (regular, semibold)
+    };
+
     commands.insert_resource(UiFonts {
         regular,
         semibold,

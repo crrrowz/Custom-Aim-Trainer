@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use aim_analysis::SessionDetail;
 use aim_coach::drills::CustomTargets;
 use aimforge_desktop::core::{ChatAnswer, Engine, ProcessRunner, Settings, View};
 use std::sync::Mutex;
@@ -102,6 +103,11 @@ async fn run_scenario(app: tauri::AppHandle, scenario: String) -> Result<View, S
 }
 
 #[tauri::command]
+async fn session_detail(app: tauri::AppHandle, path: String) -> Result<SessionDetail, String> {
+    with_engine(app, move |e| e.session_detail(&path)).await
+}
+
+#[tauri::command]
 async fn ask_coach(app: tauri::AppHandle, question: Option<String>) -> Result<ChatAnswer, String> {
     with_engine(app, move |e| e.ask_coach(question.as_deref())).await
 }
@@ -125,6 +131,7 @@ fn main() {
             next_block,
             run_custom,
             run_scenario,
+            session_detail,
             ask_coach
         ])
         .run(tauri::generate_context!())

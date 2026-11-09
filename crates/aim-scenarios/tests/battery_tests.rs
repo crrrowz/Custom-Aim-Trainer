@@ -24,7 +24,7 @@ fn test_battery_manifest_parse() {
     let manifest: BatteryManifest =
         ron::from_str(include_str!("../../../content/batteries/battery.v1.ron"))
             .expect("Failed parsing battery.v1.ron");
-    assert_eq!(manifest.stages.len(), 7);
+    assert_eq!(manifest.stages.len(), 8);
 }
 
 #[test]

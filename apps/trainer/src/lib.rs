@@ -2,6 +2,7 @@
 
 pub mod camera;
 pub mod clock;
+pub mod drill_rules;
 pub mod fonts;
 pub mod layout_engine;
 pub mod pause;
@@ -24,6 +25,7 @@ pub const VALID_ASSESS_SCENARIO_IDS: &[&str] = &[
     "assess.v1.smooth_track",
     "assess.v1.strafe_track",
     "assess.v1.multi_switch",
+    "assess.v1.counter_strafe",
 ];
 
 /// Resolves a scenario file path from a scenario name or id.

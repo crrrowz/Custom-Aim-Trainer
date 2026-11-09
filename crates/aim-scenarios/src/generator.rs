@@ -31,6 +31,36 @@ pub struct PeekTrial {
     pub trial_timeout_s: f64,
 }
 
+/// Replaces trials, evenly through the session, so that `share` of them point in `octant`.
+/// The trial count and order of the other trials stay the same.
+pub fn weight_toward_octant(trials: &mut [Trial], octant: u32, share: f64) {
+    let pool: Vec<Trial> = trials
+        .iter()
+        .filter(|t| t.octant == octant)
+        .cloned()
+        .collect();
+    if pool.is_empty() {
+        return;
+    }
+    let wanted = (trials.len() as f64 * share).round() as usize;
+    let have = pool.len();
+    if wanted <= have {
+        return;
+    }
+    let others: Vec<usize> = (0..trials.len())
+        .filter(|&i| trials[i].octant != octant)
+        .collect();
+    let replace = (wanted - have).min(others.len());
+    for k in 0..replace {
+        let slot = others[k * others.len() / replace];
+        let index = trials[slot].index;
+        trials[slot] = Trial {
+            index,
+            ..pool[k % pool.len()].clone()
+        };
+    }
+}
+
 /// Computes exact spherical coordinates (yaw, pitch) for a target placed at
 /// true angular distance `d_deg` along bearing angle `bearing_deg` from center (0, 0).
 pub fn target_angles_from_bearing(distance_deg: f64, bearing_deg: f64) -> (f64, f64) {
@@ -218,6 +248,7 @@ mod tests {
                 trial_timeout_s: 3.0,
             },
             hit_rule: HitRule::SingleShotKill,
+            rules: Default::default(),
         }
     }
 

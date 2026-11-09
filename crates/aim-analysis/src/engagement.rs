@@ -24,6 +24,7 @@ pub struct EngagementMetrics {
     pub time_to_hit_us: Option<u64>,
     /// Shot minus onset, pause time excluded.
     pub movement_time_us: Option<u64>,
+    pub shot_t_us: Option<u64>,
     pub primary_end_t_us: Option<u64>,
     pub stable_t_us: Option<u64>,
     pub is_home: bool,
@@ -137,6 +138,7 @@ pub fn compute_engagement_metrics_with(
             anticipated: false,
             time_to_hit_us: hit.map(|s| active_duration_between(&pauses, spawn, s.t_us)),
             movement_time_us: None,
+            shot_t_us: shot.map(|s| s.t_us),
             primary_end_t_us: None,
             stable_t_us: None,
             is_home: aim.0.abs() < 0.01 && aim.1.abs() < 0.01,

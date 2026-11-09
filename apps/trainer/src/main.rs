@@ -40,7 +40,9 @@ use trainer::target::{
     setup_target_assets, spawn_cluster_target, spawn_home_target, spawn_peek_target,
     spawn_tracking_target, spawn_trial_target, ActiveTargetMarker, TargetAssets,
 };
-use trainer::ui_tokens::{COLOR_BTN_HOVER, COLOR_BTN_IDLE};
+use trainer::ui_tokens::{
+    COLOR_ACCENT, COLOR_BTN_HOVER, COLOR_BTN_IDLE, COLOR_DANGER, COLOR_TEXT_PRIMARY,
+};
 use trainer::ScenarioResource;
 
 #[derive(Resource)]
@@ -99,6 +101,7 @@ pub struct TrainerState {
     pub misses_count: u32,
     pub reaction_times_s: Vec<f64>,
     pub session_saved: bool,
+    pub drill: trainer::drill_rules::DrillRuntime,
     pub flow_engine: SessionFlowEngine,
     pub battery_sequencer: Option<BatterySequencer>,
 }
@@ -123,6 +126,10 @@ fn parse_cli_args() -> (TrainerConfig, Option<f64>) {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            "--locale" if i + 1 < args.len() => {
+                trainer::ui_tokens::strings::set_arabic(args[i + 1] == "ar");
+                i += 2;
+            }
             "--scenario" if i + 1 < args.len() => {
                 scenario = args[i + 1].clone();
                 i += 2;
@@ -293,6 +300,7 @@ fn setup_trainer(
     commands.insert_resource(PauseManager::new());
     commands.insert_resource(PauseMenuNavigation {
         focused_index: 0,
+        click_guard_s: 0.0,
         is_confirming_discard: false,
         saving_timer: None,
         session_duration_s: config.duration_s,
@@ -323,6 +331,7 @@ fn setup_trainer(
         misses_count: 0,
         reaction_times_s: Vec::new(),
         session_saved: false,
+        drill: Default::default(),
         flow_engine: SessionFlowEngine::new(config.scenario.clone()),
         battery_sequencer: if let Some(ref bat) = config.battery {
             let stages = resolve_battery_stages(bat).unwrap_or_else(|e| {
@@ -391,6 +400,9 @@ fn handle_window_focus(
 ) {
     for ev in focus_events.read() {
         RawInputWorker::set_window_focused(ev.focused);
+        if ev.focused {
+            nav.on_focus_regained();
+        }
         if !state.flow_engine.is_running() {
             continue;
         }
@@ -436,6 +448,7 @@ fn handle_window_focus(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn drain_and_evaluate_input_system(
     mut commands: Commands,
     config: Res<TrainerConfig>,
@@ -443,6 +456,8 @@ fn drain_and_evaluate_input_system(
     pause_manager: Res<PauseManager>,
     assets: Option<Res<TargetAssets>>,
     mut camera_query: Query<&mut FpsCamera>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
     mut target_query: Query<(
         Entity,
         &mut ActiveTargetMarker,
@@ -525,11 +540,48 @@ fn drain_and_evaluate_input_system(
         }
     }
 
+    let rules = state.scenario_def.rules.clone();
+    if rules.counter_strafe && state.flow_engine.is_running() {
+        use aim_telemetry::format::KeyCode as RecordedKey;
+        let (left, right) = (KeyCode::KeyA, KeyCode::KeyD);
+        for (bevy_key, recorded) in [(left, RecordedKey::KeyA), (right, RecordedKey::KeyD)] {
+            if keyboard.just_pressed(bevy_key) {
+                state.recorder.record_key(now_qpc_us, recorded, true);
+            }
+            if keyboard.just_released(bevy_key) {
+                state.recorder.record_key(now_qpc_us, recorded, false);
+            }
+        }
+        state.drill.player.step(
+            f64::from(time.delta_secs()),
+            keyboard.pressed(left),
+            keyboard.pressed(right),
+        );
+        let velocity = state.drill.player.velocity;
+        state.recorder.record_player(now_qpc_us, velocity);
+    }
+    // Drill rules follow the trial target; multi-target scenarios use none of them.
+    let active_trial = target_query
+        .iter()
+        .find(|(_, marker, _, _)| !marker.is_home_target)
+        .map(|(_, marker, _, _)| (marker.target_id, marker.spherical.center));
+    let mut live_angles = cam_angles_start;
+
     // Fix 1: True per-event input latency metric: render_start_t_us - event.t_us for events applied in this frame
     for action in actions {
         match action {
             trainer::replay::ReplayAction::Motion { t_us, dx, dy } => {
                 state.recorder.record_input(t_us, dx, dy);
+                state.drill.motion.push(t_us, dx, dy);
+                live_angles.apply_counts(dx, dy, deg_per_count);
+                if let Some((id, center)) = active_trial {
+                    state.drill.observe(
+                        id,
+                        (center.yaw, center.pitch),
+                        live_angles.yaw,
+                        live_angles.pitch,
+                    );
+                }
                 if render_start_t_us >= t_us {
                     state.input_latencies_us.push(render_start_t_us - t_us);
                 }
@@ -561,7 +613,20 @@ fn drain_and_evaluate_input_system(
 
                     let hit_res = marker.spherical.intersect_ray(angles_at_click);
 
-                    if hit_res.is_hit {
+                    if !marker.is_home_target && rules.show_gain {
+                        state.drill.last_reach = state.drill.reach();
+                    }
+                    let rejected = !marker.is_home_target
+                        && (trainer::drill_rules::ShotCheck {
+                            rules: &rules,
+                            runtime: &state.drill,
+                            t_us,
+                            deg_per_count,
+                        })
+                        .rejection()
+                        .is_some();
+
+                    if hit_res.is_hit && !rejected {
                         hit_target_id = Some(marker.target_id);
                         hitzone = match hit_res.hitzone {
                             HitZoneType::Head => HitZone::Head,
@@ -1300,6 +1365,7 @@ fn pause_menu_button_system(
         return;
     }
 
+    let clicks_allowed = nav.tick_click_guard(time.delta_secs());
     let mut action_to_trigger = None;
 
     // Keyboard navigation: Up/Down arrow moves focus, Enter activates
@@ -1340,7 +1406,9 @@ fn pause_menu_button_system(
     for (interaction, action, mut bg_color) in &mut interaction_query {
         match *interaction {
             Interaction::Pressed => {
-                action_to_trigger = Some(*action);
+                if clicks_allowed {
+                    action_to_trigger = Some(*action);
+                }
             }
             Interaction::Hovered => {
                 *bg_color = BackgroundColor(COLOR_BTN_HOVER);
@@ -1436,6 +1504,84 @@ fn pause_menu_button_system(
             pause_manager.pause_cause,
         );
     }
+}
+
+#[derive(Component)]
+struct FeedbackText;
+
+fn spawn_feedback_hud(mut commands: Commands, ui_fonts: Res<trainer::fonts::UiFonts>) {
+    commands
+        .spawn(Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(72.0),
+            width: Val::Percent(100.0),
+            justify_content: JustifyContent::Center,
+            ..default()
+        })
+        .with_children(|root| {
+            root.spawn((
+                Text::new(""),
+                TextFont {
+                    font: bevy::text::FontSource::Handle(ui_fonts.semibold.clone()),
+                    font_size: bevy::text::FontSize::Px(22.0),
+                    ..default()
+                },
+                TextColor(COLOR_TEXT_PRIMARY),
+                FeedbackText,
+            ));
+        });
+}
+
+/// One line under the crosshair: how far the last flick went, or whether the player can shoot.
+fn update_feedback_hud(
+    state: Res<TrainerState>,
+    mut text: Query<(&mut Text, &mut TextColor), With<FeedbackText>>,
+) {
+    use trainer::ui_tokens::strings;
+    let Some((mut line, mut color)) = text.iter_mut().next() else {
+        return;
+    };
+    let rules = &state.scenario_def.rules;
+    let (value, tint) = if !state.flow_engine.is_running() {
+        (String::new(), COLOR_TEXT_PRIMARY)
+    } else if rules.counter_strafe {
+        let speed = state.drill.player.velocity.abs();
+        if state.drill.player.is_accurate() {
+            (
+                format!("{speed:.1} m/s  {}", strings::hud_ready()),
+                COLOR_ACCENT,
+            )
+        } else {
+            (
+                format!("{speed:.1} m/s  {}", strings::hud_moving()),
+                COLOR_DANGER,
+            )
+        }
+    } else if let (true, Some(reach)) = (rules.show_gain, state.drill.last_reach) {
+        let percent = reach * 100.0;
+        if reach > 1.05 {
+            (
+                format!("{percent:.0}%  {}", strings::hud_overshoot()),
+                COLOR_DANGER,
+            )
+        } else if reach < 0.85 {
+            (
+                format!("{percent:.0}%  {}", strings::hud_short()),
+                COLOR_DANGER,
+            )
+        } else {
+            (
+                format!("{percent:.0}%  {}", strings::hud_on_target()),
+                COLOR_ACCENT,
+            )
+        }
+    } else {
+        (String::new(), COLOR_TEXT_PRIMARY)
+    };
+    if line.0 != value {
+        line.0 = value;
+    }
+    color.0 = tint;
 }
 
 fn lock_cursor_startup(
@@ -1570,6 +1716,7 @@ fn flow_update_system(
                     state.misses_count = 0;
                     state.reaction_times_s.clear();
                     state.session_saved = false;
+                    state.drill = Default::default();
                     state.recorder = SessionRecorder::new(recorder::RecorderSetup {
                         session_id: uuid::Uuid::new_v4().to_string(),
                         scenario_id: next_sc_id.clone(),
@@ -1621,6 +1768,8 @@ fn main() {
         }
     }
     let (scenario_def, scenario_seed) = load_scenario(&config.scenario, config.form, config.seed);
+    // --scenario may be a file path; everything after loading works with the scenario's own id.
+    config.scenario = scenario_def.id.clone();
     config.duration_s = trainer::resolve_scenario_duration(&scenario_def, duration_override);
 
     let window_mode = if config.windowed {
@@ -1683,6 +1832,7 @@ fn main() {
                     ..default()
                 }),
         )
+        .add_systems(Update, update_feedback_hud)
         .add_systems(
             Startup,
             (
@@ -1692,6 +1842,7 @@ fn main() {
                 spawn_fps_camera,
                 spawn_crosshair_ui,
                 lock_cursor_startup,
+                spawn_feedback_hud,
             )
                 .chain(),
         )

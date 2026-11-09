@@ -24,6 +24,7 @@ fn test_fitts_engine_sequence_and_state_machine() {
             trial_timeout_s: 3.0,
         },
         hit_rule: HitRule::SingleShotKill,
+        rules: Default::default(),
     };
 
     let seed = 0x1337_CAFE_u64;

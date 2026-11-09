@@ -1,12 +1,10 @@
 //! Turns a drill name and difficulty, or the player's own target settings, into a playable scenario.
 //!
-//! Drills reuse the engine's four layouts. Mechanics that need new engine rules (fail on overshoot,
-//! click only after settling, weighted directions) are not implemented yet: those drills train the
-//! same movement with the difficulty curve only.
+//! Drills reuse the engine's four layouts; `DrillRules` adds what makes each one train its own habit.
 
 use aim_scenarios::schema::{
-    DistanceAnchor, FittsGrid, HitRule, Scenario, ScenarioKind, TargetLayout, TargetShape,
-    TrackingTrajectory,
+    DistanceAnchor, DrillRules, FittsGrid, HitRule, Scenario, ScenarioKind, TargetLayout,
+    TargetShape, TrackingTrajectory,
 };
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +13,7 @@ const OCTANTS: u32 = 8;
 const SECONDS_PER_TRIAL: f64 = 1.5;
 const PEEK_SPEED_MPS: f64 = 5.73;
 
-pub const DRILL_IDS: [&str; 15] = [
+pub const DRILL_IDS: [&str; 16] = [
     "warmup",
     "deceleration_ladder",
     "commit_flick",
@@ -31,6 +29,7 @@ pub const DRILL_IDS: [&str; 15] = [
     "reflex_dot",
     "precision_first",
     "speed_push",
+    "cs_drill",
 ];
 
 fn lerp(easy: f64, hard: f64, d: f64) -> f64 {
@@ -51,6 +50,7 @@ fn scenario(id: String, layout: TargetLayout, hit_rule: HitRule, timeout_s: f64)
         },
         layout,
         hit_rule,
+        rules: DrillRules::default(),
     }
 }
 
@@ -141,8 +141,15 @@ pub fn build_drill(name: &str, d: f64, varied: bool, seconds: f64) -> Option<Sce
     } else {
         vec![far]
     };
-    Some(match name {
+    let mut built = match name {
         "warmup" => flick(id, seconds, vec![10.0, 20.0], 1.0, 3.5),
+        "cs_drill" => flick(
+            id,
+            seconds,
+            vec![8.0, 20.0],
+            lerp(1.2, 0.6, d),
+            lerp(3.0, 1.5, d),
+        ),
         "deceleration_ladder" => flick(id, seconds, spread, lerp(1.2, 0.45, d), lerp(1.8, 0.7, d)),
         "commit_flick" => flick(id, seconds, spread, lerp(1.5, 0.8, d), lerp(1.2, 0.5, d)),
         "consistency_grid" => {
@@ -177,7 +184,25 @@ pub fn build_drill(name: &str, d: f64, varied: bool, seconds: f64) -> Option<Sce
         ),
         "smooth_track" => tracking(id, seconds, lerp(0.9, 0.5, d), smooth(lerp(10.0, 26.0, d))),
         _ => return None,
-    })
+    };
+    built.rules = rules_for(name, d);
+    Some(built)
+}
+
+fn rules_for(name: &str, d: f64) -> DrillRules {
+    let mut rules = DrillRules::default();
+    match name {
+        "deceleration_ladder" => {
+            rules.overshoot_fail_ratio = Some(lerp(1.25, 1.08, d));
+            rules.show_gain = true;
+        }
+        "commit_flick" => rules.show_gain = true,
+        "confirm_click" => rules.settle_ms = Some(lerp(20.0, 60.0, d)),
+        "micro_hold" => rules.settle_ms = Some(lerp(150.0, 300.0, d)),
+        "cs_drill" => rules.counter_strafe = true,
+        _ => {}
+    }
+    rules
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -281,6 +306,33 @@ mod tests {
         let easy = build_drill("deceleration_ladder", 0.0, false, 120.0).unwrap();
         let hard = build_drill("deceleration_ladder", 1.0, false, 120.0).unwrap();
         assert!(radius(&hard) < radius(&easy));
+    }
+
+    #[test]
+    fn drills_carry_their_own_rules() {
+        let ladder = build_drill("deceleration_ladder", 1.0, false, 60.0).unwrap();
+        assert!((ladder.rules.overshoot_fail_ratio.unwrap() - 1.08).abs() < 1e-9);
+        assert!(ladder.rules.show_gain);
+        let confirm = build_drill("confirm_click", 0.0, false, 60.0).unwrap();
+        assert!((confirm.rules.settle_ms.unwrap() - 20.0).abs() < 1e-9);
+        assert!(
+            build_drill("cs_drill", 0.5, false, 60.0)
+                .unwrap()
+                .rules
+                .counter_strafe
+        );
+        assert_eq!(
+            build_drill("warmup", 0.5, false, 60.0).unwrap().rules,
+            DrillRules::default()
+        );
+    }
+
+    #[test]
+    fn rules_survive_the_trip_through_a_scenario_file() {
+        let ladder = build_drill("deceleration_ladder", 0.5, false, 60.0).unwrap();
+        let text = ron::to_string(&ladder).unwrap();
+        let back: Scenario = ron::from_str(&text).unwrap();
+        assert_eq!(back.rules, ladder.rules);
     }
 
     #[test]

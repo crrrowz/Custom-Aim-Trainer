@@ -18,6 +18,9 @@ use aim_scenarios::{
 };
 use bevy::prelude::*;
 
+/// Share of targets in the weak direction for `directional_flick` (04_TRAINING_LOOP section 2.2).
+const WEAK_DIRECTION_SHARE: f64 = 0.7;
+
 #[derive(Component)]
 pub struct TrackingTargetMarker {
     pub target_id: u32,
@@ -137,7 +140,14 @@ impl LayoutEngineState {
                 grid,
                 trial_timeout_s,
             } => {
-                let trials = generate_fitts_trials(grid, *trial_timeout_s, seed);
+                let mut trials = generate_fitts_trials(grid, *trial_timeout_s, seed);
+                if let Some(octant) = scenario.rules.weak_octant {
+                    aim_scenarios::generator::weight_toward_octant(
+                        &mut trials,
+                        octant,
+                        WEAK_DIRECTION_SHARE,
+                    );
+                }
                 Self::Fitts {
                     trials,
                     current_idx: 0,

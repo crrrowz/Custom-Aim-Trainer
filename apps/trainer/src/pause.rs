@@ -144,16 +144,34 @@ pub enum PauseButtonAction {
 #[derive(Resource, Debug, Clone)]
 pub struct PauseMenuNavigation {
     pub focused_index: usize,
+    /// Seconds during which clicks on the menu are ignored after the window regains focus.
+    pub click_guard_s: f32,
     pub is_confirming_discard: bool,
     pub saving_timer: Option<f32>,
     pub session_duration_s: f64,
     pub scenario_name: String,
 }
 
+/// The click that brings the game back to the front must not also press a menu button.
+pub const CLICK_GUARD_S: f32 = 0.35;
+
+impl PauseMenuNavigation {
+    pub fn on_focus_regained(&mut self) {
+        self.click_guard_s = CLICK_GUARD_S;
+    }
+
+    /// Advances the guard; returns whether clicks count this frame.
+    pub fn tick_click_guard(&mut self, dt_s: f32) -> bool {
+        self.click_guard_s = (self.click_guard_s - dt_s).max(0.0);
+        self.click_guard_s <= 0.0
+    }
+}
+
 impl Default for PauseMenuNavigation {
     fn default() -> Self {
         Self {
             focused_index: 0,
+            click_guard_s: 0.0,
             is_confirming_discard: false,
             saving_timer: None,
             session_duration_s: 288.0,
@@ -250,14 +268,12 @@ pub fn spawn_pause_menu(
     nav: &PauseMenuNavigation,
     cause: Option<PauseCause>,
 ) {
-    let elapsed_mins = (elapsed_s as u32) / 60;
-    let elapsed_secs = (elapsed_s as u32) % 60;
-    let total_mins = (total_duration_s as u32) / 60;
-    let total_secs = (total_duration_s as u32) % 60;
-
+    let clock = |t: f64| format!("{:02}:{:02}", (t as u32) / 60, (t as u32) % 60);
     let subtitle = format!(
-        "{} • Elapsed {:02}:{:02} / {:02}:{:02}",
-        scenario_name, elapsed_mins, elapsed_secs, total_mins, total_secs
+        "{}  •  {} / {}",
+        crate::session_flow::scenario_title(scenario_name),
+        clock(elapsed_s),
+        clock(total_duration_s)
     );
 
     commands
@@ -293,9 +309,9 @@ pub fn spawn_pause_menu(
                 .with_children(|card| {
                     if let Some(saving_t) = nav.saving_timer {
                         let msg = if saving_t > 0.3 {
-                            strings::SAVED
+                            strings::saved()
                         } else {
-                            strings::SAVING
+                            strings::saving()
                         };
                         card.spawn((
                             Text::new(msg),
@@ -311,7 +327,7 @@ pub fn spawn_pause_menu(
 
                     if nav.is_confirming_discard {
                         card.spawn((
-                            Text::new(strings::CONFIRM_DISCARD_PROMPT),
+                            Text::new(strings::confirm_discard_prompt()),
                             TextFont {
                                 font: FontSource::Handle(ui_fonts.semibold.clone()),
                                 font_size: FontSize::Px(FONT_SIZE_BUTTON),
@@ -322,7 +338,7 @@ pub fn spawn_pause_menu(
 
                         spawn_card_button(
                             card,
-                            strings::BTN_CANCEL,
+                            strings::btn_cancel(),
                             PauseButtonAction::ConfirmCancel,
                             0,
                             nav.focused_index == 0,
@@ -332,7 +348,7 @@ pub fn spawn_pause_menu(
 
                         spawn_card_button(
                             card,
-                            strings::BTN_DISCARD,
+                            strings::btn_discard(),
                             PauseButtonAction::ConfirmDiscard,
                             1,
                             nav.focused_index == 1,
@@ -343,7 +359,7 @@ pub fn spawn_pause_menu(
                         // Notice on focus loss
                         if cause == Some(PauseCause::FocusLost) {
                             card.spawn((
-                                Text::new(strings::NOTICE_FOCUS_LOST),
+                                Text::new(strings::notice_focus_lost()),
                                 TextFont {
                                     font: FontSource::Handle(ui_fonts.regular.clone()),
                                     font_size: FontSize::Px(FONT_SIZE_SUBTITLE),
@@ -355,7 +371,7 @@ pub fn spawn_pause_menu(
 
                         // Title
                         card.spawn((
-                            Text::new(strings::TITLE_PAUSED),
+                            Text::new(strings::title_paused()),
                             TextFont {
                                 font: FontSource::Handle(ui_fonts.semibold.clone()),
                                 font_size: FontSize::Px(FONT_SIZE_TITLE),
@@ -386,7 +402,7 @@ pub fn spawn_pause_menu(
                             .with_children(|button_col| {
                                 spawn_card_button(
                                     button_col,
-                                    strings::BTN_RESUME,
+                                    strings::btn_resume(),
                                     PauseButtonAction::Resume,
                                     0,
                                     nav.focused_index == 0,
@@ -396,7 +412,7 @@ pub fn spawn_pause_menu(
 
                                 spawn_card_button(
                                     button_col,
-                                    strings::BTN_QUIT_AND_SAVE,
+                                    strings::btn_quit_and_save(),
                                     PauseButtonAction::QuitAndSave,
                                     1,
                                     nav.focused_index == 1,
@@ -406,7 +422,7 @@ pub fn spawn_pause_menu(
 
                                 spawn_card_button(
                                     button_col,
-                                    strings::BTN_QUIT_WITHOUT_SAVING,
+                                    strings::btn_quit_without_saving(),
                                     PauseButtonAction::QuitWithoutSaving,
                                     2,
                                     nav.focused_index == 2,
@@ -417,7 +433,7 @@ pub fn spawn_pause_menu(
 
                         // Footer hint
                         card.spawn((
-                            Text::new(strings::FOOTER_HINT),
+                            Text::new(strings::footer_hint()),
                             TextFont {
                                 font: FontSource::Handle(ui_fonts.regular.clone()),
                                 font_size: FontSize::Px(FONT_SIZE_FOOTER),

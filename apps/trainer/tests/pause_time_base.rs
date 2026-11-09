@@ -29,6 +29,7 @@ fn test_pause_reaction_time_accounting() {
             trial_timeout_s: 3.0,
         },
         hit_rule: HitRule::SingleShotKill,
+        rules: Default::default(),
     };
 
     let seed = 42;

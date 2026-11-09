@@ -120,6 +120,29 @@ pub enum TargetLayout {
     },
 }
 
+/// Speed at or below which a shot is accurate (m/s). Provisional, calibrated against VALORANT later.
+pub const ACCURATE_SPEED_MPS: f64 = 0.7;
+
+/// Extra rules that make a drill train one specific habit. All off by default.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct DrillRules {
+    /// A hit does not count if the flick went past this share of the distance.
+    #[serde(default)]
+    pub overshoot_fail_ratio: Option<f64>,
+    /// A hit counts only if the crosshair was at rest for this long before the click.
+    #[serde(default)]
+    pub settle_ms: Option<f64>,
+    /// Most targets appear in this direction (0..8, counter-clockwise from right).
+    #[serde(default)]
+    pub weak_octant: Option<u32>,
+    /// Show how far the first movement went after every flick.
+    #[serde(default)]
+    pub show_gain: bool,
+    /// A/D movement is active and a hit does not count while moving.
+    #[serde(default)]
+    pub counter_strafe: bool,
+}
+
 /// Complete scenario specification.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scenario {
@@ -131,6 +154,8 @@ pub struct Scenario {
     pub target_shape: TargetShape,
     pub layout: TargetLayout,
     pub hit_rule: HitRule,
+    #[serde(default)]
+    pub rules: DrillRules,
 }
 
 impl Scenario {

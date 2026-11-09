@@ -19,6 +19,15 @@ fn create_test_recorder(session_id: &str) -> SessionRecorder {
 }
 
 #[test]
+fn the_click_that_refocuses_the_window_does_not_press_a_button() {
+    let mut nav = trainer::pause::PauseMenuNavigation::default();
+    assert!(nav.tick_click_guard(0.016));
+    nav.on_focus_regained();
+    assert!(!nav.tick_click_guard(0.016));
+    assert!(nav.tick_click_guard(1.0));
+}
+
+#[test]
 fn pause_records_cause() {
     let mut pm = PauseManager::new();
     assert_eq!(pm.pause_cause, None);

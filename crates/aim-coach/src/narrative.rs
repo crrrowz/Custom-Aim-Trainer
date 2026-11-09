@@ -72,6 +72,11 @@ pub fn finding_text(id: &str, locale: Locale) -> (&'static str, &'static str) {
             "تتبّع جيد لكن تفاعل بطيء",
             "تخسر مبارزات الـ strafe عندما يغيّر الخصم اتجاهه.",
         ),
+        ("D11", Locale::En) => (
+            "Shooting while moving",
+            "Your bullets are inaccurate no matter how good your aim is.",
+        ),
+        ("D11", Locale::Ar) => ("الإطلاق أثناء الحركة", "رصاصاتك غير دقيقة مهما كان تصويبك."),
         ("D13", Locale::En) => (
             "Trading accuracy for speed",
             "You give up precision to be fast.",
@@ -114,7 +119,7 @@ mod tests {
     #[test]
     fn every_rule_has_text_in_both_languages() {
         for id in [
-            "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D13", "D14",
+            "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D13", "D14",
         ] {
             for locale in [Locale::Ar, Locale::En] {
                 assert!(!finding_text(id, locale).1.is_empty(), "{id}");

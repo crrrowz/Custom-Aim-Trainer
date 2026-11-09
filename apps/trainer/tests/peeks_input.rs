@@ -26,6 +26,7 @@ fn test_scripted_input_head_level_peeks_pitch_recording() {
             trial_timeout_s: 2.5,
         },
         hit_rule: HitRule::SingleShotKill,
+        rules: Default::default(),
     };
 
     let seed = 42;
