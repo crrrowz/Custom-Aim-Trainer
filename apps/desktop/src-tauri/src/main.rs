@@ -2,7 +2,7 @@
 
 use aim_analysis::SessionDetail;
 use aim_coach::drills::CustomTargets;
-use aimforge_desktop::core::{ChatAnswer, Engine, ProcessRunner, Settings, View};
+use aimforge_desktop::core::{CoachConfig, Engine, ProcessRunner, Settings, View};
 use std::sync::Mutex;
 use tauri::Manager;
 
@@ -108,8 +108,36 @@ async fn session_detail(app: tauri::AppHandle, path: String) -> Result<SessionDe
 }
 
 #[tauri::command]
-async fn ask_coach(app: tauri::AppHandle, question: Option<String>) -> Result<ChatAnswer, String> {
-    with_engine(app, move |e| e.ask_coach(question.as_deref())).await
+async fn generate_report(app: tauri::AppHandle, scope: String) -> Result<View, String> {
+    with_engine(app, move |e| {
+        e.generate_report(&scope)?;
+        e.view()
+    })
+    .await
+}
+
+#[tauri::command]
+async fn set_ai_key(app: tauri::AppHandle, provider: String, key: String) -> Result<View, String> {
+    with_engine(app, move |e| {
+        e.set_ai_key(&provider, &key)?;
+        e.view()
+    })
+    .await
+}
+
+#[tauri::command]
+async fn test_ai(app: tauri::AppHandle) -> Result<String, String> {
+    with_engine(app, |e| e.test_ai()).await
+}
+
+#[tauri::command]
+async fn get_coach_config(app: tauri::AppHandle) -> Result<CoachConfig, String> {
+    with_engine(app, |e| e.coach_config()).await
+}
+
+#[tauri::command]
+async fn save_coach_config(app: tauri::AppHandle, config: CoachConfig) -> Result<(), String> {
+    with_engine(app, move |e| e.save_coach_config(&config)).await
 }
 
 fn main() {
@@ -132,7 +160,11 @@ fn main() {
             run_custom,
             run_scenario,
             session_detail,
-            ask_coach
+            generate_report,
+            set_ai_key,
+            test_ai,
+            get_coach_config,
+            save_coach_config
         ])
         .run(tauri::generate_context!())
         .expect("failed to start AimForge");

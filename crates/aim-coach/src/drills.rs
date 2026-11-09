@@ -226,6 +226,26 @@ pub struct CustomTargets {
     pub time_limit_s: f64,
     pub concurrent: u32,
     pub duration_s: f64,
+    /// How far targets may go left/right and up/down from the centre.
+    #[serde(default = "default_area_h")]
+    pub area_h_deg: f64,
+    #[serde(default = "default_area_v")]
+    pub area_v_deg: f64,
+    /// Average seconds between direction changes, for strafe tracking.
+    #[serde(default = "default_reversal")]
+    pub reversal_s: f64,
+}
+
+fn default_area_h() -> f64 {
+    35.0
+}
+
+fn default_area_v() -> f64 {
+    12.0
+}
+
+fn default_reversal() -> f64 {
+    0.55
 }
 
 fn distance_steps(c: &CustomTargets) -> Vec<f64> {
@@ -250,15 +270,53 @@ pub fn build_custom(c: &CustomTargets) -> Result<Scenario, String> {
             c.radius_deg,
             c.time_limit_s,
         ),
-        CustomMode::Track => tracking(id, c.duration_s, c.radius_deg, smooth(c.speed_deg_s)),
-        CustomMode::Strafe => tracking(id, c.duration_s, c.radius_deg, strafe(c.speed_deg_s, 0.55)),
+        CustomMode::Track => tracking(
+            id,
+            c.duration_s,
+            c.radius_deg,
+            TrackingTrajectory::ConstantSpeed {
+                speed_deg_s: c.speed_deg_s,
+                max_turn_rate_deg_s: 60.0,
+                max_yaw_deg: c.area_h_deg,
+                max_pitch_deg: c.area_v_deg,
+            },
+        ),
+        CustomMode::Strafe => tracking(
+            id,
+            c.duration_s,
+            c.radius_deg,
+            TrackingTrajectory::ReactiveStrafe {
+                speed_deg_s: c.speed_deg_s,
+                mean_reversal_s: c.reversal_s,
+                min_reversal_s: c.reversal_s * 0.6,
+                max_reversal_s: c.reversal_s * 1.4,
+                max_yaw_deg: c.area_h_deg,
+                fixed_pitch_deg: 0.0,
+            },
+        ),
         CustomMode::Peek => peeks(id, c.duration_s, c.radius_deg, 0.3, c.time_limit_s),
         CustomMode::Multi => {
             let bins = distance_steps(c);
-            let reach = bins.iter().cloned().fold(0.0, f64::max) * 1.2;
-            let cells = bins.len() as u32 * OCTANTS;
+            let fits = (0..OCTANTS)
+                .flat_map(|o| bins.iter().map(move |&d| (d, o)))
+                .filter(|&(d, o)| {
+                    let (yaw, pitch) = aim_scenarios::generator::target_angles_from_bearing(
+                        d,
+                        f64::from(o) * 360.0 / f64::from(OCTANTS),
+                    );
+                    let signed = if yaw > 180.0 { yaw - 360.0 } else { yaw };
+                    signed.abs() <= c.area_h_deg && pitch.abs() <= c.area_v_deg
+                })
+                .count() as u32;
+            if fits == 0 {
+                return Err(
+                    "No target fits inside that area. Widen it or bring the targets closer."
+                        .to_string(),
+                );
+            }
             let wanted = (c.duration_s / SECONDS_PER_TRIAL).ceil() as u32;
-            scenario(
+            let cells = bins.len() as u32 * OCTANTS;
+            let mut built = scenario(
                 id,
                 TargetLayout::ConcurrentCluster {
                     concurrent_count: c.concurrent.max(1),
@@ -266,14 +324,16 @@ pub fn build_custom(c: &CustomTargets) -> Result<Scenario, String> {
                     target_radius_deg: c.radius_deg,
                     distance_bins_deg: bins,
                     octants: OCTANTS,
-                    min_separation_deg: 8.0,
-                    max_yaw_deg: reach,
-                    max_pitch_deg: reach,
+                    min_separation_deg: (c.radius_deg * 4.0).max(3.0),
+                    max_yaw_deg: c.area_h_deg,
+                    max_pitch_deg: c.area_v_deg,
                     duration_s: c.duration_s,
                 },
                 HitRule::SingleShotKill,
                 c.duration_s,
-            )
+            );
+            built.rules.clip_to_area = true;
+            built
         }
     };
     scenario.validate()?;
@@ -306,6 +366,35 @@ mod tests {
         let easy = build_drill("deceleration_ladder", 0.0, false, 120.0).unwrap();
         let hard = build_drill("deceleration_ladder", 1.0, false, 120.0).unwrap();
         assert!(radius(&hard) < radius(&easy));
+    }
+
+    fn multi(area_h_deg: f64, area_v_deg: f64) -> CustomTargets {
+        CustomTargets {
+            mode: CustomMode::Multi,
+            radius_deg: 0.7,
+            min_distance_deg: 10.0,
+            max_distance_deg: 30.0,
+            speed_deg_s: 20.0,
+            time_limit_s: 2.0,
+            concurrent: 3,
+            duration_s: 60.0,
+            area_h_deg,
+            area_v_deg,
+            reversal_s: 0.55,
+        }
+    }
+
+    #[test]
+    fn a_narrow_area_keeps_only_the_targets_that_fit() {
+        let s = build_custom(&multi(40.0, 12.0)).unwrap();
+        let table = aim_scenarios::generator::generate_cluster_candidates(&s, 7);
+        assert!(!table.is_empty());
+        assert!(s.rules.clip_to_area);
+    }
+
+    #[test]
+    fn an_impossible_area_is_explained() {
+        assert!(build_custom(&multi(2.0, 2.0)).is_err());
     }
 
     #[test]
@@ -351,6 +440,9 @@ mod tests {
             time_limit_s: 2.0,
             concurrent: 3,
             duration_s: 60.0,
+            area_h_deg: 35.0,
+            area_v_deg: 12.0,
+            reversal_s: 0.55,
         };
         assert!((radius(&build_custom(&c).unwrap()) - 0.7).abs() < 1e-9);
         for mode in [

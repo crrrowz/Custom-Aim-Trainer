@@ -1517,7 +1517,30 @@ fn pause_menu_button_system(
 #[derive(Component)]
 struct FeedbackText;
 
+#[derive(Component)]
+struct SessionHudText;
+
 fn spawn_feedback_hud(mut commands: Commands, ui_fonts: Res<trainer::fonts::UiFonts>) {
+    commands
+        .spawn(Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(18.0),
+            width: Val::Percent(100.0),
+            justify_content: JustifyContent::Center,
+            ..default()
+        })
+        .with_children(|root| {
+            root.spawn((
+                Text::new(""),
+                TextFont {
+                    font: bevy::text::FontSource::Handle(ui_fonts.semibold.clone()),
+                    font_size: bevy::text::FontSize::Px(26.0),
+                    ..default()
+                },
+                TextColor(COLOR_TEXT_PRIMARY),
+                SessionHudText,
+            ));
+        });
     commands
         .spawn(Node {
             position_type: PositionType::Absolute,
@@ -1541,6 +1564,32 @@ fn spawn_feedback_hud(mut commands: Commands, ui_fonts: Res<trainer::fonts::UiFo
 }
 
 /// One line under the crosshair: how far the last flick went, or whether the player can shoot.
+fn update_session_hud(
+    state: Res<TrainerState>,
+    config: Res<TrainerConfig>,
+    pause_manager: Res<PauseManager>,
+    mut text: Query<&mut Text, With<SessionHudText>>,
+) {
+    let Some(mut line) = text.iter_mut().next() else {
+        return;
+    };
+    let value = if state.flow_engine.is_running() {
+        let elapsed = SessionClock::us_to_s(pause_manager.active_time_us(state.clock.now_us()));
+        trainer::session_flow::hud_line(trainer::session_flow::HudNumbers {
+            remaining_s: (config.duration_s - elapsed).max(0.0),
+            hits: state.hits_count,
+            misses: state.misses_count,
+            total: state.layout_engine.total_trials_or_targets() as u32,
+            tracking: !state.scenario_def.hit_rule.accepts_shots(),
+        })
+    } else {
+        String::new()
+    };
+    if line.0 != value {
+        line.0 = value;
+    }
+}
+
 fn update_feedback_hud(
     state: Res<TrainerState>,
     mut text: Query<(&mut Text, &mut TextColor), With<FeedbackText>>,
@@ -1840,7 +1889,7 @@ fn main() {
                     ..default()
                 }),
         )
-        .add_systems(Update, update_feedback_hud)
+        .add_systems(Update, (update_feedback_hud, update_session_hud))
         .add_systems(
             Startup,
             (

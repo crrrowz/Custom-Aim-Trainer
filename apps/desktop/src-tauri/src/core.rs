@@ -5,20 +5,23 @@ use aim_analysis::{
     analyze_sessions, compute_engagement_metrics, session_detail, time_on_target,
     AnalysisThresholds, SessionDetail, SkillId, SkillProfile,
 };
-use aim_coach::diagnosis::{diagnose, Finding};
+use aim_coach::diagnosis::{diagnose, maintenance_drill, plan_focus, Finding};
 use aim_coach::drills::{build_custom, build_drill, CustomTargets};
 use aim_coach::evaluation::{
     adapt, difference_in_differences, verdict, Adaptation, Staircase, Verdict,
 };
-use aim_coach::narrative::{explain_finding, finding_text, verdict_text, Locale};
+use aim_coach::narrative::{drill_label, finding_text, skill_label, verdict_text, Locale};
 use aim_coach::plan::{daily_session, PlanEvent, PlanState, SessionItem, BLOCK_DAYS};
-use aim_llm::{narrate, AnthropicProvider, CoachReply, LlmProvider, OpenAiCompatProvider};
+use aim_llm::{
+    write_report, AnthropicProvider, CoachReply, LlmProvider, OpenAiCompatProvider, Weakness,
+};
 use aim_scenarios::schema::Scenario;
 use aim_store::Store;
 use aim_telemetry::format::AftSession;
 use aim_telemetry::read_aft;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,9 +31,15 @@ const KEY_SETTINGS: &str = "settings";
 const KEY_PLAN: &str = "plan";
 const KEY_LEVELS: &str = "drill_levels";
 const KEY_BLOCK_RESULT: &str = "block_result";
+const KEY_AI_KEYS: &str = "ai_keys";
+const KEY_REPORTS: &str = "reports";
+const MAX_REPORTS: usize = 60;
+const COACH_CONFIG_FILE: &str = "coach_config.json";
+/// Warm-up excluded: a plan needs real results from these seven tests.
+const ASSESSMENT_MEASURED_TESTS: usize = 7;
+const STOPPED_EARLY: &str = "stopped-early";
 const FORMS: u32 = 5;
 const BATTERY: &str = "battery.v1";
-const MAINTENANCE_DRILL: &str = "smooth_track";
 /// Provisional minimum detectable change in score points, until test-retest data exists.
 const PROVISIONAL_MDC: f64 = 8.0;
 const GOAL_SCORE: f64 = 60.0;
@@ -39,7 +48,9 @@ const STAIRCASE_STEP: f64 = 0.02;
 const START_DIFFICULTY: f64 = 0.3;
 const TRACKING_UPDATES: usize = 20;
 const TEST_MODE_DRILL_SECONDS: f64 = 20.0;
-const DEFAULT_CLAUDE_MODEL: &str = "claude-haiku-5-5";
+const OPENAI_URL: &str = "https://api.openai.com/v1";
+const GEMINI_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
+const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1";
 
 pub type Res<T> = Result<T, String>;
 
@@ -63,7 +74,7 @@ pub struct Settings {
     pub windowed: bool,
     /// Short drills and no waiting for rest days, to walk through the whole loop in one sitting.
     pub test_mode: bool,
-    /// "template", "local" or "claude".
+    /// "template", "claude", "openai", "gemini", "openrouter" or "custom".
     pub ai_provider: String,
     pub ai_base_url: String,
     pub ai_model: String,
@@ -79,8 +90,8 @@ impl Default for Settings {
             windowed: false,
             test_mode: false,
             ai_provider: "template".to_string(),
-            ai_base_url: "http://localhost:11434/v1".to_string(),
-            ai_model: "llama3.2".to_string(),
+            ai_base_url: String::new(),
+            ai_model: String::new(),
         }
     }
 }
@@ -111,6 +122,9 @@ pub struct AssessmentRecord {
     pub findings: Vec<Finding>,
     #[serde(default)]
     pub at_ms: u64,
+    /// Every test finished; only a complete assessment can start a plan.
+    #[serde(default)]
+    pub complete: bool,
     /// Recordings of each test, oldest stage first.
     #[serde(default)]
     pub files: Vec<String>,
@@ -126,6 +140,12 @@ pub struct PlanRecord {
     pub last_trained: u32,
     #[serde(default)]
     pub no_change_before: bool,
+    #[serde(default = "default_maintenance")]
+    pub maintenance: String,
+}
+
+fn default_maintenance() -> String {
+    "consistency_grid".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -160,6 +180,10 @@ pub struct BlockResult {
     pub training_effect: Option<f64>,
     pub adaptation: Adaptation,
     pub conditions_changed: bool,
+    #[serde(default)]
+    pub settings_before: (u32, f64),
+    #[serde(default)]
+    pub settings_after: (u32, f64),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -195,15 +219,93 @@ pub struct View {
     pub plan: Option<PlanView>,
     pub block_result: Option<BlockResult>,
     pub practice: Vec<PracticeRecord>,
+    pub sessions: Vec<SessionCard>,
+    pub reports: Vec<CoachReport>,
+    pub ai_keys_set: Vec<String>,
+    pub coach_config_path: String,
+    /// One-off message about the last action, such as a test that was stopped.
+    pub notice: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ChatAnswer {
-    pub reply: CoachReply,
-    /// "ai" or "template".
+/// One recording as a card on the analysis page. Built from the recording file itself.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SessionCard {
+    pub path: String,
+    pub at_ms: u64,
+    pub assessment: bool,
+    pub scenario: String,
+    pub targets: usize,
+    pub hits: usize,
+    pub accuracy: Option<f64>,
+    pub median_reaction_ms: Option<f64>,
+    pub median_time_to_hit_ms: Option<f64>,
+    pub time_on_target: Option<f64>,
+    pub duration_s: f64,
+    pub timing_suspect: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CoachReport {
+    pub at_ms: u64,
+    pub scope: String,
+    pub sessions: usize,
     pub source: String,
-    /// Why the fixed text was used, when an AI provider was selected.
     pub note: Option<String>,
+    pub reply: CoachReply,
+}
+
+/// What the AI coach is allowed to see and how it should write. Lives in a JSON file the player can edit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CoachConfig {
+    pub player_settings: bool,
+    pub skills: bool,
+    pub findings: bool,
+    pub recent_sessions: bool,
+    pub session_limit: usize,
+    pub directions: bool,
+    pub plan: bool,
+    pub block_result: bool,
+    pub extra_instructions: String,
+}
+
+impl Default for CoachConfig {
+    fn default() -> Self {
+        Self {
+            player_settings: true,
+            skills: true,
+            findings: true,
+            recent_sessions: true,
+            session_limit: 30,
+            directions: true,
+            plan: true,
+            block_result: true,
+            extra_instructions: String::new(),
+        }
+    }
+}
+
+/// Recordings from the app's early versions store a file path where the id belongs.
+fn scenario_key(scenario_id: &str) -> String {
+    if !scenario_id.contains(['/', '\\']) {
+        return scenario_id.to_string();
+    }
+    let stem = Path::new(&scenario_id.replace('\\', "/"))
+        .file_stem()
+        .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+    if stem == "custom" {
+        "custom.practice".to_string()
+    } else {
+        format!("drill.{stem}")
+    }
+}
+
+fn run_started_ms(dir: &Path) -> u64 {
+    dir.file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.split('-').nth(1))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
 }
 
 pub trait TrainerRunner {
@@ -342,6 +444,8 @@ pub struct Engine<R: TrainerRunner> {
     runner: R,
     data_dir: PathBuf,
     run_counter: u32,
+    notice: RefCell<Option<String>>,
+    cards: RefCell<HashMap<String, SessionCard>>,
 }
 
 impl<R: TrainerRunner> Engine<R> {
@@ -352,6 +456,8 @@ impl<R: TrainerRunner> Engine<R> {
             runner,
             data_dir: data_dir.to_path_buf(),
             run_counter: 0,
+            notice: RefCell::new(None),
+            cards: RefCell::new(HashMap::new()),
         })
     }
 
@@ -411,6 +517,22 @@ impl<R: TrainerRunner> Engine<R> {
         args
     }
 
+    fn tell(&self, notice: &str) {
+        *self.notice.borrow_mut() = Some(notice.to_string());
+    }
+
+    /// A player leaving a test early is not an error.
+    fn absorb_stop<T>(&self, result: Res<T>) -> Res<Option<T>> {
+        match result {
+            Ok(v) => Ok(Some(v)),
+            Err(e) if e == STOPPED_EARLY => {
+                self.tell("stopped");
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     fn record_assessment(&mut self) -> Res<AssessmentRecord> {
         let s = self.settings()?;
         let done = self.assessments()?.len() as u32;
@@ -433,11 +555,16 @@ impl<R: TrainerRunner> Engine<R> {
             .map(|p| read_session(p))
             .collect::<Res<Vec<_>>>()?;
         if sessions.is_empty() {
-            return Err("The assessment was stopped before anything was recorded.".to_string());
+            return Err(STOPPED_EARLY.to_string());
         }
         let profile = analyze_sessions(&sessions, &AnalysisThresholds::default());
         let findings = diagnose(&profile);
+        let measured = sessions
+            .iter()
+            .filter(|x| !x.header.scenario_id.contains("warmup"))
+            .count();
         let record = AssessmentRecord {
+            complete: measured >= ASSESSMENT_MEASURED_TESTS,
             day: today(),
             form,
             dpi: s.dpi,
@@ -456,15 +583,25 @@ impl<R: TrainerRunner> Engine<R> {
 
     /// First assessment: produces the proposed plan.
     pub fn run_assessment(&mut self) -> Res<()> {
-        let record = self.record_assessment()?;
+        let result = self.record_assessment();
+        let Some(record) = self.absorb_stop(result)? else {
+            return Ok(());
+        };
         let baseline = self.assessments()?.len() - 1;
+        if !record.complete {
+            self.tell("incomplete");
+            return Ok(());
+        }
+        let focus = plan_focus(&record.profile, &record.findings);
+        let maintenance = maintenance_drill(&record.profile, &focus).to_string();
         self.save_plan(&PlanRecord {
             state: PlanState::Draft,
-            findings: record.findings,
+            findings: focus,
             baseline,
             item_index: 0,
             last_trained: today(),
             no_change_before: false,
+            maintenance,
         })
     }
 
@@ -477,7 +614,7 @@ impl<R: TrainerRunner> Engine<R> {
 
     fn today_items(plan: &PlanRecord) -> Vec<SessionItem> {
         match plan.state {
-            PlanState::Active { day, .. } => daily_session(&plan.findings, MAINTENANCE_DRILL, day),
+            PlanState::Active { day, .. } => daily_session(&plan.findings, &plan.maintenance, day),
             _ => Vec::new(),
         }
     }
@@ -506,7 +643,7 @@ impl<R: TrainerRunner> Engine<R> {
         ]);
         self.runner.run(&args)?;
         if !output.is_file() {
-            return Err("The drill was stopped before anything was recorded.".to_string());
+            return Err(STOPPED_EARLY.to_string());
         }
         Ok((
             trial_outcomes(&read_session(&output)?),
@@ -536,7 +673,10 @@ impl<R: TrainerRunner> Engine<R> {
         if item.drill == "directional_flick" {
             scenario.rules.weak_octant = weak_octant(&plan.findings);
         }
-        let (outcomes, file) = self.run_scenario_file(&scenario, seconds, &item.drill)?;
+        let played = self.run_scenario_file(&scenario, seconds, &item.drill);
+        let Some((outcomes, file)) = self.absorb_stop(played)? else {
+            return Ok(());
+        };
 
         let mut staircase = Staircase::new(start, STAIRCASE_TARGET, STAIRCASE_STEP);
         outcomes.iter().for_each(|&w| staircase.update(w));
@@ -583,7 +723,14 @@ impl<R: TrainerRunner> Engine<R> {
         if !self.retest_ready(&plan)? {
             return Err("The retest opens after a rest day.".to_string());
         }
-        let post = self.record_assessment()?;
+        let attempt = self.record_assessment();
+        let Some(post) = self.absorb_stop(attempt)? else {
+            return Ok(());
+        };
+        if !post.complete {
+            self.tell("incomplete");
+            return Ok(());
+        }
         let baseline = self
             .assessments()?
             .get(plan.baseline)
@@ -604,7 +751,8 @@ impl<R: TrainerRunner> Engine<R> {
         let assessments = self.assessments()?;
         let latest = assessments.last().ok_or("Take an assessment first.")?;
         plan.state = plan.state.clone().apply(PlanEvent::NextBlock);
-        plan.findings = latest.findings.clone();
+        plan.findings = plan_focus(&latest.profile, &latest.findings);
+        plan.maintenance = maintenance_drill(&latest.profile, &plan.findings).to_string();
         plan.baseline = assessments.len() - 1;
         plan.item_index = 0;
         plan.last_trained = today();
@@ -613,7 +761,10 @@ impl<R: TrainerRunner> Engine<R> {
 
     pub fn run_custom(&mut self, targets: &CustomTargets) -> Res<()> {
         let scenario = build_custom(targets)?;
-        let (outcomes, file) = self.run_scenario_file(&scenario, targets.duration_s, "custom")?;
+        let played = self.run_scenario_file(&scenario, targets.duration_s, "custom");
+        let Some((outcomes, file)) = self.absorb_stop(played)? else {
+            return Ok(());
+        };
         self.store
             .add_practice(
                 today(),
@@ -640,7 +791,10 @@ impl<R: TrainerRunner> Engine<R> {
         let seconds = 90.0;
         let scenario = build_drill(name, level, true, seconds)
             .ok_or_else(|| format!("Unknown drill: {name}"))?;
-        let (outcomes, file) = self.run_scenario_file(&scenario, seconds, name)?;
+        let played = self.run_scenario_file(&scenario, seconds, name);
+        let Some((outcomes, file)) = self.absorb_stop(played)? else {
+            return Ok(());
+        };
         self.store
             .add_practice(
                 today(),
@@ -667,123 +821,415 @@ impl<R: TrainerRunner> Engine<R> {
         Ok(session_detail(&read_session(&file)?))
     }
 
-    fn coach_input(&self, s: &Settings) -> Res<Value> {
-        let assessments = self.assessments()?;
-        let latest = assessments.last();
-        let round = |v: f64| (v * 100.0).round() / 100.0;
-        let plan = self.plan()?;
-        let result: Option<BlockResult> = self.store.get(KEY_BLOCK_RESULT).map_err(err)?;
-        Ok(json!({
-            "locale": s.locale,
-            "player": {"cm360": round(s.cm_per_360()), "dpi": s.dpi, "sens": s.sens},
-            "skills": latest.map(|a| a.profile.skills.iter().map(|k| json!({
-                "skill": k.skill, "score": round(k.score), "raw": round(k.raw),
-            })).collect::<Vec<_>>()),
-            "findings": latest.map(|a| a.findings.iter().map(|f| json!({
-                "id": f.id,
-                "name": finding_text(&f.id, Locale::En).0,
-                "severity": round(f.severity),
-                "evidence": f.evidence.iter()
-                    .map(|(k, v)| (k.clone(), json!(round(*v))))
-                    .collect::<serde_json::Map<_, _>>(),
-                "drills": f.drills,
-            })).collect::<Vec<_>>()),
-            "next_plan": {"days": BLOCK_DAYS, "focus": plan.map(|p| p.findings.iter()
-                .take(2).map(|f| f.id.clone()).collect::<Vec<_>>())},
-            "block_result": result.map(|r| json!({
-                "training_effect": r.training_effect.map(round),
-                "changes": r.rows.iter().map(|c| json!({
-                    "skill": c.skill, "delta": round(c.delta), "trained": c.trained,
-                })).collect::<Vec<_>>(),
-            })),
-        }))
+    /// Every recording on disk, newest first. Works from the files, so history is never lost.
+    pub fn list_sessions(&self) -> Res<Vec<SessionCard>> {
+        let root = self.data_dir.join("sessions");
+        let mut out = Vec::new();
+        for dir in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+            let dir = dir.path();
+            let name = dir
+                .file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            for file in recordings_in(&dir).unwrap_or_default() {
+                let path = file.to_string_lossy().into_owned();
+                if let Some(card) = self.cards.borrow().get(&path) {
+                    out.push(card.clone());
+                    continue;
+                }
+                let Ok(session) = read_session(&file) else {
+                    continue;
+                };
+                let d = session_detail(&session);
+                let card = SessionCard {
+                    path: path.clone(),
+                    at_ms: run_started_ms(&dir),
+                    assessment: name.starts_with("assessment"),
+                    scenario: scenario_key(&d.scenario_id),
+                    targets: d.targets,
+                    hits: d.hits,
+                    accuracy: d.accuracy,
+                    median_reaction_ms: d.median_reaction_ms,
+                    median_time_to_hit_ms: d.median_time_to_hit_ms,
+                    time_on_target: d.time_on_target,
+                    duration_s: d.duration_s,
+                    timing_suspect: d.timing_suspect,
+                };
+                self.cards.borrow_mut().insert(path, card.clone());
+                out.push(card);
+            }
+        }
+        out.sort_by(|a, b| b.at_ms.cmp(&a.at_ms).then(a.path.cmp(&b.path)));
+        Ok(out)
+    }
+
+    pub fn coach_config_path(&self) -> PathBuf {
+        self.data_dir.join(COACH_CONFIG_FILE)
+    }
+
+    /// Reads the data file, creating it with the defaults the first time.
+    pub fn coach_config(&self) -> Res<CoachConfig> {
+        let path = self.coach_config_path();
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            return serde_json::from_str(&text).map_err(|e| format!("{COACH_CONFIG_FILE}: {e}"));
+        }
+        let config = CoachConfig::default();
+        self.save_coach_config(&config)?;
+        Ok(config)
+    }
+
+    pub fn save_coach_config(&self, config: &CoachConfig) -> Res<()> {
+        let text = serde_json::to_string_pretty(config).map_err(err)?;
+        std::fs::write(self.coach_config_path(), text).map_err(err)
+    }
+
+    pub fn set_ai_key(&self, provider: &str, key: &str) -> Res<()> {
+        let mut keys: HashMap<String, String> = self
+            .store
+            .get(KEY_AI_KEYS)
+            .map_err(err)?
+            .unwrap_or_default();
+        if key.trim().is_empty() {
+            keys.remove(provider);
+        } else {
+            keys.insert(provider.to_string(), key.trim().to_string());
+        }
+        self.store.set(KEY_AI_KEYS, &keys).map_err(err)
+    }
+
+    fn ai_key(&self, provider: &str) -> Res<Option<String>> {
+        let keys: HashMap<String, String> = self
+            .store
+            .get(KEY_AI_KEYS)
+            .map_err(err)?
+            .unwrap_or_default();
+        Ok(keys.get(provider).cloned())
     }
 
     fn provider(&self, s: &Settings) -> Res<Option<Box<dyn LlmProvider>>> {
-        Ok(match s.ai_provider.as_str() {
-            "local" => Some(Box::new(OpenAiCompatProvider {
-                base_url: s.ai_base_url.clone(),
+        let compatible = |base: String, key: Option<String>| -> Option<Box<dyn LlmProvider>> {
+            Some(Box::new(OpenAiCompatProvider {
+                base_url: base,
                 model: s.ai_model.clone(),
-                api_key: None,
+                api_key: key,
+            }))
+        };
+        let required = |name: &str| -> Res<String> {
+            self.ai_key(name)?
+                .ok_or_else(|| "Add an API key for this source in Settings.".to_string())
+        };
+        if s.ai_provider != "template" && s.ai_model.trim().is_empty() {
+            return Err("Choose a model name in Settings.".to_string());
+        }
+        Ok(match s.ai_provider.as_str() {
+            "claude" => Some(Box::new(AnthropicProvider {
+                api_key: required("claude")?,
+                model: s.ai_model.clone(),
             })),
-            "claude" => {
-                let key = std::env::var("ANTHROPIC_API_KEY")
-                    .map_err(|_| "ANTHROPIC_API_KEY is not set on this computer.".to_string())?;
-                let model = if s.ai_model.starts_with("claude") {
-                    s.ai_model.clone()
-                } else {
-                    DEFAULT_CLAUDE_MODEL.to_string()
-                };
-                Some(Box::new(AnthropicProvider {
-                    api_key: key,
-                    model,
-                }))
+            "openai" => compatible(OPENAI_URL.to_string(), Some(required("openai")?)),
+            "gemini" => compatible(GEMINI_URL.to_string(), Some(required("gemini")?)),
+            "openrouter" => compatible(OPENROUTER_URL.to_string(), Some(required("openrouter")?)),
+            "custom" => {
+                if s.ai_base_url.trim().is_empty() {
+                    return Err("Enter the server URL in Settings.".to_string());
+                }
+                compatible(s.ai_base_url.clone(), self.ai_key("custom")?)
             }
             _ => None,
         })
     }
 
-    fn template_reply(&self, s: &Settings) -> Res<CoachReply> {
-        let locale = s.lang();
-        let assessments = self.assessments()?;
-        let findings = assessments
-            .last()
-            .map(|a| a.findings.as_slice())
-            .unwrap_or_default();
-        let (ar, headline, none) = (
-            locale == Locale::Ar,
-            findings.first().map(|f| finding_text(&f.id, locale).0),
-            if locale == Locale::Ar {
-                "ماكو مشاكل واضحة بعد. سوِّ تقييم أو كمل التدريب."
-            } else {
-                "No clear problems yet. Take an assessment or keep training."
-            },
-        );
-        Ok(CoachReply {
-            headline: headline.unwrap_or(none).to_string(),
-            explanation: findings
-                .iter()
-                .map(|f| explain_finding(f, locale))
-                .collect::<Vec<_>>()
-                .join(" "),
-            tips: findings
-                .iter()
-                .filter_map(|f| f.drills.first().cloned())
-                .collect(),
-            next_step: if ar {
-                "ابدأ جلسة اليوم من صفحة الخطة.".to_string()
-            } else {
-                "Start today's session from the plan page.".to_string()
-            },
+    /// Sends one small request so the player knows the source works before relying on it.
+    pub fn test_ai(&self) -> Res<String> {
+        let s = self.settings()?;
+        match self.provider(&s)? {
+            None => Ok("template".to_string()),
+            Some(p) => {
+                p.complete("Reply with the single word OK.", "Connection test.")
+                    .map_err(err)?;
+                Ok("ok".to_string())
+            }
+        }
+    }
+
+    fn scoped(&self, scope: &str) -> Res<Vec<SessionCard>> {
+        let cards = self.list_sessions()?;
+        Ok(match scope {
+            "latest" => cards.into_iter().take(1).collect(),
+            "today" => {
+                let day = 86_400_000;
+                let newest = cards.first().map_or(0, |c| c.at_ms / day);
+                cards
+                    .into_iter()
+                    .filter(|c| c.at_ms / day == newest)
+                    .collect()
+            }
+            _ => cards,
         })
     }
 
-    pub fn ask_coach(&self, question: Option<&str>) -> Res<ChatAnswer> {
+    fn direction_stats(&self, cards: &[SessionCard]) -> Vec<Value> {
+        let mut totals = [(0_u32, 0_u32, 0.0_f64, 0_u32); 8];
+        for card in cards
+            .iter()
+            .filter(|c| !c.timing_suspect && c.targets > 0)
+            .take(10)
+        {
+            let Ok(session) = read_session(Path::new(&card.path)) else {
+                continue;
+            };
+            for f in session_detail(&session).flicks {
+                let Some(o) = f.octant else { continue };
+                let t = &mut totals[usize::from(o) % 8];
+                t.0 += 1;
+                t.1 += u32::from(f.hit);
+                if let Some(ms) = f.time_to_hit_ms {
+                    t.2 += ms;
+                    t.3 += 1;
+                }
+            }
+        }
+        const NAMES: [&str; 8] = [
+            "right",
+            "up-right",
+            "up",
+            "up-left",
+            "left",
+            "down-left",
+            "down",
+            "down-right",
+        ];
+        totals
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.0 > 0)
+            .map(|(i, t)| {
+                json!({
+                    "direction": NAMES[i],
+                    "targets": t.0,
+                    "accuracy_percent": (f64::from(t.1) * 100.0 / f64::from(t.0)).round(),
+                    "average_time_ms": if t.3 > 0 { (t.2 / f64::from(t.3)).round() } else { 0.0 },
+                })
+            })
+            .collect()
+    }
+
+    fn coach_input(&self, s: &Settings, cards: &[SessionCard], config: &CoachConfig) -> Res<Value> {
+        let assessments = self.assessments()?;
+        let latest = assessments.last();
+        let round = |v: f64| (v * 100.0).round() / 100.0;
+        let mut data = serde_json::Map::new();
+        data.insert("locale".to_string(), json!(s.locale));
+        if config.player_settings {
+            data.insert(
+                "player".to_string(),
+                json!({"cm360": round(s.cm_per_360()), "dpi": s.dpi, "sens": s.sens}),
+            );
+        }
+        if config.skills {
+            data.insert(
+                "skills".to_string(),
+                json!(latest.map(|a| a
+                    .profile
+                    .skills
+                    .iter()
+                    .map(|k| json!({
+                        "skill": k.skill, "score": round(k.score), "raw": round(k.raw),
+                    }))
+                    .collect::<Vec<_>>())),
+            );
+        }
+        if config.findings {
+            data.insert("findings".to_string(), json!(latest.map(|a| a.findings.iter().map(|f| json!({
+                "id": f.id,
+                "name": finding_text(&f.id, Locale::En).0,
+                "severity": round(f.severity),
+                "evidence": f.evidence.iter().map(|(k, v)| (k.clone(), json!(round(*v)))).collect::<serde_json::Map<_, _>>(),
+                "drills": f.drills,
+            })).collect::<Vec<_>>())));
+        }
+        if config.recent_sessions {
+            data.insert("sessions".to_string(), json!(cards.iter().take(config.session_limit).map(|c| json!({
+                "scenario": c.scenario,
+                "targets": c.targets,
+                "hits": c.hits,
+                "accuracy_percent": c.accuracy.map(|a| (a * 100.0).round()),
+                "reaction_ms": if c.timing_suspect { None } else { c.median_reaction_ms.map(f64::round) },
+                "time_to_hit_ms": if c.timing_suspect { None } else { c.median_time_to_hit_ms.map(f64::round) },
+                "time_on_target_percent": c.time_on_target.map(|a| (a * 100.0).round()),
+            })).collect::<Vec<_>>()));
+        }
+        if config.directions {
+            data.insert("directions".to_string(), json!(self.direction_stats(cards)));
+        }
+        if config.plan {
+            let plan = self.plan()?;
+            data.insert("plan".to_string(), json!({"days": BLOCK_DAYS, "focus": plan.map(|p| p.findings.iter().take(2).map(|f| f.id.clone()).collect::<Vec<_>>())}));
+        }
+        if config.block_result {
+            let result: Option<BlockResult> = self.store.get(KEY_BLOCK_RESULT).map_err(err)?;
+            data.insert("block_result".to_string(), json!(result.map(|r| json!({
+                "training_effect": r.training_effect.map(round),
+                "changes": r.rows.iter().map(|c| json!({"skill": c.skill, "delta": round(c.delta), "trained": c.trained})).collect::<Vec<_>>(),
+            }))));
+        }
+        Ok(Value::Object(data))
+    }
+
+    /// The report written from the numbers alone, used when no AI source is set or it fails.
+    fn built_in_report(&self, s: &Settings, cards: &[SessionCard]) -> Res<CoachReply> {
+        let l = s.lang();
+        let ar = l == Locale::Ar;
+        let assessments = self.assessments()?;
+        let latest = assessments.last();
+        let timed: Vec<&SessionCard> = cards.iter().filter(|c| c.accuracy.is_some()).collect();
+        let accuracy = (!timed.is_empty()).then(|| {
+            timed.iter().filter_map(|c| c.accuracy).sum::<f64>() / timed.len() as f64 * 100.0
+        });
+        let trend = {
+            let n = timed.len();
+            (n >= 4).then(|| {
+                let avg = |v: &[&SessionCard]| {
+                    v.iter().filter_map(|c| c.accuracy).sum::<f64>() / v.len() as f64 * 100.0
+                };
+                avg(&timed[..n / 2]) - avg(&timed[n / 2..])
+            })
+        };
+        let summary = match (accuracy, trend, ar) {
+            (None, _, true) => "ماكو جلسات كافية بعد. سوِّ تقييم كامل حتى يكتب المدرب تقرير مفيد.".to_string(),
+            (None, _, false) => "Not enough sessions yet. Finish a full assessment for a useful report.".to_string(),
+            (Some(a), Some(t), true) => format!(
+                "راجعت {} جلسة. دقتك بالمعدل {:.0}%، و{} بـ {:.0} نقطة بالجلسات الأخيرة.",
+                cards.len(), a, if t >= 0.0 { "تحسنت" } else { "نزلت" }, t.abs()
+            ),
+            (Some(a), Some(t), false) => format!(
+                "Reviewed {} sessions. Average accuracy is {:.0}%, {} {:.0} points in the recent half.",
+                cards.len(), a, if t >= 0.0 { "up" } else { "down" }, t.abs()
+            ),
+            (Some(a), None, true) => format!("راجعت {} جلسة. دقتك بالمعدل {:.0}%.", cards.len(), a),
+            (Some(a), None, false) => format!("Reviewed {} sessions. Average accuracy is {:.0}%.", cards.len(), a),
+        };
+
+        let mut strengths = Vec::new();
+        let mut weaknesses = Vec::new();
+        if let Some(a) = latest {
+            let mut skills: Vec<_> = a.profile.skills.iter().collect();
+            skills.sort_by(|x, y| y.score.total_cmp(&x.score));
+            for k in skills.iter().filter(|k| k.score >= 55.0).take(3) {
+                strengths.push(if ar {
+                    format!("{}: درجتك {:.0}", skill_label(k.skill, l), k.score)
+                } else {
+                    format!("{}: score {:.0}", skill_label(k.skill, l), k.score)
+                });
+            }
+            for f in plan_focus(&a.profile, &a.findings).iter().take(3) {
+                let (title, why) = finding_text(&f.id, l);
+                let fix = f.drills.first().map_or(String::new(), |d| {
+                    if ar {
+                        format!("تمرين: {}", drill_label(d, l))
+                    } else {
+                        format!("Drill: {}", drill_label(d, l))
+                    }
+                });
+                weaknesses.push(Weakness {
+                    title: format!("{title} ({})", skill_label(f.skill, l)),
+                    detail: why.to_string(),
+                    fix,
+                });
+            }
+        }
+        let mut by_drill: HashMap<&str, (f64, u32)> = HashMap::new();
+        for c in &timed {
+            let e = by_drill.entry(c.scenario.as_str()).or_insert((0.0, 0));
+            e.0 += c.accuracy.unwrap_or(0.0);
+            e.1 += 1;
+        }
+        let mut ranked: Vec<(&str, f64)> = by_drill
+            .iter()
+            .map(|(k, v)| (*k, v.0 / f64::from(v.1) * 100.0))
+            .collect();
+        ranked.sort_by(|a, b| a.1.total_cmp(&b.1));
+        if let (Some(worst), true) = (ranked.first(), ranked.len() > 1) {
+            let name = drill_label(worst.0.rsplit('.').next().unwrap_or(worst.0), l);
+            weaknesses.push(Weakness {
+                title: if ar {
+                    format!("أضعف تدريب: {name}")
+                } else {
+                    format!("Weakest session type: {name}")
+                },
+                detail: if ar {
+                    format!("دقتك بيه {:.0}%.", worst.1)
+                } else {
+                    format!("Your accuracy there is {:.0}%.", worst.1)
+                },
+                fix: String::new(),
+            });
+        }
+        let plan = self.plan()?;
+        let mut next_steps: Vec<String> = plan
+            .iter()
+            .flat_map(|p| p.findings.iter().take(2))
+            .filter_map(|f| f.drills.first())
+            .map(|d| drill_label(d, l).to_string())
+            .collect();
+        if !latest.is_some_and(|a| a.complete) {
+            next_steps.insert(
+                0,
+                if ar {
+                    "سوِّ تقييم كامل (8 اختبارات).".to_string()
+                } else {
+                    "Complete a full assessment (8 tests).".to_string()
+                },
+            );
+        }
+        Ok(CoachReply {
+            summary,
+            strengths,
+            weaknesses,
+            next_steps,
+        })
+    }
+
+    /// The coach reads the data for a scope and writes a saved report.
+    pub fn generate_report(&mut self, scope: &str) -> Res<()> {
         let s = self.settings()?;
+        let cards = self.scoped(scope)?;
+        let config = self.coach_config()?;
         let attempt = self.provider(&s).and_then(|provider| match provider {
             None => Ok(None),
             Some(p) => {
-                let input = self.coach_input(&s)?;
-                narrate(p.as_ref(), &input, question).map(Some).map_err(err)
+                let input = self.coach_input(&s, &cards, &config)?;
+                write_report(p.as_ref(), &input, &config.extra_instructions)
+                    .map(Some)
+                    .map_err(err)
             }
         });
-        Ok(match attempt {
-            Ok(Some(reply)) => ChatAnswer {
+        let (reply, source, note) = match attempt {
+            Ok(Some(r)) => (r, "ai", None),
+            Ok(None) => (self.built_in_report(&s, &cards)?, "built-in", None),
+            Err(e) => (self.built_in_report(&s, &cards)?, "built-in", Some(e)),
+        };
+        let mut reports = self.reports()?;
+        reports.insert(
+            0,
+            CoachReport {
+                at_ms: now_ms(),
+                scope: scope.to_string(),
+                sessions: cards.len(),
+                source: source.to_string(),
+                note,
                 reply,
-                source: "ai".to_string(),
-                note: None,
             },
-            Ok(None) => ChatAnswer {
-                reply: self.template_reply(&s)?,
-                source: "template".to_string(),
-                note: None,
-            },
-            Err(e) => ChatAnswer {
-                reply: self.template_reply(&s)?,
-                source: "template".to_string(),
-                note: Some(e),
-            },
-        })
+        );
+        reports.truncate(MAX_REPORTS);
+        self.store.set(KEY_REPORTS, &reports).map_err(err)
+    }
+
+    fn reports(&self) -> Res<Vec<CoachReport>> {
+        Ok(self
+            .store
+            .get(KEY_REPORTS)
+            .map_err(err)?
+            .unwrap_or_default())
     }
 
     pub fn view(&self) -> Res<View> {
@@ -817,6 +1263,7 @@ impl<R: TrainerRunner> Engine<R> {
             }),
             None => None,
         };
+        self.coach_config()?;
         Ok(View {
             cm360: settings.cm_per_360(),
             today: today(),
@@ -828,6 +1275,17 @@ impl<R: TrainerRunner> Engine<R> {
             plan,
             block_result: self.store.get(KEY_BLOCK_RESULT).map_err(err)?,
             practice: self.store.practice().map_err(err)?,
+            sessions: self.list_sessions()?,
+            reports: self.reports()?,
+            ai_keys_set: self
+                .store
+                .get::<HashMap<String, String>>(KEY_AI_KEYS)
+                .map_err(err)?
+                .unwrap_or_default()
+                .into_keys()
+                .collect(),
+            coach_config_path: self.coach_config_path().to_string_lossy().into_owned(),
+            notice: self.notice.borrow_mut().take(),
             settings,
         })
     }
@@ -887,6 +1345,8 @@ fn compare(
         training_effect,
         adaptation,
         conditions_changed: pre.dpi != post.dpi || (pre.sens - post.sens).abs() > 1e-9,
+        settings_before: (pre.dpi, pre.sens),
+        settings_after: (post.dpi, post.sens),
     }
 }
 
@@ -897,12 +1357,14 @@ mod tests {
         FrameStream, HitZone, ShotRecord, TargetKind, TargetParams, TargetRecord,
     };
     use aim_telemetry::{sample_session, write_aft};
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     /// Stands in for the game: writes a recording of an overshooting player wherever the arguments say.
     struct FakeTrainer {
         overshoot: RefCell<f64>,
         calls: RefCell<Vec<Vec<String>>>,
+        write_files: Cell<bool>,
+        full_battery: Cell<bool>,
     }
 
     fn value_after(args: &[String], flag: &str) -> Option<String> {
@@ -977,10 +1439,24 @@ mod tests {
             self.calls.borrow_mut().push(args.to_vec());
             let gain = *self.overshoot.borrow();
             if let Some(dir) = value_after(args, "--output-dir") {
+                if !self.write_files.get() {
+                    return Ok(());
+                }
                 write(
                     &flick_session("assess.v1.flick_static", gain),
                     &Path::new(&dir).join("1_flick.aft"),
                 )?;
+                if self.full_battery.get() {
+                    for (i, name) in ["a", "b", "c", "d", "e", "f"].iter().enumerate() {
+                        let mut extra = flick_session(&format!("assess.v1.other_{name}"), gain);
+                        extra.streams.targets.records.truncate(1);
+                        extra.streams.shots.records.truncate(1);
+                        write(
+                            &extra,
+                            &Path::new(&dir).join(format!("{}_{name}.aft", i + 2)),
+                        )?;
+                    }
+                }
             }
             if let Some(file) = value_after(args, "--output") {
                 write(&flick_session("drill", gain), Path::new(&file))?;
@@ -1001,6 +1477,8 @@ mod tests {
             FakeTrainer {
                 overshoot: RefCell::new(gain),
                 calls: RefCell::new(Vec::new()),
+                write_files: Cell::new(true),
+                full_battery: Cell::new(true),
             },
         )
         .unwrap();
@@ -1098,13 +1576,14 @@ mod tests {
     }
 
     #[test]
-    fn coach_uses_fixed_text_when_no_ai_is_selected() {
+    fn built_in_report_is_saved_when_no_ai_is_selected() {
         let (mut e, dir) = engine("coach", 1.15);
         e.run_assessment().unwrap();
-        let answer = e.ask_coach(Some("why do I miss?")).unwrap();
-        assert_eq!(answer.source, "template");
-        assert!(answer.note.is_none());
-        assert!(!answer.reply.headline.is_empty());
+        e.generate_report("all").unwrap();
+        let reports = e.view().unwrap().reports;
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].source, "built-in");
+        assert!(!reports[0].reply.summary.is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1112,13 +1591,88 @@ mod tests {
     fn an_unreachable_ai_falls_back_and_says_why() {
         let (mut e, dir) = engine("offline", 1.15);
         let mut s = e.settings().unwrap();
-        s.ai_provider = "local".to_string();
+        s.ai_provider = "custom".to_string();
         s.ai_base_url = "http://127.0.0.1:9".to_string();
+        s.ai_model = "m".to_string();
         e.save_settings(&s).unwrap();
         e.run_assessment().unwrap();
-        let answer = e.ask_coach(None).unwrap();
-        assert_eq!(answer.source, "template");
-        assert!(answer.note.is_some());
+        e.generate_report("latest").unwrap();
+        let r = &e.view().unwrap().reports[0];
+        assert_eq!(r.source, "built-in");
+        assert!(r.note.is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_missing_key_is_explained() {
+        let (e, dir) = engine("nokey", 1.0);
+        let mut s = e.settings().unwrap();
+        s.ai_provider = "openai".to_string();
+        s.ai_model = "m".to_string();
+        e.save_settings(&s).unwrap();
+        assert!(e.test_ai().unwrap_err().contains("API key"));
+        e.set_ai_key("openai", "abc").unwrap();
+        assert_eq!(e.view().unwrap().ai_keys_set, vec!["openai".to_string()]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_data_file_controls_what_the_ai_sees() {
+        let (mut e, dir) = engine("config", 1.15);
+        e.run_assessment().unwrap();
+        let mut c = e.coach_config().unwrap();
+        assert!(e.coach_config_path().is_file());
+        c.skills = false;
+        c.directions = false;
+        e.save_coach_config(&c).unwrap();
+        let s = e.settings().unwrap();
+        let cards = e.list_sessions().unwrap();
+        let input = e
+            .coach_input(&s, &cards, &e.coach_config().unwrap())
+            .unwrap();
+        assert!(input.get("skills").is_none());
+        assert!(input.get("directions").is_none());
+        assert!(input.get("sessions").is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn sessions_are_listed_from_the_recordings() {
+        let (mut e, dir) = engine("cards", 1.0);
+        e.run_assessment().unwrap();
+        let cards = e.view().unwrap().sessions;
+        assert_eq!(cards.len(), 7);
+        assert!(cards.iter().all(|c| c.assessment));
+        assert!(cards.iter().any(|c| c.scenario == "assess.v1.flick_static"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn old_file_path_ids_become_proper_names() {
+        assert_eq!(scenario_key("C:\\a\\b\\warmup.ron"), "drill.warmup");
+        assert_eq!(scenario_key("C:\\a\\custom.ron"), "custom.practice");
+        assert_eq!(scenario_key("assess.v1.warmup"), "assess.v1.warmup");
+    }
+
+    #[test]
+    fn leaving_a_test_early_is_not_an_error() {
+        let (mut e, dir) = engine("stop", 1.0);
+        e.runner.write_files.set(false);
+        e.run_assessment().unwrap();
+        let view = e.view().unwrap();
+        assert_eq!(view.notice.as_deref(), Some("stopped"));
+        assert!(view.plan.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_partial_assessment_does_not_start_a_plan() {
+        let (mut e, dir) = engine("partial", 1.0);
+        e.runner.full_battery.set(false);
+        e.run_assessment().unwrap();
+        let view = e.view().unwrap();
+        assert_eq!(view.notice.as_deref(), Some("incomplete"));
+        assert!(view.plan.is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1134,6 +1688,9 @@ mod tests {
             time_limit_s: 2.0,
             concurrent: 3,
             duration_s: 45.0,
+            area_h_deg: 35.0,
+            area_v_deg: 12.0,
+            reversal_s: 0.55,
         };
         e.run_custom(&targets).unwrap();
         let calls = e.runner.calls.borrow();

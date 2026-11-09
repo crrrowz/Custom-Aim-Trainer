@@ -70,6 +70,8 @@ export interface BlockResult {
   training_effect: number | null;
   adaptation: string;
   conditions_changed: boolean;
+  settings_before: [number, number];
+  settings_after: [number, number];
 }
 export interface Practice {
   day: number;
@@ -92,6 +94,11 @@ export interface View {
   plan: Plan | null;
   block_result: BlockResult | null;
   practice: Practice[];
+  sessions: SessionCard[];
+  reports: CoachReport[];
+  ai_keys_set: string[];
+  coach_config_path: string;
+  notice: string | null;
 }
 export interface CustomTargets {
   mode: "flick" | "track" | "strafe" | "peek" | "multi";
@@ -102,6 +109,9 @@ export interface CustomTargets {
   time_limit_s: number;
   concurrent: number;
   duration_s: number;
+  area_h_deg: number;
+  area_v_deg: number;
+  reversal_s: number;
 }
 export interface PathPoint {
   t_ms: number;
@@ -148,11 +158,45 @@ export interface Detail {
   tracking: TrackBin[];
   time_on_target: number | null;
   tracking_radius_deg: number | null;
+  timing_suspect: boolean;
 }
-export interface ChatAnswer {
-  reply: { headline: string; explanation: string; tips: string[]; next_step: string };
-  source: "ai" | "template";
+export interface SessionCard {
+  path: string;
+  at_ms: number;
+  assessment: boolean;
+  scenario: string;
+  targets: number;
+  hits: number;
+  accuracy: number | null;
+  median_reaction_ms: number | null;
+  median_time_to_hit_ms: number | null;
+  time_on_target: number | null;
+  duration_s: number;
+  timing_suspect: boolean;
+}
+export interface CoachReport {
+  at_ms: number;
+  scope: string;
+  sessions: number;
+  source: string;
   note: string | null;
+  reply: {
+    summary: string;
+    strengths: string[];
+    weaknesses: { title: string; detail: string; fix: string }[];
+    next_steps: string[];
+  };
+}
+export interface CoachConfig {
+  player_settings: boolean;
+  skills: boolean;
+  findings: boolean;
+  recent_sessions: boolean;
+  session_limit: number;
+  directions: boolean;
+  plan: boolean;
+  block_result: boolean;
+  extra_instructions: string;
 }
 
 const inTauri = "__TAURI_INTERNALS__" in window;

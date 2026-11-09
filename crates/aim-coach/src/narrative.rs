@@ -3,6 +3,7 @@
 
 use crate::diagnosis::Finding;
 use crate::evaluation::Verdict;
+use aim_analysis::SkillId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Locale {
@@ -87,8 +88,74 @@ pub fn finding_text(id: &str, locale: Locale) -> (&'static str, &'static str) {
             "You are precise but give up too much speed.",
         ),
         ("D14", Locale::Ar) => ("حذر زائد", "دقيق لكن تتنازل عن سرعة كثيرة."),
+        (w, Locale::En) if w.starts_with("W_") => (
+            "One of your weakest skills",
+            "No single habit stands out, so this block raises your lowest score.",
+        ),
+        (w, Locale::Ar) if w.starts_with("W_") => (
+            "من أضعف مهاراتك",
+            "ماكو عادة وحدة واضحة، فهذي الكتلة ترفع أقل درجة عندك.",
+        ),
         (_, Locale::En) => ("Finding", ""),
         (_, Locale::Ar) => ("ملاحظة", ""),
+    }
+}
+
+pub fn skill_label(skill: SkillId, locale: Locale) -> &'static str {
+    let (ar, en) = match skill {
+        SkillId::S01Reaction => ("رد الفعل", "Reaction"),
+        SkillId::S02FlickSpeed => ("سرعة الفليك", "Flick speed"),
+        SkillId::S03FlickPrecision => ("دقة الفليك", "Flick precision"),
+        SkillId::S04GainControl => ("التحكم بالمدى", "Distance control"),
+        SkillId::S05MicroCorrection => ("التصحيح الدقيق", "Micro correction"),
+        SkillId::S06TrackSmooth => ("التتبع السلس", "Smooth tracking"),
+        SkillId::S07TrackReactive => ("التتبع التفاعلي", "Reactive tracking"),
+        SkillId::S08TargetSwitch => ("التبديل بين الأهداف", "Target switching"),
+        SkillId::S09ClickTiming => ("توقيت النقر", "Click timing"),
+        SkillId::S10HeadLevel => ("مستوى الرأس", "Head level"),
+        SkillId::S11DirectionalBalance => ("توازن الاتجاهات", "Directional balance"),
+        SkillId::S12CounterStrafe => ("الإيقاف قبل الإطلاق", "Counter-strafe"),
+        SkillId::S13Consistency => ("الثبات", "Consistency"),
+    };
+    if locale == Locale::Ar {
+        ar
+    } else {
+        en
+    }
+}
+
+/// A drill or test name for reports; unknown ids come back as written.
+pub fn drill_label(id: &str, locale: Locale) -> &str {
+    let names: Option<(&str, &str)> = match id {
+        "warmup" => Some(("إحماء", "Warm-up")),
+        "deceleration_ladder" => Some(("سلّم التخفيف", "Deceleration ladder")),
+        "commit_flick" => Some(("فليك كامل", "Commit flick")),
+        "consistency_grid" => Some(("شبكة الثبات", "Consistency grid")),
+        "micro_hold" => Some(("تثبيت دقيق", "Micro hold")),
+        "confirm_click" => Some(("نقر بعد الوصول", "Confirm click")),
+        "timed_kill" => Some(("قتل موقوت", "Timed kill")),
+        "head_level_hold" => Some(("ثبات مستوى الرأس", "Head level hold")),
+        "peek_line" => Some(("خط الظهور", "Peek line")),
+        "directional_flick" => Some(("فليك الاتجاهات", "Directional flick")),
+        "strafe_track_reactive" => Some(("تتبع strafe", "Reactive strafe")),
+        "smooth_track" => Some(("تتبع سلس", "Smooth track")),
+        "reflex_dot" => Some(("نقطة رد الفعل", "Reflex dot")),
+        "precision_first" => Some(("الدقة أولاً", "Precision first")),
+        "speed_push" => Some(("دفع السرعة", "Speed push")),
+        "cs_drill" => Some(("تمرين الإيقاف", "Counter-strafe drill")),
+        "practice" => Some(("جلسة مخصصة", "Custom session")),
+        "flick_static" => Some(("الفليك الثابت", "Static flick")),
+        "micro_precision" => Some(("الدقة الصغيرة", "Micro precision")),
+        "head_level_peeks" => Some(("الظهور على مستوى الرأس", "Head-level peeks")),
+        "strafe_track" => Some(("تتبع strafe", "Strafe tracking")),
+        "multi_switch" => Some(("التبديل بين الأهداف", "Target switching")),
+        "counter_strafe" => Some(("الإيقاف قبل الإطلاق", "Counter-strafe")),
+        _ => None,
+    };
+    match names {
+        Some((ar, _)) if locale == Locale::Ar => ar,
+        Some((_, en)) => en,
+        None => id,
     }
 }
 

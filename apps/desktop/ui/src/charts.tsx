@@ -140,6 +140,7 @@ export function ShotScatter({ flicks, hitLabel, missLabel }: { flicks: Flick[]; 
       <svg viewBox={`0 0 ${S} ${S}`} className="plot square" direction="ltr" role="img" aria-label="shot map">
         <line x1={C} x2={C} y1={0} y2={S} stroke={COLORS.grid} />
         <line x1={0} x2={S} y1={C} y2={C} stroke={COLORS.grid} />
+        {reach >= 2 && <circle cx={C} cy={C} r={2 * k} fill="none" stroke={COLORS.grid} strokeDasharray="4 4" />}
         <circle cx={C} cy={C} r={k} fill={COLORS.hit} fillOpacity={0.1} stroke={COLORS.hit} />
         {pts.map(({ f, x, y }) => {
           const off = Math.max(Math.abs(x), Math.abs(y)) > reach;
@@ -188,34 +189,6 @@ export function ReactionTimeline({ flicks, yLabel, hitLabel, missLabel }: { flic
             onMouseMove={(e) => tip.show(e, `${f.t_s.toFixed(1)} s · ${Math.round(value(f))} ms · ${f.hit ? hitLabel : missLabel}`)} onMouseLeave={tip.hide} />
         ))}
         <polyline points={rows.map((f, i) => `${x(f.t_s).toFixed(1)},${y(trend[i]).toFixed(1)}`).join(" ")} fill="none" stroke={COLORS.ink} strokeWidth={2} strokeLinejoin="round" />
-      </svg>
-      {tip.node}
-    </div>
-  );
-}
-
-export function DirectionWheel({ flicks, unit }: { flicks: Flick[]; unit: string }) {
-  const tip = useTip();
-  const S = 340, C = S / 2, R = C - 34;
-  const data = Array.from({ length: 8 }, (_, o) => {
-    const v = flicks.filter((f) => f.octant === o && f.time_to_hit_ms !== null).map((f) => f.time_to_hit_ms!).sort((a, b) => a - b);
-    return { o, n: v.length, med: v.length ? v[Math.floor(v.length / 2)] : 0 };
-  });
-  const max = Math.max(...data.map((d) => d.med), 1);
-  const slowest = data.reduce((a, b) => (b.med > a.med ? b : a));
-  const wedge = (o: number, r: number) => {
-    const mid = (o * Math.PI) / 4, h = Math.PI / 8 - 0.03;
-    const p = (a: number) => `${C + r * Math.cos(a)},${C - r * Math.sin(a)}`;
-    return `M${C},${C} L${p(mid - h)} A${r},${r} 0 0 0 ${p(mid + h)} Z`;
-  };
-  return (
-    <div className="chart">
-      <svg viewBox={`0 0 ${S} ${S}`} className="plot square" direction="ltr" role="img" aria-label="directions">
-        {[0.5, 1].map((f) => <circle key={f} cx={C} cy={C} r={R * f} fill="none" stroke={COLORS.grid} />)}
-        {data.map((d) => (
-          <path key={d.o} d={wedge(d.o, (d.med / max) * R)} fill={d === slowest && d.n ? COLORS.warn : COLORS.line} fillOpacity={0.75}
-            onMouseMove={(e) => tip.show(e, `${Math.round(d.med)} ${unit} · n=${d.n}`)} onMouseLeave={tip.hide} />
-        ))}
       </svg>
       {tip.node}
     </div>
@@ -317,5 +290,72 @@ export function Spark({ values }: { values: number[] }) {
     <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} direction="ltr" aria-hidden="true">
       <polyline points={pts} fill="none" stroke={COLORS.hit} strokeWidth={1.75} strokeLinejoin="round" />
     </svg>
+  );
+}
+
+export function ValueBars({ rows, max, unit }: { rows: { label: string; value: number; tip?: string }[]; max?: number; unit: string }) {
+  const tip = useTip();
+  const W = 920, H = 200, L = 40, B = 24, T = 14;
+  const top = max ?? niceMax(Math.max(...rows.map((r) => r.value), 1));
+  const y = (v: number) => H - B - (v / top) * (H - B - T);
+  const slot = (W - L - 10) / Math.max(rows.length, 1);
+  const bar = Math.min(slot * 0.6, 54);
+  return (
+    <div className="chart">
+      <svg viewBox={`0 0 ${W} ${H}`} className="plot" direction="ltr" role="img" aria-label={unit}>
+        {[0, 0.5, 1].map((f) => (
+          <g key={f}>
+            <line x1={L} x2={W - 10} y1={y(top * f)} y2={y(top * f)} stroke={COLORS.grid} />
+            <text x={L - 6} y={y(top * f) + 4} textAnchor="end" fill={COLORS.muted} fontSize={11}>{Math.round(top * f)}</text>
+          </g>
+        ))}
+        {rows.map((r, i) => {
+          const cx = L + slot * (i + 0.5);
+          return (
+            <g key={r.label}>
+              <rect x={cx - bar / 2} y={y(r.value)} width={bar} height={Math.max(H - B - y(r.value), 2)} rx={4} fill={COLORS.hit}
+                onMouseMove={(e) => tip.show(e, r.tip ?? `${r.value} ${unit}`)} onMouseLeave={tip.hide} />
+              <text x={cx} y={H - 7} textAnchor="middle" fill={COLORS.muted} fontSize={11}>{r.label}</text>
+            </g>
+          );
+        })}
+      </svg>
+      {tip.node}
+    </div>
+  );
+}
+
+export function TrendLine({ points, unit, better }: { points: { label: string; value: number }[]; unit: string; better: "up" | "down" }) {
+  const tip = useTip();
+  const W = 920, H = 240, L = 46, B = 26, T = 16;
+  if (points.length === 0) return null;
+  const values = points.map((p) => p.value);
+  const pad = Math.max((Math.max(...values) - Math.min(...values)) * 0.2, unit === "%" ? 5 : 15);
+  const lo = Math.max(0, Math.min(...values) - pad);
+  const hi = (unit === "%" ? Math.min(100, Math.max(...values) + pad) : Math.max(...values) + pad);
+  const x = (i: number) => (points.length === 1 ? (L + W) / 2 : L + (i / (points.length - 1)) * (W - L - 20));
+  const y = (v: number) => H - B - ((v - lo) / Math.max(hi - lo, 1e-6)) * (H - B - T);
+  const improved = points.length > 1 && (better === "up" ? values[values.length - 1] >= values[0] : values[values.length - 1] <= values[0]);
+  const color = points.length > 1 && !improved ? COLORS.warn : COLORS.hit;
+  return (
+    <div className="chart">
+      <svg viewBox={`0 0 ${W} ${H}`} className="plot" direction="ltr" role="img" aria-label={unit}>
+        {[lo, (lo + hi) / 2, hi].map((v) => (
+          <g key={v}>
+            <line x1={L} x2={W - 10} y1={y(v)} y2={y(v)} stroke={COLORS.grid} />
+            <text x={L - 6} y={y(v) + 4} textAnchor="end" fill={COLORS.muted} fontSize={11}>{Math.round(v)}</text>
+          </g>
+        ))}
+        <polyline points={points.map((p, i) => `${x(i)},${y(p.value)}`).join(" ")} fill="none" stroke={color} strokeWidth={2} strokeLinejoin="round" />
+        {points.map((p, i) => (
+          <g key={i}>
+            <circle cx={x(i)} cy={y(p.value)} r={5} fill={color} stroke="#12161b" strokeWidth={2}
+              onMouseMove={(e) => tip.show(e, `${p.label}: ${Math.round(p.value)} ${unit}`)} onMouseLeave={tip.hide} />
+            <text x={x(i)} y={H - 8} textAnchor="middle" fill={COLORS.muted} fontSize={11}>{p.label}</text>
+          </g>
+        ))}
+      </svg>
+      {tip.node}
+    </div>
   );
 }

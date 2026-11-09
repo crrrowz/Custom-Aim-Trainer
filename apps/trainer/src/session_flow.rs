@@ -223,6 +223,27 @@ fn drill_instructions(scenario_id: &str) -> Option<(&'static str, &'static str, 
     })
 }
 
+/// What the player sees at the top of the screen during a session.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HudNumbers {
+    pub remaining_s: f64,
+    pub hits: u32,
+    pub misses: u32,
+    pub total: u32,
+    pub tracking: bool,
+}
+
+pub fn hud_line(n: HudNumbers) -> String {
+    let left = n.remaining_s.ceil() as u32;
+    let clock = format!("{:02}:{:02}", left / 60, left % 60);
+    if n.tracking {
+        return clock;
+    }
+    let shots = n.hits + n.misses;
+    let accuracy = (n.hits * 100).checked_div(shots).unwrap_or(100);
+    format!("{clock}    {shots} / {}    {accuracy}%", n.total)
+}
+
 type Instructions = (&'static str, &'static str, &'static str);
 
 /// Scenario instructions in the player's language. Returns (title, line1, line2).

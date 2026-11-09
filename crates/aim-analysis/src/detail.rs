@@ -67,6 +67,8 @@ pub struct SessionDetail {
     pub tracking: Vec<TrackBin>,
     pub time_on_target: Option<f64>,
     pub tracking_radius_deg: Option<f64>,
+    /// Recorded before input and target clocks were aligned: timing numbers are meaningless.
+    pub timing_suspect: bool,
 }
 
 fn tracking_bins(session: &AftSession) -> Vec<TrackBin> {
@@ -110,6 +112,38 @@ fn tracking_bins(session: &AftSession) -> Vec<TrackBin> {
         }
     }
     bins
+}
+
+/// In one-at-a-time scenarios the next target only appears after the shot on the current one.
+/// When most hits land after the next spawn, the shots were recorded on a different clock.
+fn clocks_disagree(session: &AftSession) -> bool {
+    if session.header.scenario_id.contains("multi_switch") {
+        return false;
+    }
+    let mut targets: Vec<(u32, u64)> = session
+        .streams
+        .targets
+        .records
+        .iter()
+        .map(|t| (t.id, t.spawn_t_us))
+        .collect();
+    targets.sort_by_key(|t| t.1);
+    let (mut checked, mut late) = (0, 0);
+    for pair in targets.windows(2) {
+        let hit = session
+            .streams
+            .shots
+            .records
+            .iter()
+            .find(|s| s.hit_target_id == Some(pair[0].0));
+        if let Some(shot) = hit {
+            checked += 1;
+            if shot.t_us > pair[1].1 {
+                late += 1;
+            }
+        }
+    }
+    checked > 0 && late * 2 > checked
 }
 
 pub fn session_detail(session: &AftSession) -> SessionDetail {
@@ -191,6 +225,7 @@ pub fn session_detail(session: &AftSession) -> SessionDetail {
         .max()
         .unwrap_or(session_start);
     let paused: u64 = pauses.iter().map(|&(a, b)| b.saturating_sub(a)).sum();
+    let timing_suspect = clocks_disagree(session);
 
     SessionDetail {
         scenario_id: session.header.scenario_id.clone(),
@@ -198,13 +233,15 @@ pub fn session_detail(session: &AftSession) -> SessionDetail {
         targets: flicks.len(),
         hits,
         accuracy: (!flicks.is_empty()).then(|| hits as f64 / flicks.len() as f64),
-        median_reaction_ms: median(&values(&|f| f.reaction_ms.filter(|_| !f.anticipated))),
-        median_time_to_hit_ms: median(&values(&|f| f.time_to_hit_ms)),
+        median_reaction_ms: median(&values(&|f| f.reaction_ms.filter(|_| !f.anticipated)))
+            .filter(|_| !timing_suspect),
+        median_time_to_hit_ms: median(&values(&|f| f.time_to_hit_ms)).filter(|_| !timing_suspect),
         median_gain: median(&values(&|f| f.gain)),
         paused_s: paused as f64 / 1e6,
         flicks,
         tracking,
         time_on_target,
+        timing_suspect,
         tracking_radius_deg: session
             .streams
             .targets

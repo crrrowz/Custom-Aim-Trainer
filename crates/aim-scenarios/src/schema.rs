@@ -148,6 +148,9 @@ pub struct DrillRules {
     /// A/D movement is active and a hit does not count while moving.
     #[serde(default)]
     pub counter_strafe: bool,
+    /// Directions outside the allowed area are skipped instead of rejecting the scenario.
+    #[serde(default)]
+    pub clip_to_area: bool,
 }
 
 /// Complete scenario specification.
@@ -190,13 +193,16 @@ impl Scenario {
             _ => {}
         }
 
-        if let TargetLayout::ConcurrentCluster {
-            distance_bins_deg,
-            octants,
-            max_yaw_deg,
-            max_pitch_deg,
-            ..
-        } = &self.layout
+        if let (
+            false,
+            TargetLayout::ConcurrentCluster {
+                distance_bins_deg,
+                octants,
+                max_yaw_deg,
+                max_pitch_deg,
+                ..
+            },
+        ) = (self.rules.clip_to_area, &self.layout)
         {
             for &dist in distance_bins_deg {
                 for oct in 0..*octants {

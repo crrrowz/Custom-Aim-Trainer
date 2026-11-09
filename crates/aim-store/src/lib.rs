@@ -118,6 +118,22 @@ mod tests {
     }
 
     #[test]
+    fn saved_data_is_still_there_after_reopening() {
+        let path = std::env::temp_dir().join(format!("aimforge-store-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let s = Store::open(&path).unwrap();
+            s.set("a", &7_u32).unwrap();
+            s.add_assessment(1, &"first").unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.get::<u32>("a").unwrap(), Some(7));
+        assert_eq!(s.assessments::<String>().unwrap().len(), 1);
+        drop(s);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn assessments_keep_their_order() {
         let s = Store::in_memory().unwrap();
         s.add_assessment(1, &"first").unwrap();

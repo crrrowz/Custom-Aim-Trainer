@@ -47,12 +47,12 @@ export function TargetPreview({ c }: { c: CustomTargets }) {
       };
 
       if (s.mode === "track") {
-        dot(cx + project(Math.sin(t * 0.7) * 22, w / 2), cy + project(Math.sin(t * 1.1) * 7, w / 2));
+        dot(cx + project(Math.sin(t * 0.7) * s.area_h_deg, w / 2), cy + project(Math.sin(t * 1.1) * s.area_v_deg, w / 2));
       } else if (s.mode === "strafe") {
-        const period = Math.max(30 / s.speed_deg_s, 0.3);
+        const period = Math.max(s.reversal_s, 0.25);
         const phase = (t % (period * 2)) / period;
         const tri = phase < 1 ? phase : 2 - phase;
-        dot(cx + project((tri - 0.5) * 30, w / 2), cy);
+        dot(cx + project((tri - 0.5) * 2 * Math.min(s.area_h_deg, s.speed_deg_s * period), w / 2), cy);
       } else if (s.mode === "peek") {
         const wall = project(25, w / 2);
         const out = Math.max(0, Math.sin(t * 1.6)) * r * 4;
@@ -78,7 +78,9 @@ export function TargetPreview({ c }: { c: CustomTargets }) {
         for (let i = 0; i < count; i++) {
           const a = seedAngles[(i + beat) % seedAngles.length] + beat * 1.3;
           const d = lo + ((hi - lo) * ((Math.sin(beat * 2.1 + i) + 1) / 2));
-          dot(cx + Math.cos(a) * project(d, w / 2), cy + Math.sin(a) * project(d, w / 2) * 0.7);
+          const limitX = project(s.mode === "multi" ? s.area_h_deg : 90, w / 2);
+          const limitY = project(s.mode === "multi" ? s.area_v_deg : 90, w / 2);
+          dot(cx + Math.max(-limitX, Math.min(limitX, Math.cos(a) * project(d, w / 2))), cy + Math.max(-limitY, Math.min(limitY, Math.sin(a) * project(d, w / 2))));
         }
       }
 

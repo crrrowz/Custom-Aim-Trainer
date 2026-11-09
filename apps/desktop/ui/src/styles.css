@@ -203,7 +203,39 @@ input[type="range"] { width: 100%; padding: 0; background: none; border: 0; acce
 @keyframes fade { to { opacity: .5; } }
 @media (prefers-reduced-motion: reduce) { .pulse, .skeleton { animation: none; } }
 
+.days-strip { margin-bottom: 4px; }
+.session-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+.session-card { display: flex; flex-direction: column; gap: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px; text-align: start; cursor: pointer; transition: border-color .12s; }
+.session-card:hover { border-color: var(--accent); }
+.session-card .row { flex-wrap: nowrap; }
+.session-card .tag { align-self: flex-start; }
+.big-num { font-size: 32px; font-weight: 600; font-family: Inter, sans-serif; font-variant-numeric: tabular-nums; line-height: 1.1; direction: ltr; text-align: start; }
+.meter.wide { width: 100%; display: block; }
+.bar-cell { display: flex; align-items: center; gap: 10px; }
+.bar-cell b { min-width: 62px; text-align: end; font-variant-numeric: tabular-nums; }
+.dir-table td:first-child { white-space: nowrap; }
+.split-2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.scope-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.scope-cards button { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; text-align: start; cursor: pointer; display: flex; flex-direction: column; gap: 4px; transition: border-color .12s; }
+.scope-cards button:hover:not(:disabled) { border-color: var(--accent); }
+.scope-cards button:disabled { opacity: .55; cursor: not-allowed; }
+.reports { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 12px; align-items: start; }
+.report-list { max-height: 620px; overflow-y: auto; padding: 12px; }
+.report-list button { display: block; width: 100%; background: none; border: 0; text-align: start; padding: 9px 10px; border-radius: 7px; cursor: pointer; }
+.report-list button:hover { background: var(--raised); }
+.report-list button.on { background: var(--raised); }
+.report .lead { font-size: 16px; margin: 12px 0 18px; }
+.report h2 { margin-top: 20px; }
+.ticks, .next { margin: 6px 0; padding-inline-start: 20px; }
+.ticks li, .next li { margin-bottom: 4px; }
+.toggle-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
+.spaced { margin-top: 14px; }
+textarea { background: var(--raised); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; font: inherit; resize: vertical; }
+code { font-size: 12px; word-break: break-all; color: var(--text); }
+
 @media (max-width: 1020px) {
+  .reports, .split-2 { grid-template-columns: minmax(0, 1fr); }
+
   .bento .hero, .bento .problems, .bento .recent, .bento .radar, .bento .score { grid-column: span 6; grid-row: auto; }
   .builder, .split, .replay { grid-template-columns: minmax(0, 1fr); }
   .modes, .drills { grid-template-columns: repeat(2, minmax(0, 1fr)); }

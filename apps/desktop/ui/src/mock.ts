@@ -1,5 +1,5 @@
 // Browser-only stand-in for the Rust backend, so the screens can be worked on without the game.
-import type { ChatAnswer, Detail, Flick, Settings, Skill, View } from "./api";
+import type { CoachConfig, CoachReport, Detail, Flick, SessionCard, Settings, Skill, View } from "./api";
 
 const rows: [string, number, number, number, number, Skill["reliability"]][] = [
   ["S01Reaction", 244, 53, 47, 58, "High"],
@@ -32,7 +32,7 @@ const now = Date.now();
 let view: View = {
   settings: {
     onboarded: true, dpi: 800, sens: 0.35, locale: "ar", windowed: false, test_mode: true,
-    ai_provider: "template", ai_base_url: "http://localhost:11434/v1", ai_model: "llama3.2",
+    ai_provider: "template", ai_base_url: "", ai_model: "",
   },
   today: 20400, cm360: 46.6, trainer_found: true, claude_key_found: false,
   latest: assessment(6, now - 3600e3),
@@ -54,6 +54,11 @@ let view: View = {
     ],
   },
   block_result: null,
+  sessions: [],
+  reports: [],
+  ai_keys_set: [],
+  coach_config_path: "C:\\Users\\you\\AppData\\Roaming\\com.aimforge.desktop\\coach_config.json",
+  notice: null,
   practice: [
     { day: 20400, name: "warmup", hit_rate: 0.88, difficulty: 0.32, at_ms: now - 7200e3, file: "a.aft", mode: null },
     { day: 20400, name: "custom", hit_rate: 0.64, difficulty: null, at_ms: now - 5400e3, file: "b.aft", mode: "flick" },
@@ -96,19 +101,45 @@ const detail = (path: string): Detail => {
     median_reaction_ms: tracking ? null : 214, median_time_to_hit_ms: tracking ? null : 561,
     median_gain: tracking ? null : 1.12, paused_s: 0, flicks,
     tracking: tracking ? Array.from({ length: 180 }, (_, i) => ({ t_s: i * 0.25, error_deg: 0.7 + 0.4 * Math.sin(i / 7) + 0.2 * Math.sin(i * 1.3), on_target: 0.5 })) : [],
-    time_on_target: tracking ? 0.46 : null, tracking_radius_deg: tracking ? 0.6 : null,
+    time_on_target: tracking ? 0.46 : null, tracking_radius_deg: tracking ? 0.6 : null, timing_suspect: false,
   };
 };
 
+const names = ["assess.v1.flick_static", "drill.confirm_click", "custom.practice", "assess.v1.smooth_track", "drill.deceleration_ladder"];
+view.sessions = Array.from({ length: 22 }, (_, i): SessionCard => ({
+  path: names[i % 5].includes("track") ? `${i}-track.aft` : `${i}.aft`,
+  at_ms: now - i * 0.45 * 3600e3 - (i > 13 ? 86400e3 : 0),
+  assessment: names[i % 5].startsWith("assess"),
+  scenario: names[i % 5],
+  targets: names[i % 5].includes("track") ? 0 : 48,
+  hits: names[i % 5].includes("track") ? 0 : 40 - i,
+  accuracy: names[i % 5].includes("track") ? null : (40 - i) / 48,
+  median_reaction_ms: names[i % 5].includes("track") ? null : 230 + i * 3,
+  median_time_to_hit_ms: names[i % 5].includes("track") ? null : 540 + i * 6,
+  time_on_target: names[i % 5].includes("track") ? 0.46 : null,
+  duration_s: 70,
+  timing_suspect: false,
+}));
+
+let config: CoachConfig = { player_settings: true, skills: true, findings: true, recent_sessions: true, session_limit: 30, directions: true, plan: true, block_result: true, extra_instructions: "" };
+
 export async function mockCall<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (command === "session_detail") return detail(args!.path as string) as T;
+  if (command === "get_coach_config") return config as T;
+  if (command === "save_coach_config") { config = args!.config as CoachConfig; return undefined as T; }
+  if (command === "test_ai") return "ok" as T;
   if (command === "save_settings") view = { ...view, settings: args!.settings as Settings };
-  if (command === "ask_coach") {
-    const answer: ChatAnswer = {
-      reply: { headline: "نقر متسرّع", explanation: "تطلق قبل الوصول، فتضيع الرصاصة الأولى.", tips: ["confirm_click"], next_step: "ابدأ جلسة اليوم من صفحة الخطة." },
-      source: "template", note: null,
+  if (command === "generate_report") {
+    const report: CoachReport = {
+      at_ms: Date.now(), scope: args!.scope as string, sessions: 22, source: "built-in", note: null,
+      reply: {
+        summary: "راجعت 22 جلسة. دقتك بالمعدل 61%، وتحسنت بـ 8 نقطة بالجلسات الأخيرة.",
+        strengths: ["مستوى الرأس: درجتك 74", "التتبع التفاعلي: درجتك 64"],
+        weaknesses: [{ title: "نقر متسرّع (توقيت النقر)", detail: "تطلق قبل الوصول، فتضيع الرصاصة الأولى.", fix: "تمرين: نقر بعد الوصول" }],
+        next_steps: ["نقر بعد الوصول", "سلّم التخفيف"],
+      },
     };
-    return answer as T;
+    view = { ...view, reports: [report, ...view.reports] };
   }
   return view as T;
 }

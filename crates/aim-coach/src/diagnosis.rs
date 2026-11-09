@@ -238,3 +238,95 @@ pub fn diagnose(profile: &SkillProfile) -> Vec<Finding> {
     findings.truncate(MAX_SHOWN);
     findings
 }
+
+/// The drill that trains a skill most directly.
+pub fn drill_for(skill: SkillId) -> &'static str {
+    match skill {
+        SkillId::S01Reaction => "reflex_dot",
+        SkillId::S02FlickSpeed => "speed_push",
+        SkillId::S03FlickPrecision => "precision_first",
+        SkillId::S04GainControl => "deceleration_ladder",
+        SkillId::S05MicroCorrection => "micro_hold",
+        SkillId::S06TrackSmooth => "smooth_track",
+        SkillId::S07TrackReactive => "strafe_track_reactive",
+        SkillId::S08TargetSwitch => "consistency_grid",
+        SkillId::S09ClickTiming => "confirm_click",
+        SkillId::S10HeadLevel => "head_level_hold",
+        SkillId::S11DirectionalBalance => "directional_flick",
+        SkillId::S12CounterStrafe => "cs_drill",
+        SkillId::S13Consistency => "consistency_grid",
+    }
+}
+
+/// What a training block focuses on: the diagnosed problems, topped up with the weakest measured
+/// skills so a player with no confirmed problem still trains something real.
+pub fn plan_focus(profile: &SkillProfile, findings: &[Finding]) -> Vec<Finding> {
+    let mut focus = findings.to_vec();
+    let mut skills: Vec<_> = profile.skills.iter().collect();
+    skills.sort_by(|a, b| a.score.total_cmp(&b.score));
+    for s in skills {
+        if focus.len() >= 2 {
+            break;
+        }
+        if focus.iter().any(|f| f.skill == s.skill) {
+            continue;
+        }
+        focus.push(Finding {
+            id: format!("W_{:?}", s.skill),
+            skill: s.skill,
+            severity: (100.0 - s.score) / 100.0,
+            priority: 0.0,
+            evidence: vec![("score".to_string(), s.score)],
+            drills: drills(&[drill_for(s.skill)]),
+        });
+    }
+    focus
+}
+
+/// Maintenance keeps the player's strongest skill sharp.
+pub fn maintenance_drill(profile: &SkillProfile, focus: &[Finding]) -> &'static str {
+    profile
+        .skills
+        .iter()
+        .filter(|s| !focus.iter().any(|f| f.skill == s.skill))
+        .max_by(|a, b| a.score.total_cmp(&b.score))
+        .map_or("consistency_grid", |s| drill_for(s.skill))
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+    use aim_analysis::{Evidence, SkillEstimate};
+
+    fn profile(scores: &[(SkillId, f64)]) -> SkillProfile {
+        SkillProfile {
+            norms_version: "t".to_string(),
+            evidence: Evidence::default(),
+            skills: scores
+                .iter()
+                .map(|&(skill, score)| SkillEstimate {
+                    skill,
+                    raw: 0.0,
+                    score,
+                    ci95: (score, score),
+                    n_evidence: 10,
+                    reliability: Reliability::High,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn no_findings_still_trains_the_weakest_skills() {
+        let p = profile(&[
+            (SkillId::S01Reaction, 80.0),
+            (SkillId::S09ClickTiming, 20.0),
+            (SkillId::S04GainControl, 30.0),
+        ]);
+        let f = plan_focus(&p, &[]);
+        assert_eq!(f.len(), 2);
+        assert_eq!(f[0].drills[0], "confirm_click");
+        assert_eq!(f[1].drills[0], "deceleration_ladder");
+        assert_eq!(maintenance_drill(&p, &f), "reflex_dot");
+    }
+}

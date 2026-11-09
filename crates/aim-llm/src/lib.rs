@@ -108,13 +108,23 @@ impl LlmProvider for AnthropicProvider {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Weakness {
+    pub title: String,
+    pub detail: String,
+    #[serde(default)]
+    pub fix: String,
+}
+
+/// A coach report: the coach reads the player's data and writes this, the player does not chat.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CoachReply {
-    pub headline: String,
-    pub explanation: String,
+    pub summary: String,
     #[serde(default)]
-    pub tips: Vec<String>,
+    pub strengths: Vec<String>,
     #[serde(default)]
-    pub next_step: String,
+    pub weaknesses: Vec<Weakness>,
+    #[serde(default)]
+    pub next_steps: Vec<String>,
 }
 
 const EASTERN_DIGITS: [char; 10] = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
@@ -179,35 +189,38 @@ fn extract_json(text: &str) -> Option<&str> {
 }
 
 const SYSTEM_PROMPT: &str = "You are the coach inside AimForge, an aim trainer for VALORANT players. \
-You receive measurements that are already final. Explain them in plain, encouraging language and connect \
-them to real rounds (peeks, holds, retakes). Write in the language named by \"locale\". \
-Use only numbers that appear in the data, and never invent a score or a diagnosis. If the data does not \
-answer the question, say so. Reply with one JSON object and nothing else, with the keys \"headline\" \
-(string), \"explanation\" (string), \"tips\" (array of strings), \"next_step\" (string).";
+You receive measurements that are already final. Study them and write a report: what the player does well, \
+what is holding them back and why, and exactly what to practise next, connected to real rounds (peeks, \
+holds, retakes). Write in the language named by \"locale\". Use only numbers that appear in the data, and \
+never invent a score or a problem. If the data is too thin to judge something, say so. Reply with one JSON \
+object and nothing else, with the keys \"summary\" (string), \"strengths\" (array of strings), \
+\"weaknesses\" (array of objects with \"title\", \"detail\", \"fix\"), \"next_steps\" (array of strings).";
 
-/// Asks the model and validates the reply. `Err` means the caller should show the fixed template.
-pub fn narrate(
+/// Asks the model for a report and validates it. `Err` means the caller should show the built-in report.
+pub fn write_report(
     provider: &dyn LlmProvider,
     input: &Value,
-    question: Option<&str>,
+    extra_instructions: &str,
 ) -> Result<CoachReply, LlmError> {
-    let user = match question {
-        Some(q) => format!("Data:\n{input}\n\nThe player asks: {q}"),
-        None => format!("Data:\n{input}\n\nExplain these results and what to do next."),
+    let system = if extra_instructions.trim().is_empty() {
+        SYSTEM_PROMPT.to_string()
+    } else {
+        format!("{SYSTEM_PROMPT}\n\n{extra_instructions}")
     };
-    let text = provider.complete(SYSTEM_PROMPT, &user)?;
+    let text = provider.complete(&system, &format!("Data:\n{input}"))?;
     let json_text =
         extract_json(&text).ok_or_else(|| LlmError::NoAnswer("no JSON in reply".to_string()))?;
     let reply: CoachReply = serde_json::from_str(json_text)
         .map_err(|e| LlmError::NoAnswer(format!("wrong reply shape: {e}")))?;
-
-    let all_text = format!(
-        "{} {} {} {}",
-        reply.headline,
-        reply.explanation,
-        reply.tips.join(" "),
-        reply.next_step
+    let mut all_text = format!(
+        "{} {} {}",
+        reply.summary,
+        reply.strengths.join(" "),
+        reply.next_steps.join(" ")
     );
+    for w in &reply.weaknesses {
+        all_text.push_str(&format!(" {} {} {}", w.title, w.detail, w.fix));
+    }
     if !numbers_are_grounded(&all_text, input) {
         return Err(LlmError::NoAnswer(
             "the reply used a number that is not in your data".to_string(),
@@ -249,18 +262,19 @@ mod tests {
 
     #[test]
     fn a_valid_reply_inside_extra_text_is_accepted() {
-        let p = Fixed(r#"Sure: {"headline":"h","explanation":"up 14","tips":[],"next_step":"n"}"#);
-        assert_eq!(narrate(&p, &input(), None).unwrap().explanation, "up 14");
+        let p =
+            Fixed(r#"Sure: {"summary":"up 14","strengths":[],"weaknesses":[],"next_steps":[]}"#);
+        assert_eq!(write_report(&p, &input(), "").unwrap().summary, "up 14");
     }
 
     #[test]
     fn a_reply_with_an_invented_number_is_rejected() {
-        let p = Fixed(r#"{"headline":"h","explanation":"up 99","tips":[],"next_step":"n"}"#);
-        assert!(narrate(&p, &input(), None).is_err());
+        let p = Fixed(r#"{"summary":"up 99","weaknesses":[]}"#);
+        assert!(write_report(&p, &input(), "").is_err());
     }
 
     #[test]
     fn plain_text_is_rejected() {
-        assert!(narrate(&Fixed("hello"), &input(), None).is_err());
+        assert!(write_report(&Fixed("hello"), &input(), "").is_err());
     }
 }

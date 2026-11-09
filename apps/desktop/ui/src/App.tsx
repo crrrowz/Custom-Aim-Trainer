@@ -1,6 +1,6 @@
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { call, type ChatAnswer, type CustomTargets, type Detail, type Flick, type Plan, type Settings, type View } from "./api";
-import { AimPath, DirectionWheel, ReactionTimeline, ShotScatter, SkillLines, SkillRadar, Spark, SpeedChart, TrackingChart, type Series } from "./charts";
+import { call, type CoachConfig, type CustomTargets, type Detail, type Flick, type Plan, type SessionCard, type Settings, type View } from "./api";
+import { AimPath, ReactionTimeline, SERIES, ShotScatter, SkillLines, SkillRadar, Spark, SpeedChart, TrackingChart, TrendLine, ValueBars, type Series } from "./charts";
 import { drillInfo, drillNames, evidenceNames, groupNames, scenarioNames, skillNames, type DrillInfo, type Lang } from "./i18n";
 import { TargetPreview } from "./Preview";
 
@@ -22,27 +22,9 @@ const NAV: [Tab, string, string, string][] = [
   ["progress", "التقدم", "Progress", "M3 17l6-6 4 4 8-9M21 6v5m0-5h-5"],
   ["plan", "الخطة", "Plan", "M5 4h14v17H5zM8 2v4m8-4v4M5 10h14"],
   ["practice", "التدريب الحر", "Free practice", "M12 3v4m0 10v4M3 12h4m10 0h4M12 8a4 4 0 100 8 4 4 0 000-8z"],
-  ["coach", "المدرب", "Coach", "M4 5h16v11H9l-5 4z"],
+  ["coach", "تقارير المدرب", "Coach reports", "M6 3h9l4 4v14H6zM9 12h7M9 16h7M9 8h3"],
   ["settings", "الإعدادات", "Settings", "M4 7h10m4 0h2M4 17h2m4 0h10M14 5v4m-4 6v4"],
 ];
-
-interface Recording { key: string; path: string; title: string; when: number; group: string }
-
-function recordingsOf(view: View, lang: Lang, T: Ctx["T"]): Recording[] {
-  const out: Recording[] = [];
-  view.history.forEach((a, n) => {
-    for (const path of a.files ?? []) {
-      const m = path.match(/assess\.v1\.([a-z_]+)\.aft$/);
-      const scenario = m?.[1] ?? "";
-      if (scenario === "warmup") continue;
-      out.push({ key: path, path, title: pick(scenarioNames[scenario], lang, scenario), when: a.at_ms ?? 0, group: `${T("تقييم", "Assessment")} ${n + 1}` });
-    }
-  });
-  for (const p of view.practice) {
-    if (p.file) out.push({ key: p.file, path: p.file, title: pick(drillNames[p.name], lang, p.name), when: p.at_ms ?? 0, group: T("تدريب", "Training") });
-  }
-  return out.sort((a, b) => b.when - a.when);
-}
 
 const whenText = (ms: number, lang: Lang) =>
   ms ? new Date(ms).toLocaleString(lang === "ar" ? "ar-IQ" : "en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
@@ -100,6 +82,8 @@ export function App() {
       <main>
         {!view.trainer_found && <div className="banner">{T("ما لكينا برنامج اللعبة. ابنيه بـ: cargo build --release -p trainer", "Game program not found. Build it with: cargo build --release -p trainer")}</div>}
         {error && <div className="banner err">{T("صار خطأ", "Something went wrong")}: {error}</div>}
+        {view.notice === "stopped" && <div className="banner">{T("طلعت قبل ما ينسجل شي، فما انحسبت هذي المرة.", "You left before anything was recorded, so this one did not count.")}</div>}
+        {view.notice === "incomplete" && <div className="banner">{T("التقييم ما كمل. نتائجك انحفظت بالتحليل، بس الخطة تحتاج كل الاختبارات الثمانية.", "The assessment was not finished. Your results are in Analysis, but a plan needs all eight tests.")}</div>}
         <ScreenGuard key={tab} message={T("هذي الصفحة واجهت خطأ. الصفحات الثانية تشتغل عادي.", "This page hit an error. The other pages still work.")} retry={T("أعد المحاولة", "Try again")}>
           {tab === "home" && <Home ctx={ctx} />}
           {tab === "analysis" && <Analysis ctx={ctx} initial={recording} />}
@@ -192,7 +176,7 @@ function Home({ ctx }: { ctx: Ctx }) {
   const { view, T, act, go, lang } = ctx;
   const overall = overallOf(view.latest);
   const prev = view.history.length > 1 ? overallOf(view.history[view.history.length - 2]) : null;
-  const recordings = recordingsOf(view, lang, T).slice(0, 5);
+  const recent = view.sessions.slice(0, 5);
   const plan = view.plan;
   const active = plan && typeof plan.state === "object" && "Active" in plan.state ? plan.state.Active : null;
   const retest = plan && typeof plan.state === "object" && "AwaitingRetest" in plan.state;
@@ -245,10 +229,11 @@ function Home({ ctx }: { ctx: Ctx }) {
         </section>
         <section className="card recent">
           <span className="label">{T("آخر الجلسات", "Recent sessions")}</span>
-          {recordings.length === 0 && <Empty text={T("جلساتك تتسجل هنا.", "Your sessions appear here.")} />}
-          {recordings.map((r) => (
-            <button className="line" key={r.key} onClick={() => go("analysis", r.path)}>
-              <span><b>{r.title}</b><small>{r.group} · {whenText(r.when, lang)}</small></span>
+          {recent.length === 0 && <Empty text={T("جلساتك تتسجل هنا.", "Your sessions appear here.")} />}
+          {recent.map((r) => (
+            <button className="line" key={r.path} onClick={() => go("analysis", r.path)}>
+              <span><b>{scenarioTitle(r.scenario, lang)}</b><small>{whenText(r.at_ms, lang)}</small></span>
+              <b dir="ltr">{pct(sessionScore(r))}</b>
               <span className="chev">›</span>
             </button>
           ))}
@@ -277,98 +262,234 @@ function flickNote(f: Flick, T: Ctx["T"]): string {
   return T("الحركة الأولى وصلت قريب من الهدف.", "First movement landed close to the target.");
 }
 
+const dayKey = (ms: number) => {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+function scenarioTitle(id: string, lang: Lang): string {
+  const key = id.split(".").pop() ?? id;
+  if (id.startsWith("assess.")) return pick(scenarioNames[key], lang, key);
+  if (id.startsWith("custom.")) return pick(drillNames.custom, lang, key);
+  return pick(drillNames[key], lang, key);
+}
+
+const avg = (v: number[]) => (v.length ? v.reduce((a, b) => a + b, 0) / v.length : null);
+const pct = (v: number | null | undefined) => (v === null || v === undefined ? "—" : `${Math.round(v * 100)}%`);
+const ms = (v: number | null | undefined) => (v === null || v === undefined ? "—" : `${Math.round(v)} ms`);
+const sessionScore = (c: SessionCard) => c.accuracy ?? c.time_on_target;
+
 function Analysis({ ctx, initial }: { ctx: Ctx; initial?: string }) {
   const { view, T, lang, go } = ctx;
-  const recordings = useMemo(() => recordingsOf(view, lang, T), [view, lang]);
-  const [path, setPath] = useState(initial ?? recordings[0]?.path);
-  const [detail, setDetail] = useState<Detail | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [view2, setView2] = useState<"replay" | "timeline" | "map" | "dirs">("replay");
+  const days = useMemo(() => [...new Set(view.sessions.map((s) => dayKey(s.at_ms)))], [view.sessions]);
+  const [open, setOpen] = useState<SessionCard | null>(() => view.sessions.find((s) => s.path === initial) ?? null);
+  const [day, setDay] = useState(() => (open ? dayKey(open.at_ms) : days[0]));
 
-  useEffect(() => {
-    if (!path) return;
-    setDetail(null);
-    setError(null);
-    call<Detail>("session_detail", { path }).then(setDetail, (e) => setError(String(e)));
-  }, [path]);
-
-  if (recordings.length === 0) {
+  if (view.sessions.length === 0) {
     return (
       <>
         <PageHead title={T("التحليل", "Analysis")} />
-        <Empty text={T("بعد أول جلسة تشوف هنا كل حركة سويتها: مسار المؤشر، السرعة، ووين نزلت طلقاتك.", "After your first session you will see every movement here: crosshair path, speed, and where your shots landed.")} action={<button className="btn" onClick={() => go("home")}>{T("ابدأ", "Get started")}</button>} />
+        <Empty text={T("بعد أول جلسة تشوف هنا كل يوم تدريب وكل حركة سويتها.", "After your first session you will see every training day and every movement here.")} action={<button className="btn" onClick={() => go("home")}>{T("ابدأ", "Get started")}</button>} />
       </>
     );
   }
+  if (open) return <SessionView key={open.path} card={open} ctx={ctx} back={() => setOpen(null)} />;
 
-  const isTracking = detail ? detail.tracking.length > 0 : false;
-  const tabs: [typeof view2, string][] = [["replay", T("إعادة الحركة", "Aim replay")], ["timeline", T("عبر الجلسة", "Over the session")], ["map", T("خريطة الطلقات", "Shot map")], ["dirs", T("الاتجاهات", "Directions")]];
+  const today = dayKey(Date.now());
+  const yesterday = dayKey(Date.now() - 86400000);
+  const dayName = (d: string) => (d === today ? T("اليوم", "Today") : d === yesterday ? T("أمس", "Yesterday") : new Date(`${d}T12:00`).toLocaleDateString(lang === "ar" ? "ar-IQ" : "en-GB", { day: "numeric", month: "short" }));
+  const cards = view.sessions.filter((s) => dayKey(s.at_ms) === day);
+  const scored = cards.map(sessionScore).filter((v): v is number => v !== null);
+  const reactions = cards.map((c) => c.median_reaction_ms).filter((v): v is number => v !== null);
+  const hits = cards.reduce((a, c) => a + c.hits, 0);
+  const seconds = cards.reduce((a, c) => a + c.duration_s, 0);
+  const hours = new Map<number, number[]>();
+  for (const c of cards) {
+    const v = sessionScore(c);
+    if (v === null) continue;
+    const h = new Date(c.at_ms).getHours();
+    hours.set(h, [...(hours.get(h) ?? []), v]);
+  }
+  const hourly = [...hours.entries()].sort((a, b) => a[0] - b[0]).map(([h, v]) => ({ label: `${String(h).padStart(2, "0")}:00`, value: Math.round(avg(v)! * 100), n: v.length }));
+  let hourNote = "";
+  if (hourly.length >= 2) {
+    const [a, b] = [hourly[hourly.length - 2], hourly[hourly.length - 1]];
+    const d = b.value - a.value;
+    hourNote = d === 0
+      ? T(`مستواك بـ ${b.label} نفس ${a.label}.`, `${b.label} matched ${a.label}.`)
+      : T(`${d > 0 ? "تحسنت" : "نزلت"} ${Math.abs(d)} نقطة بين ${a.label} و ${b.label}.`, `${d > 0 ? "Up" : "Down"} ${Math.abs(d)} points from ${a.label} to ${b.label}.`);
+  }
 
   return (
     <>
-      <PageHead title={T("التحليل", "Analysis")}>
-        <select aria-label={T("الجلسة", "Session")} value={path} onChange={(e) => setPath(e.target.value)}>
-          {recordings.map((r) => <option key={r.key} value={r.path}>{r.group} · {r.title} · {whenText(r.when, lang)}</option>)}
-        </select>
+      <PageHead title={T("التحليل", "Analysis")} sub={T("اختار يوم، وافتح أي جلسة حتى تشوف تفاصيلها.", "Pick a day and open any session for its details.")} />
+      <div className="chips days-strip">
+        {days.slice(0, 14).map((d) => <button key={d} className={d === day ? "on" : ""} onClick={() => setDay(d)}>{dayName(d)}</button>)}
+      </div>
+      <div className="stats">
+        <Stat value={String(cards.length)} label={T("جلسات", "Sessions")} />
+        <Stat value={pct(avg(scored))} label={T("معدل الدقة", "Average accuracy")} />
+        <Stat value={ms(avg(reactions))} label={T("معدل رد الفعل", "Average reaction")} />
+        <Stat value={String(hits)} label={T("أهداف أصبتها", "Targets hit")} hint={`${Math.round(seconds / 60)} ${T("دقيقة تدريب", "minutes trained")}`} />
+      </div>
+      {hourly.length > 0 && (
+        <section className="card">
+          <h2>{T("مستواك خلال اليوم", "Your level through the day")}</h2>
+          {hourNote && <p className="muted small">{hourNote}</p>}
+          <ValueBars rows={hourly.map((h) => ({ label: h.label, value: h.value, tip: `${h.value}% · ${h.n} ${T("جلسة", "sessions")}` }))} max={100} unit="%" />
+        </section>
+      )}
+      <h2 className="group">{T("جلسات هذا اليوم", "Sessions this day")}</h2>
+      <div className="session-grid">
+        {cards.map((c) => (
+          <button key={c.path} className="session-card" onClick={() => setOpen(c)}>
+            <span className="row between">
+              <b>{scenarioTitle(c.scenario, lang)}</b>
+              <small>{new Date(c.at_ms).toLocaleTimeString(lang === "ar" ? "ar-IQ" : "en-GB", { hour: "2-digit", minute: "2-digit" })}</small>
+            </span>
+            <span className="big-num">{pct(sessionScore(c))}</span>
+            <span className="meter wide"><i style={{ width: `${Math.round((sessionScore(c) ?? 0) * 100)}%`, background: "var(--accent)" }} /></span>
+            <span className="row between small muted">
+              <span>{c.targets > 0 ? `${c.hits}/${c.targets} ${T("هدف", "targets")}` : T("تتبع", "Tracking")}</span>
+              <span dir="ltr">{ms(c.median_reaction_ms)}</span>
+            </span>
+            {c.assessment && <span className="tag good">{T("تقييم", "Assessment")}</span>}
+            {c.timing_suspect && <span className="tag warn">{T("نسخة قديمة، الأوقات غير دقيقة", "Old recording, timing unreliable")}</span>}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
+const DIRECTION_NAMES: [string, string, string][] = [
+  ["يمين", "Right", "→"], ["يمين فوق", "Up-right", "↗"], ["فوق", "Up", "↑"], ["يسار فوق", "Up-left", "↖"],
+  ["يسار", "Left", "←"], ["يسار جوه", "Down-left", "↙"], ["جوه", "Down", "↓"], ["يمين جوه", "Down-right", "↘"],
+];
+
+function SessionView({ card, ctx, back }: { card: SessionCard; ctx: Ctx; back: () => void }) {
+  const { T, lang } = ctx;
+  const [detail, setDetail] = useState<Detail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<"replay" | "trend" | "map" | "dirs">("replay");
+
+  useEffect(() => {
+    call<Detail>("session_detail", { path: card.path }).then(setDetail, (e) => setError(String(e)));
+  }, [card.path]);
+
+  const flicks = detail?.flicks.filter((f) => f.path.length > 0) ?? [];
+  const isTracking = detail ? detail.tracking.length > 0 : false;
+  const tabs: [typeof tab, string][] = [["replay", T("إعادة الحركة", "Aim replay")], ["trend", T("أداؤك خلال الجلسة", "During the session")], ["map", T("وين نزلت طلقاتك", "Where shots landed")], ["dirs", T("الدقة والسرعة بالاتجاهات", "Accuracy & speed by direction")]];
+
+  const third = Math.max(1, Math.floor(flicks.length / 3));
+  const seg = (list: Flick[]) => ({
+    acc: list.length ? list.filter((f) => f.hit).length / list.length : null,
+    time: avg(list.map((f) => f.time_to_hit_ms).filter((v): v is number => v !== null)),
+  });
+  const [early, late] = [seg(flicks.slice(0, third)), seg(flicks.slice(-third))];
+
+  const shots = flicks.filter((f) => f.endpoint);
+  const offX = avg(shots.map((f) => f.endpoint![0])) ?? 0;
+  const offY = avg(shots.map((f) => f.endpoint![1])) ?? 0;
+  const spread = avg(shots.map((f) => Math.hypot(f.endpoint![0], f.endpoint![1]))) ?? 0;
+  const inside = shots.length ? shots.filter((f) => Math.hypot(f.endpoint![0], f.endpoint![1]) <= f.radius_deg).length / shots.length : null;
+  const bias = [
+    Math.abs(offX) >= 0.1 ? `${Math.abs(offX).toFixed(2)}° ${offX > 0 ? T("يمين", "right") : T("يسار", "left")}` : null,
+    Math.abs(offY) >= 0.1 ? `${Math.abs(offY).toFixed(2)}° ${offY > 0 ? T("فوق", "up") : T("جوه", "down")}` : null,
+  ].filter(Boolean).join(" · ");
+
+  const dirs = DIRECTION_NAMES.map(([ar, en, arrow], o) => {
+    const list = flicks.filter((f) => f.octant === o);
+    return { name: `${arrow}  ${T(ar, en)}`, n: list.length, acc: list.length ? list.filter((f) => f.hit).length / list.length : 0, time: avg(list.map((f) => f.time_to_hit_ms).filter((v): v is number => v !== null)) };
+  }).filter((d) => d.n > 0);
+  const maxTime = Math.max(...dirs.map((d) => d.time ?? 0), 1);
+
+  return (
+    <>
+      <PageHead title={scenarioTitle(card.scenario, lang)} sub={new Date(card.at_ms).toLocaleString(lang === "ar" ? "ar-IQ" : "en-GB", { weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })}>
+        <button className="btn ghost" onClick={back}>{T("كل الجلسات", "All sessions")}</button>
       </PageHead>
       {error && <div className="banner err">{error}</div>}
       {!detail && !error && <div className="skeleton" />}
+      {detail?.timing_suspect && <div className="banner">{T("هذي الجلسة انسجلت قبل إصلاح الساعة، فأرقام الوقت مخفية.", "This session was recorded before the clock fix, so timing numbers are hidden.")}</div>}
       {detail && (
         <>
           <div className="stats">
             {isTracking ? (
               <>
-                <Stat value={`${((detail.time_on_target ?? 0) * 100).toFixed(0)}%`} label={T("على الهدف", "On target")} />
+                <Stat value={pct(detail.time_on_target)} label={T("وقتك على الهدف", "Time on target")} />
                 <Stat value={`${(detail.tracking.reduce((a, b) => a + b.error_deg, 0) / detail.tracking.length).toFixed(2)}°`} label={T("متوسط الابتعاد", "Average error")} />
                 <Stat value={`${detail.duration_s.toFixed(0)} s`} label={T("المدة", "Length")} />
               </>
             ) : (
               <>
-                <Stat value={detail.accuracy === null ? "—" : `${(detail.accuracy * 100).toFixed(0)}%`} label={T("الإصابة", "Accuracy")} hint={`${detail.hits} / ${detail.targets}`} />
-                <Stat value={detail.median_reaction_ms === null ? "—" : `${detail.median_reaction_ms.toFixed(0)} ms`} label={T("رد الفعل", "Reaction")} />
-                <Stat value={detail.median_time_to_hit_ms === null ? "—" : `${detail.median_time_to_hit_ms.toFixed(0)} ms`} label={T("وقت الإصابة", "Time to hit")} />
-                <Stat value={detail.median_gain === null ? "—" : detail.median_gain.toFixed(2)} label={T("نسبة الحركة الأولى", "First movement")} hint={T("المثالي 0.92–1.00", "Ideal 0.92–1.00")} />
+                <Stat value={pct(detail.accuracy)} label={T("الدقة", "Accuracy")} hint={`${detail.hits} / ${detail.targets}`} />
+                <Stat value={ms(detail.median_reaction_ms)} label={T("رد الفعل", "Reaction")} />
+                <Stat value={ms(detail.median_time_to_hit_ms)} label={T("وقت الإصابة", "Time to hit")} />
+                <Stat value={detail.median_gain === null ? "—" : `${Math.round(detail.median_gain * 100)}%`} label={T("وين توصل حركتك الأولى", "First movement reach")} hint={T("المثالي 92–100%", "Ideal 92–100%")} />
               </>
             )}
           </div>
           {isTracking ? (
             <section className="card">
-              <h2>{T("بُعد المؤشر عن الهدف خلال الجلسة", "Crosshair distance from target over the session")}</h2>
-              <p className="muted small">{T("المنطقة الخضراء تعني أنت على الهدف.", "The green band means you are on target.")}</p>
+              <h2>{T("بُعد مؤشرك عن الهدف على الزمن", "Crosshair distance from target over time")}</h2>
+              <p className="muted small">{T("الشريط الأخضر يعني أنت على الهدف. كل ما نزل الخط كان تتبعك أحسن.", "The green band means on target. A lower line is better tracking.")}</p>
               <TrackingChart bins={detail.tracking} radius={detail.tracking_radius_deg ?? 0.6} yLabel="°" />
             </section>
-          ) : detail.flicks.length === 0 ? (
+          ) : flicks.length === 0 ? (
             <Empty text={T("ما انسجلت أهداف بهذي الجلسة.", "No targets were recorded in this session.")} />
           ) : (
             <>
               <div className="tabs" role="tablist">
-                {tabs.map(([id, name]) => <button key={id} role="tab" aria-selected={view2 === id} className={view2 === id ? "on" : ""} onClick={() => setView2(id)}>{name}</button>)}
+                {tabs.map(([id, name]) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "on" : ""} onClick={() => setTab(id)}>{name}</button>)}
               </div>
-              {view2 === "replay" && <Replay key={path} detail={detail} ctx={ctx} />}
-              {view2 === "timeline" && (
-                <section className="card">
-                  <h2>{T("وقت كل هدف عبر الجلسة", "Time per target across the session")}</h2>
-                  <p className="muted small">{T("كل نقطة هدف. الخط الأبيض هو الاتجاه العام، إذا يصعد فأنت تتعب.", "Each dot is a target. The white line is the trend; rising means you are tiring.")}</p>
-                  <ReactionTimeline flicks={detail.flicks} yLabel="ms" hitLabel={T("إصابة", "Hit")} missLabel={T("خطأ", "Miss")} />
-                </section>
+              {tab === "replay" && <Replay detail={detail} ctx={ctx} />}
+              {tab === "trend" && (
+                <>
+                  <div className="stats">
+                    <Stat value={pct(early.acc)} label={T("دقة أول الجلسة", "Accuracy, first third")} hint={ms(early.time)} />
+                    <Stat value={pct(late.acc)} label={T("دقة آخر الجلسة", "Accuracy, last third")} hint={ms(late.time)} />
+                    <Stat value={early.acc !== null && late.acc !== null ? `${late.acc >= early.acc ? "+" : ""}${Math.round((late.acc - early.acc) * 100)}` : "—"} label={T("التغيير بالنقاط", "Change, points")} />
+                  </div>
+                  <section className="card">
+                    <h2>{T("وقت كل هدف من بداية الجلسة لنهايتها", "Time per target, start to finish")}</h2>
+                    <p className="muted small">{T("كل نقطة هدف. الخط الأبيض هو اتجاهك: إذا نزل تتحسن، وإذا صعد تتعب.", "Each dot is a target. The white line is your trend: falling is improving, rising is tiring.")}</p>
+                    <ReactionTimeline flicks={flicks} yLabel="ms" hitLabel={T("إصابة", "Hit")} missLabel={T("خطأ", "Miss")} />
+                  </section>
+                </>
               )}
-              {view2 === "map" && (
+              {tab === "map" && (
                 <section className="card split">
                   <div>
-                    <h2>{T("وين نزلت طلقاتك", "Where your shots landed")}</h2>
-                    <p className="muted small">{T("الدائرة هي الهدف، وعلامة + هي مركز كل طلقاتك. إذا مزاحة فعندك انحياز ثابت لجهة.", "The circle is the target and + is the centre of all your shots. If it is off-centre you have a consistent bias.")}</p>
+                    <h2>{T("خريطة طلقاتك", "Your shot map")}</h2>
+                    <div className="stats">
+                      <Stat value={pct(inside)} label={T("داخل الهدف", "Inside the target")} />
+                      <Stat value={`${spread.toFixed(2)}°`} label={T("متوسط البعد عن المركز", "Average distance from centre")} />
+                    </div>
+                    <p>{bias ? T(`طلقاتك مايلة ${bias} بالمعدل.`, `Your shots lean ${bias} on average.`) : T("طلقاتك متمركزة، ماكو ميلان واضح.", "Your shots are centred, with no clear lean.")}</p>
+                    <p className="muted small">{T("الدائرة الخضراء هي الهدف، والدائرة الأكبر ضعف حجمه. علامة + هي مركز كل طلقاتك.", "The green circle is the target; the larger ring is twice its size. + marks the centre of all your shots.")}</p>
                     <Legend items={[["#3ddc97", T("إصابة", "Hit")], ["#ff6b6b", T("خطأ", "Miss")]]} />
                   </div>
-                  <ShotScatter flicks={detail.flicks} hitLabel={T("إصابة", "Hit")} missLabel={T("خطأ", "Miss")} />
+                  <ShotScatter flicks={flicks} hitLabel={T("إصابة", "Hit")} missLabel={T("خطأ", "Miss")} />
                 </section>
               )}
-              {view2 === "dirs" && (
-                <section className="card split">
-                  <div>
-                    <h2>{T("سرعتك بكل اتجاه", "Your speed in each direction")}</h2>
-                    <p className="muted small">{T("كل ما طال القطاع كنت أبطأ. البرتقالي هو الأبطأ. مرّر الماوس حتى تشوف الرقم.", "A longer wedge means slower. Orange is the slowest. Hover for the number.")}</p>
-                  </div>
-                  <DirectionWheel flicks={detail.flicks} unit="ms" />
+              {tab === "dirs" && (
+                <section className="card">
+                  <h2>{T("الدقة والسرعة بكل اتجاه", "Accuracy and speed in each direction")}</h2>
+                  <p className="muted small">{T("الاتجاه هو وين تحركت حتى توصل الهدف.", "Direction is where you had to move to reach the target.")}</p>
+                  <table className="dir-table">
+                    <thead><tr><th>{T("الاتجاه", "Direction")}</th><th>{T("الدقة", "Accuracy")}</th><th>{T("الوقت", "Time")}</th><th>{T("أهداف", "Targets")}</th></tr></thead>
+                    <tbody>
+                      {dirs.map((d) => (
+                        <tr key={d.name}>
+                          <td>{d.name}</td>
+                          <td><span className="bar-cell"><span className="meter wide"><i style={{ width: `${Math.round(d.acc * 100)}%`, background: "var(--accent)" }} /></span><b dir="ltr">{Math.round(d.acc * 100)}%</b></span></td>
+                          <td><span className="bar-cell"><span className="meter wide"><i style={{ width: `${Math.round(((d.time ?? 0) / maxTime) * 100)}%` }} /></span><b dir="ltr">{ms(d.time)}</b></span></td>
+                          <td>{d.n}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </section>
               )}
             </>
@@ -465,9 +586,24 @@ function Progress({ ctx }: { ctx: Ctx }) {
   const { view, T, lang } = ctx;
   const ids = view.latest?.profile.skills.map((s) => s.skill) ?? [];
   const [picked, setPicked] = useState<string[]>(() => ids.slice(0, 2));
-  if (view.history.length === 0) {
-    return (<><PageHead title={T("التقدم", "Progress")} /><Empty text={T("منحنى كل مهارة يطلع هنا بعد أول تقييم.", "A curve for each skill appears here after your first assessment.")} /></>);
+  const [kind, setKind] = useState("all");
+  if (view.sessions.length === 0) {
+    return (<><PageHead title={T("التقدم", "Progress")} /><Empty text={T("تقدمك يطلع هنا بعد أول جلسة.", "Your progress appears here after your first session.")} /></>);
   }
+  const kinds = [...new Set(view.sessions.map((s) => s.scenario))];
+  const list = view.sessions.filter((s) => kind === "all" || s.scenario === kind);
+  const byDay = new Map<string, SessionCard[]>();
+  for (const s of [...list].reverse()) byDay.set(dayKey(s.at_ms), [...(byDay.get(dayKey(s.at_ms)) ?? []), s]);
+  const dayLabel = (d: string) => new Date(`${d}T12:00`).toLocaleDateString(lang === "ar" ? "ar-IQ" : "en-GB", { day: "numeric", month: "numeric" });
+  const seriesOf = (f: (c: SessionCard) => number | null) => [...byDay.entries()].flatMap(([d, cards]) => {
+    const v = avg(cards.map(f).filter((x): x is number => x !== null));
+    return v === null ? [] : [{ label: dayLabel(d), value: v }];
+  });
+  const accuracy = seriesOf((c) => { const v = sessionScore(c); return v === null ? null : v * 100; });
+  const reaction = seriesOf((c) => c.median_reaction_ms);
+  const volume = [...byDay.entries()].map(([d, cards]) => ({ label: dayLabel(d), value: Math.round(cards.reduce((a, c) => a + c.duration_s, 0) / 60), tip: `${cards.length} ${T("جلسة", "sessions")}` }));
+  const first = accuracy[0]?.value;
+  const last = accuracy[accuracy.length - 1]?.value;
   const toggle = (id: string) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : p.length >= 4 ? p : [...p, id]));
   const series: Series[] = picked.map((id) => ({
     id,
@@ -477,35 +613,46 @@ function Progress({ ctx }: { ctx: Ctx }) {
       return { label: `#${i + 1}`, v: s?.score ?? 0, lo: s?.ci95[0] ?? 0, hi: s?.ci95[1] ?? 0 };
     }),
   }));
-  const latest = view.latest!;
   return (
     <>
-      <PageHead title={T("التقدم", "Progress")} sub={T("كل نقطة تقييم كامل، والشريط حول الخط هو نطاق الثقة.", "Each point is a full assessment; the band around the line is the confidence range.")} />
-      <div className="chips">
-        {ids.map((id) => <button key={id} className={picked.includes(id) ? "on" : ""} onClick={() => toggle(id)}>{pick(skillNames[id], lang, id)}</button>)}
+      <PageHead title={T("التقدم", "Progress")} sub={T("كل جلسة لعبتها محسوبة هنا.", "Every session you played counts here.")}>
+        <select aria-label={T("النوع", "Type")} value={kind} onChange={(e) => setKind(e.target.value)}>
+          <option value="all">{T("كل الجلسات", "All sessions")}</option>
+          {kinds.map((k) => <option key={k} value={k}>{scenarioTitle(k, lang)}</option>)}
+        </select>
+      </PageHead>
+      <div className="stats">
+        <Stat value={String(list.length)} label={T("جلسات", "Sessions")} />
+        <Stat value={String(list.reduce((a, c) => a + c.hits, 0))} label={T("أهداف أصبتها", "Targets hit")} />
+        <Stat value={`${Math.round(list.reduce((a, c) => a + c.duration_s, 0) / 60)}`} label={T("دقايق تدريب", "Minutes trained")} />
+        <Stat value={last === undefined ? "—" : `${Math.round(last)}%`} label={T("دقة آخر يوم", "Latest day accuracy")} hint={first !== undefined && accuracy.length > 1 ? `${last! >= first ? "+" : ""}${Math.round(last! - first)} ${T("عن أول يوم", "vs first day")}` : undefined} />
       </div>
       <section className="card">
-        {series.length > 1 && <Legend items={series.map((s, i) => [["#3ddc97", "#5aa9ff", "#e5ad45", "#c58bff"][i], s.name])} />}
-        {view.history.length === 1 && <p className="muted small">{T("تحتاج تقييمين حتى يطلع منحنى.", "Two assessments are needed for a curve.")}</p>}
-        <SkillLines series={series} />
+        <h2>{T("الدقة يوم بعد يوم", "Accuracy day by day")}</h2>
+        {accuracy.length < 2 && <p className="muted small">{T("العب بيوم ثاني حتى يطلع الخط. لحد هسه عندك يوم واحد.", "Play on another day to see a line. So far you have one day.")}</p>}
+        <TrendLine points={accuracy} unit="%" better="up" />
       </section>
-      <section className="card">
-        <h2>{T("كل المهارات", "All skills")}</h2>
-        {latest.profile.skills.map((s) => {
-          const color = s.score >= 60 ? "var(--good)" : s.score >= 40 ? "var(--warn)" : "var(--bad)";
-          return (
-            <div className="skill" key={s.skill}>
-              <div>{pick(skillNames[s.skill], lang, s.skill)}{s.reliability === "Low" && <small className="muted"> · {T("بيانات قليلة", "little data")}</small>}</div>
-              <div className="track" title={`${s.ci95[0].toFixed(0)}–${s.ci95[1].toFixed(0)}`}>
-                <div className="ci" style={{ left: `${s.ci95[0]}%`, width: `${Math.max(s.ci95[1] - s.ci95[0], 1)}%` }} />
-                <div className="val" style={{ left: `${s.score}%`, background: color }} />
-              </div>
-              <div className="num">{s.score.toFixed(0)}</div>
-            </div>
-          );
-        })}
-        <p className="small muted">{T("الدرجات أولية لحد ما تتجمع بيانات لاعبين.", "Scores are provisional until player data exists.")}</p>
-      </section>
+      <div className="split-2">
+        <section className="card">
+          <h2>{T("رد الفعل", "Reaction")}</h2>
+          {reaction.length === 0 ? <p className="muted small">{T("ماكو أوقات موثوقة بعد. العب جلسة جديدة.", "No reliable timing yet. Play a new session.")}</p> : <TrendLine points={reaction} unit="ms" better="down" />}
+        </section>
+        <section className="card">
+          <h2>{T("دقايق التدريب", "Minutes trained")}</h2>
+          <ValueBars rows={volume} unit={T("د", "min")} />
+        </section>
+      </div>
+      {view.history.length > 0 && (
+        <section className="card">
+          <h2>{T("مهاراتك بالتقييمات", "Your skills across assessments")}</h2>
+          <div className="chips">
+            {ids.map((id) => <button key={id} className={picked.includes(id) ? "on" : ""} onClick={() => toggle(id)}>{pick(skillNames[id], lang, id)}</button>)}
+          </div>
+          {series.length > 1 && <Legend items={series.map((s, i) => [SERIES[i % SERIES.length], s.name])} />}
+          {view.history.length === 1 && <p className="muted small">{T("تحتاج تقييمين حتى يطلع منحنى.", "Two assessments are needed for a curve.")}</p>}
+          <SkillLines series={series} />
+        </section>
+      )}
     </>
   );
 }
@@ -538,7 +685,7 @@ function PlanPage({ ctx }: { ctx: Ctx }) {
       {view.block_result && (
         <section className="card">
           <h2>{T("نتيجة الكتلة", "Block result")}</h2>
-          {view.block_result.conditions_changed && <div className="banner">{T("تغيرت الحساسية أو الـ DPI، فالمقارنة غير دقيقة.", "Sensitivity or DPI changed, so this comparison is unreliable.")}</div>}
+          {view.block_result.conditions_changed && <div className="banner">{T(`إعدادات الماوس اختلفت بين الاختبارين: DPI ${view.block_result.settings_before[0]} وحساسية ${view.block_result.settings_before[1]} قبل، و DPI ${view.block_result.settings_after[0]} وحساسية ${view.block_result.settings_after[1]} بعد. المقارنة غير دقيقة.`, `Mouse settings differ between the tests: ${view.block_result.settings_before[0]} DPI / ${view.block_result.settings_before[1]} before, ${view.block_result.settings_after[0]} DPI / ${view.block_result.settings_after[1]} after. The comparison is unreliable.`)}</div>}
           {view.block_result.training_effect !== null && (
             <div className="stats"><Stat value={`${view.block_result.training_effect > 0 ? "+" : ""}${view.block_result.training_effect.toFixed(1)}`} label={T("أثر التدريب", "Training effect")} hint={T("تحسن المهارات المدربة ناقص غيرها", "Trained skills minus the rest")} /></div>
           )}
@@ -635,13 +782,14 @@ const TIERS: { id: Tier; name: [string, string]; p: Pick<CustomTargets, "radius_
 
 function Practice({ ctx }: { ctx: Ctx }) {
   const { view, T, act, lang, go } = ctx;
-  const [c, setC] = useState<CustomTargets>({ mode: "flick", concurrent: 3, duration_s: 60, ...TIERS[1].p });
+  const [c, setC] = useState<CustomTargets>({ mode: "flick", concurrent: 3, duration_s: 60, area_h_deg: 35, area_v_deg: 12, reversal_s: 0.55, ...TIERS[1].p });
   const [tier, setTier] = useState<Tier | null>("medium");
   const [section, setSection] = useState<"build" | "library">("build");
   const set = (patch: Partial<CustomTargets>) => { setTier(null); setC({ ...c, ...patch }); };
   const usesDistance = c.mode === "flick" || c.mode === "multi";
   const usesSpeed = c.mode === "track" || c.mode === "strafe";
   const usesLimit = c.mode === "flick" || c.mode === "peek";
+  const usesArea = c.mode === "multi" || c.mode === "track" || c.mode === "strafe";
   const history = view.practice.filter((p) => p.mode === c.mode);
   const best = history.length ? Math.max(...history.map((p) => p.hit_rate)) : null;
   const groups = (Object.keys(groupNames) as DrillInfo["group"][]).map((g) => ({ g, drills: Object.keys(drillInfo).filter((d) => drillInfo[d].group === g) }));
@@ -683,8 +831,11 @@ function Practice({ ctx }: { ctx: Ctx }) {
                 {TIERS.map((t) => <button key={t.id} className={tier === t.id ? "on" : ""} onClick={() => { setTier(t.id); setC({ ...c, ...t.p }); }}>{pick(t.name, lang, t.id)}</button>)}
               </div>
               <Slider label={T("حجم الهدف", "Target size")} value={c.radius_deg} min={0.2} max={2} step={0.05} unit="°" set={(radius_deg) => set({ radius_deg })} />
-              {usesDistance && <Slider label={T("أقرب مسافة", "Nearest")} value={c.min_distance_deg} min={2} max={c.max_distance_deg} step={1} unit="°" set={(min_distance_deg) => set({ min_distance_deg })} />}
-              {usesDistance && <Slider label={T("أبعد مسافة", "Farthest")} value={c.max_distance_deg} min={c.min_distance_deg} max={60} step={1} unit="°" set={(max_distance_deg) => set({ max_distance_deg })} />}
+              {usesDistance && <Slider label={T("أقرب هدف من المركز", "Nearest to centre")} value={c.min_distance_deg} min={2} max={60} step={1} unit="°" set={(v) => set({ min_distance_deg: v, max_distance_deg: Math.max(v, c.max_distance_deg) })} />}
+              {usesDistance && <Slider label={T("أبعد هدف من المركز", "Farthest from centre")} value={c.max_distance_deg} min={2} max={60} step={1} unit="°" set={(v) => set({ max_distance_deg: v, min_distance_deg: Math.min(v, c.min_distance_deg) })} />}
+              {usesArea && <Slider label={T("مساحة الحركة يمين ويسار", "Area left and right")} value={c.area_h_deg} min={5} max={60} step={1} unit="°" set={(area_h_deg) => set({ area_h_deg })} />}
+              {usesArea && c.mode !== "strafe" && <Slider label={T("مساحة الحركة فوق وجوه", "Area up and down")} value={c.area_v_deg} min={2} max={35} step={1} unit="°" set={(area_v_deg) => set({ area_v_deg })} />}
+              {c.mode === "strafe" && <Slider label={T("كل كم يغير اتجاهه", "Changes direction every")} value={c.reversal_s} min={0.25} max={1.5} step={0.05} unit="s" set={(reversal_s) => set({ reversal_s })} />}
               {usesSpeed && <Slider label={T("سرعة الهدف", "Target speed")} value={c.speed_deg_s} min={5} max={40} step={1} unit="°/s" set={(speed_deg_s) => set({ speed_deg_s })} />}
               {usesLimit && <Slider label={T("وقت كل هدف", "Time per target")} value={c.time_limit_s} min={0.3} max={5} step={0.1} unit="s" set={(time_limit_s) => set({ time_limit_s })} />}
               {c.mode === "multi" && <Slider label={T("عدد الأهداف سوه", "Targets at once")} value={c.concurrent} min={2} max={6} step={1} unit="" set={(concurrent) => set({ concurrent })} />}
@@ -736,63 +887,140 @@ function Slider(props: { label: string; value: number; min: number; max: number;
   );
 }
 
-interface Turn { q: string | null; a: ChatAnswer | null; err?: string }
+const AI_SOURCES: { id: string; name: string; model: string; needsKey: boolean }[] = [
+  { id: "template", name: "", model: "", needsKey: false },
+  { id: "claude", name: "Claude", model: "claude-haiku-5-5", needsKey: true },
+  { id: "openai", name: "OpenAI", model: "gpt-4o-mini", needsKey: true },
+  { id: "gemini", name: "Gemini", model: "gemini-2.5-flash", needsKey: true },
+  { id: "openrouter", name: "OpenRouter", model: "openrouter/auto", needsKey: true },
+  { id: "custom", name: "", model: "", needsKey: false },
+];
 
 function Coach({ ctx }: { ctx: Ctx }) {
-  const { T, lang, go, view } = ctx;
-  const [question, setQuestion] = useState("");
-  const [turns, setTurns] = useState<Turn[]>([]);
-  const waiting = turns.some((t) => !t.a && !t.err);
-  const ask = async (q: string | null) => {
-    setQuestion("");
-    setTurns((p) => [...p, { q, a: null }]);
-    const update = (patch: Partial<Turn>) => setTurns((p) => p.map((t, i) => (i === p.length - 1 ? { ...t, ...patch } : t)));
-    try { update({ a: await call<ChatAnswer>("ask_coach", { question: q }) }); } catch (e) { update({ err: String(e) }); }
+  const { view, T, act, lang, go } = ctx;
+  const [selected, setSelected] = useState(0);
+  const [working, setWorking] = useState<string | null>(null);
+  const reports = view.reports;
+  const report = reports[Math.min(selected, reports.length - 1)];
+  const make = async (scope: string) => {
+    setWorking(scope);
+    await act("generate_report", { scope });
+    setSelected(0);
+    setWorking(null);
   };
-  const ideas = [T("ليش أخطي الطلقة الأولى؟", "Why do I miss my first shot?"), T("شنو أهم شي أصلحه؟", "What should I fix first?"), T("هل حساسيتي مشكلة؟", "Is my sensitivity the problem?")];
-  const sourceName = view.settings.ai_provider === "template" ? T("نصوص ثابتة", "Fixed text") : view.settings.ai_provider === "local" ? T("موديل محلي", "Local model") : "Claude";
+  const scopes: [string, string, string][] = [
+    ["latest", T("آخر جلسة", "Latest session"), T("شنو صار بجلستك الأخيرة", "What happened in your last session")],
+    ["today", T("آخر يوم تدريب", "Latest training day"), T("تقرير يومك كامل", "A report on the whole day")],
+    ["all", T("كل بياناتي", "All my data"), T("نقاط قوتك وضعفك على المدى الطويل", "Your long-term strengths and weaknesses")],
+  ];
+  const source = AI_SOURCES.find((a) => a.id === view.settings.ai_provider);
+  const scopeName = (s: string) => scopes.find((x) => x[0] === s)?.[1] ?? s;
+  const sourceName = view.settings.ai_provider === "template" ? T("التحليل المدمج", "Built-in analysis") : view.settings.ai_provider === "custom" ? T("مصدر مخصص", "Custom source") : source?.name;
   return (
     <>
-      <PageHead title={T("المدرب", "Coach")} sub={T("الأرقام تجي من القياس، والمدرب يشرحها بس.", "The numbers come from measurement; the coach only explains them.")}>
+      <PageHead title={T("تقارير المدرب", "Coach reports")} sub={T("المدرب يقرأ بياناتك ويكتب لك وين مشكلتك وشنو تسوي.", "The coach reads your data and tells you what is wrong and what to do.")}>
         <button className="tag link" onClick={() => go("settings")}>{sourceName}</button>
       </PageHead>
-      <section className="card chat">
-        {turns.length === 0 && (
-          <div className="ideas">
-            <button className="btn" onClick={() => ask(null)}>{T("اشرح نتائجي", "Explain my results")}</button>
-            {ideas.map((q) => <button key={q} className="btn ghost" onClick={() => ask(q)}>{q}</button>)}
-          </div>
-        )}
-        {turns.map((t, i) => (
-          <div key={i}>
-            <div className="bubble me">{t.q ?? T("اشرح نتائجي", "Explain my results")}</div>
-            {!t.a && !t.err && <div className="bubble"><span className="muted">{T("يكتب...", "Writing...")}</span></div>}
-            {t.err && <div className="banner err">{t.err}</div>}
-            {t.a && (
-              <div className="bubble">
-                <b>{t.a.reply.headline}</b>
-                <p>{t.a.reply.explanation}</p>
-                {t.a.reply.tips.length > 0 && <ul>{t.a.reply.tips.map((tip) => <li key={tip}>{pick(drillNames[tip], lang, tip)}</li>)}</ul>}
-                {t.a.reply.next_step && <p><b>{T("الخطوة الجاية", "Next step")}:</b> {t.a.reply.next_step}</p>}
-                {t.a.note && <p className="small muted">{T("استخدمنا النص الثابت لأن:", "Showing fixed text because:")} {t.a.note}</p>}
-              </div>
-            )}
-          </div>
+      <div className="scope-cards">
+        {scopes.map(([id, name, desc]) => (
+          <button key={id} disabled={working !== null || view.sessions.length === 0} onClick={() => make(id)}>
+            <b>{working === id ? T("يكتب التقرير...", "Writing report...") : name}</b>
+            <small>{desc}</small>
+          </button>
         ))}
-        <form className="row composer" onSubmit={(e) => { e.preventDefault(); if (question.trim()) ask(question.trim()); }}>
-          <input className="grow" value={question} placeholder={T("اسأل عن نتائجك...", "Ask about your results...")} onChange={(e) => setQuestion(e.target.value)} />
-          <button className="btn" disabled={waiting || !question.trim()}>{T("اسأل", "Ask")}</button>
-        </form>
-      </section>
+      </div>
+      {reports.length === 0 && <Empty text={view.sessions.length === 0 ? T("العب أول جلسة حتى يكون عند المدرب شي يحلله.", "Play a session so the coach has something to analyse.") : T("اختار شنو تريد المدرب يحلل، وتقريرك يطلع هنا ويبقى محفوظ.", "Choose what the coach should analyse. Your report appears here and stays saved.")} />}
+      {report && (
+        <div className="reports">
+          <aside className="card report-list">
+            <span className="label">{T("تقاريرك", "Your reports")}</span>
+            {reports.map((r, i) => (
+              <button key={r.at_ms} className={i === selected ? "on" : ""} onClick={() => setSelected(i)}>
+                <b>{scopeName(r.scope)}</b>
+                <small>{whenText(r.at_ms, lang)} · {r.sessions} {T("جلسة", "sessions")}</small>
+              </button>
+            ))}
+          </aside>
+          <article className="card report">
+            <div className="row between">
+              <span className="muted small">{scopeName(report.scope)} · {whenText(report.at_ms, lang)}</span>
+              <span className={`tag ${report.source === "ai" ? "good" : ""}`}>{report.source === "ai" ? T("ذكاء اصطناعي", "AI") : T("تحليل مدمج", "Built-in")}</span>
+            </div>
+            <p className="lead">{report.reply.summary}</p>
+            {report.note && <div className="banner">{T("استخدمنا التحليل المدمج لأن:", "Used the built-in analysis because:")} {report.note}</div>}
+            {report.reply.strengths.length > 0 && (
+              <>
+                <h2>{T("نقاط قوتك", "Your strengths")}</h2>
+                <ul className="ticks">{report.reply.strengths.map((s) => <li key={s}>{s}</li>)}</ul>
+              </>
+            )}
+            {report.reply.weaknesses.length > 0 && (
+              <>
+                <h2>{T("وين تخسر", "Where you lose")}</h2>
+                {report.reply.weaknesses.map((w) => (
+                  <div className="finding" key={w.title}>
+                    <b>{w.title}</b>
+                    <p className="muted">{w.detail}</p>
+                    {w.fix && <span className="tag good">{w.fix}</span>}
+                  </div>
+                ))}
+              </>
+            )}
+            {report.reply.next_steps.length > 0 && (
+              <>
+                <h2>{T("تسوي هسه", "Do next")}</h2>
+                <ol className="next">{report.reply.next_steps.map((s) => <li key={s}>{s}</li>)}</ol>
+              </>
+            )}
+          </article>
+        </div>
+      )}
     </>
   );
 }
+
+const DATA_TOGGLES: [keyof CoachConfig, string, string][] = [
+  ["player_settings", "إعدادات الماوس", "Mouse settings"],
+  ["skills", "درجات المهارات", "Skill scores"],
+  ["findings", "التشخيصات", "Diagnoses"],
+  ["recent_sessions", "نتائج الجلسات", "Session results"],
+  ["directions", "الدقة بالاتجاهات", "Accuracy by direction"],
+  ["plan", "خطة التدريب", "Training plan"],
+  ["block_result", "نتيجة آخر كتلة", "Last block result"],
+];
 
 function SettingsPage({ ctx }: { ctx: Ctx }) {
   const { view, T, act } = ctx;
   const [s, setS] = useState<Settings>(view.settings);
   const [saved, setSaved] = useState(false);
-  const set = (patch: Partial<Settings>) => { setSaved(false); setS({ ...s, ...patch }); };
+  const [key, setKey] = useState("");
+  const [test, setTest] = useState<{ ok: boolean; text: string } | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [config, setConfig] = useState<CoachConfig | null>(null);
+  useEffect(() => { call<CoachConfig>("get_coach_config").then(setConfig, () => undefined); }, []);
+  const set = (patch: Partial<Settings>) => { setSaved(false); setTest(null); setS({ ...s, ...patch }); };
+  const source = AI_SOURCES.find((a) => a.id === s.ai_provider) ?? AI_SOURCES[0];
+  const needsAi = s.ai_provider !== "template";
+  const hasKey = view.ai_keys_set.includes(s.ai_provider);
+  const saveAll = async () => {
+    await act("save_settings", { settings: s });
+    if (key.trim()) await act("set_ai_key", { provider: s.ai_provider, key });
+    if (config) await call("save_coach_config", { config });
+    setKey("");
+    setSaved(true);
+  };
+  const runTest = async () => {
+    setTesting(true);
+    setTest(null);
+    await saveAll();
+    try {
+      await call<string>("test_ai");
+      setTest({ ok: true, text: T("المصدر يشتغل.", "The source works.") });
+    } catch (e) {
+      setTest({ ok: false, text: String(e) });
+    }
+    setTesting(false);
+  };
   return (
     <>
       <PageHead title={T("الإعدادات", "Settings")} />
@@ -802,7 +1030,7 @@ function SettingsPage({ ctx }: { ctx: Ctx }) {
           <Num label="DPI" value={s.dpi} step={50} min={50} set={(dpi) => set({ dpi })} />
           <Num label={T("الحساسية", "Sensitivity")} value={s.sens} step={0.01} min={0.01} set={(sens) => set({ sens })} />
         </div>
-        <p className="small muted">{T("الحساب الحالي", "Current")}: {view.cm360.toFixed(1)} cm/360</p>
+        <p className="small muted">{T("الحساب الحالي", "Current")}: {view.cm360.toFixed(1)} cm/360. {T("غيرها بس إذا غيرتها باللعبة، لأن المقارنات تعتمد عليها.", "Change this only when you change it in the game; comparisons depend on it.")}</p>
       </section>
       <section className="card">
         <h2>{T("التطبيق", "App")}</h2>
@@ -811,22 +1039,44 @@ function SettingsPage({ ctx }: { ctx: Ctx }) {
         <Toggle checked={s.test_mode} set={(test_mode) => set({ test_mode })} label={T("وضع التجربة", "Test mode")} help={T("تمارين 20 ثانية وبدون انتظار يوم الراحة.", "20-second drills and no rest-day wait.")} />
       </section>
       <section className="card">
-        <h2>{T("الذكاء الاصطناعي", "AI")}</h2>
+        <h2>{T("مصدر الذكاء الاصطناعي", "AI source")}</h2>
         <div className="grid2">
           <label className="field">{T("المصدر", "Source")}
-            <select value={s.ai_provider} onChange={(e) => set({ ai_provider: e.target.value })}>
-              <option value="template">{T("نصوص ثابتة (بدون AI)", "Fixed text (no AI)")}</option>
-              <option value="local">{T("محلي (Ollama / LM Studio)", "Local (Ollama / LM Studio)")}</option>
+            <select value={s.ai_provider} onChange={(e) => { const a = AI_SOURCES.find((x) => x.id === e.target.value)!; set({ ai_provider: a.id, ai_model: a.model, ai_base_url: a.id === "custom" ? s.ai_base_url : "" }); setKey(""); }}>
+              <option value="template">{T("التحليل المدمج (بدون AI)", "Built-in analysis (no AI)")}</option>
               <option value="claude">Claude</option>
+              <option value="openai">OpenAI</option>
+              <option value="gemini">Gemini</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="custom">{T("مخصص (Custom)", "Custom")}</option>
             </select>
           </label>
-          {s.ai_provider !== "template" && <label className="field">{T("الموديل", "Model")}<input dir="ltr" value={s.ai_model} onChange={(e) => set({ ai_model: e.target.value })} /></label>}
-          {s.ai_provider === "local" && <label className="field">{T("رابط الخادم", "Server URL")}<input dir="ltr" value={s.ai_base_url} onChange={(e) => set({ ai_base_url: e.target.value })} /></label>}
+          {needsAi && <label className="field">{T("اسم الموديل", "Model name")}<input dir="ltr" value={s.ai_model} onChange={(e) => set({ ai_model: e.target.value })} /></label>}
+          {s.ai_provider === "custom" && <label className="field">{T("رابط الخادم (Base URL)", "Server URL (Base URL)")}<input dir="ltr" placeholder="http://localhost:11434/v1" value={s.ai_base_url} onChange={(e) => set({ ai_base_url: e.target.value })} /></label>}
+          {needsAi && <label className="field">API key{source.needsKey ? "" : T(" (اختياري)", " (optional)")}<input dir="ltr" type="password" autoComplete="off" placeholder={hasKey ? T("محفوظ. اكتب مفتاح جديد لتغييره", "Saved. Type a new key to replace it") : ""} value={key} onChange={(e) => { setKey(e.target.value); setSaved(false); }} /></label>}
         </div>
-        {s.ai_provider === "claude" && <p className="small muted">{view.claude_key_found ? T("مفتاح ANTHROPIC_API_KEY موجود.", "ANTHROPIC_API_KEY found.") : T("لازم تضبط ANTHROPIC_API_KEY بالويندوز وتعيد فتح التطبيق.", "Set ANTHROPIC_API_KEY in Windows and reopen the app.")}</p>}
+        {needsAi && (
+          <div className="row">
+            <button className="btn ghost" disabled={testing} onClick={runTest}>{testing ? T("يفحص...", "Testing...") : T("افحص الاتصال", "Test connection")}</button>
+            {test && <span className={test.ok ? "up" : "down"}>{test.text}</span>}
+          </div>
+        )}
+        {needsAi && <p className="small muted">{T("المفتاح ينحفظ على جهازك بس، ويروح للمصدر اللي اخترته فقط.", "The key is stored only on this computer and sent only to the source you chose.")}</p>}
       </section>
+      {config && (
+        <section className="card">
+          <h2>{T("شنو يشوف المدرب من بياناتك", "What the coach can see")}</h2>
+          <div className="toggle-grid">
+            {DATA_TOGGLES.map(([k, ar, en]) => <Toggle key={k} checked={Boolean(config[k])} set={(v) => { setSaved(false); setConfig({ ...config, [k]: v }); }} label={T(ar, en)} />)}
+          </div>
+          <label className="field spaced">{T("تعليمات إضافية للمدرب", "Extra instructions for the coach")}
+            <textarea rows={3} value={config.extra_instructions} onChange={(e) => { setSaved(false); setConfig({ ...config, extra_instructions: e.target.value }); }} />
+          </label>
+          <p className="small muted">{T("نفس الإعدادات بملف JSON وتكدر تعدله:", "The same settings live in a JSON file you can edit:")} <code dir="ltr">{view.coach_config_path}</code></p>
+        </section>
+      )}
       <div className="row savebar">
-        <button className="btn" onClick={async () => { await act("save_settings", { settings: s }); setSaved(true); }}>{T("احفظ", "Save")}</button>
+        <button className="btn" onClick={saveAll}>{T("احفظ", "Save")}</button>
         {saved && <span className="up">{T("انحفظ", "Saved")}</span>}
       </div>
     </>
