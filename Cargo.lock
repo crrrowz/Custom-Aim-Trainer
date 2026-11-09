@@ -107,8 +107,10 @@ name = "aim-analysis"
 version = "0.1.0"
 dependencies = [
  "aim-core",
+ "aim-scenarios",
  "aim-telemetry",
  "proptest",
+ "ron 0.8.1",
  "serde",
 ]
 

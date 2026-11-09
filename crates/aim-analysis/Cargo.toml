@@ -8,6 +8,8 @@ rust-version.workspace = true
 [dependencies]
 aim-core = { path = "../aim-core" }
 aim-telemetry = { path = "../aim-telemetry" }
+aim-scenarios = { path = "../aim-scenarios" }
+ron = "0.8"
 serde = { workspace = true }
 
 [dev-dependencies]

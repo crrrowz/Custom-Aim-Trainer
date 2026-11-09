@@ -1478,14 +1478,13 @@ fn flow_update_system(
                 return;
             }
 
-            if keyboard.just_pressed(KeyCode::Space)
+            if (keyboard.just_pressed(KeyCode::Space)
                 || keyboard.just_pressed(KeyCode::Enter)
-                || mouse_buttons.just_pressed(MouseButton::Left)
+                || mouse_buttons.just_pressed(MouseButton::Left))
+                && state.flow_engine.handle_start_trigger()
             {
-                if state.flow_engine.handle_start_trigger() {
-                    despawn_flow_overlay(&mut commands, &q_overlay);
-                    spawn_countdown_overlay(&mut commands, &ui_fonts, 3);
-                }
+                despawn_flow_overlay(&mut commands, &q_overlay);
+                spawn_countdown_overlay(&mut commands, &ui_fonts, 3);
             }
         }
         FlowState::Countdown { seconds_remaining } => {
