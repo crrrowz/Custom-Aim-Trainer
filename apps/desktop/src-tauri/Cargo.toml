@@ -1,0 +1,33 @@
+[package]
+name = "aimforge-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "aimforge_desktop"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "aimforge-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ron = "0.8"
+aim-telemetry = { path = "../../../crates/aim-telemetry" }
+aim-scenarios = { path = "../../../crates/aim-scenarios" }
+aim-analysis = { path = "../../../crates/aim-analysis" }
+aim-coach = { path = "../../../crates/aim-coach" }
+aim-store = { path = "../../../crates/aim-store" }
+aim-llm = { path = "../../../crates/aim-llm" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
