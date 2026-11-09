@@ -121,6 +121,7 @@ view.sessions = Array.from({ length: 22 }, (_, i): SessionCard => ({
   time_on_target: names[i % 5].includes("track") ? 0.46 : null,
   duration_s: 70,
   timing_suspect: false,
+  partial: i === 3,
 }));
 
 let config: CoachConfig = { player_settings: true, skills: true, findings: true, recent_sessions: true, session_limit: 30, directions: true, plan: true, block_result: true, extra_instructions: "" };

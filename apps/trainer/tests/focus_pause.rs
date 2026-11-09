@@ -217,3 +217,17 @@ fn raw_input_worker_focus_state_transitions() {
     RawInputWorker::set_window_focused(true);
     assert!(RawInputWorker::is_window_focused());
 }
+
+#[test]
+fn resume_stays_the_filled_primary_button() {
+    use trainer::pause::{button_background, PauseButtonAction};
+    use trainer::ui_tokens::COLOR_ACCENT;
+    assert_eq!(
+        button_background(PauseButtonAction::Resume, false),
+        COLOR_ACCENT
+    );
+    assert_ne!(
+        button_background(PauseButtonAction::QuitAndSave, false),
+        COLOR_ACCENT
+    );
+}

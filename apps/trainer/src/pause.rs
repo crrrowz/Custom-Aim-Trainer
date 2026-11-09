@@ -143,6 +143,8 @@ pub enum PauseButtonAction {
 
 #[derive(Resource, Debug, Clone)]
 pub struct PauseMenuNavigation {
+    /// Latest session numbers, shown on the card.
+    pub live: LiveStats,
     pub focused_index: usize,
     /// Seconds during which clicks on the menu are ignored after the window regains focus.
     pub click_guard_s: f32,
@@ -150,6 +152,14 @@ pub struct PauseMenuNavigation {
     pub saving_timer: Option<f32>,
     pub session_duration_s: f64,
     pub scenario_name: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct LiveStats {
+    pub hits: u32,
+    pub misses: u32,
+    pub total: u32,
+    pub on_target_pct: Option<u32>,
 }
 
 /// The click that brings the game back to the front must not also press a menu button.
@@ -170,6 +180,7 @@ impl PauseMenuNavigation {
 impl Default for PauseMenuNavigation {
     fn default() -> Self {
         Self {
+            live: LiveStats::default(),
             focused_index: 0,
             click_guard_s: 0.0,
             is_confirming_discard: false,
@@ -269,12 +280,14 @@ pub fn spawn_pause_menu(
     cause: Option<PauseCause>,
 ) {
     let clock = |t: f64| format!("{:02}:{:02}", (t as u32) / 60, (t as u32) % 60);
-    let subtitle = format!(
-        "{}  •  {} / {}",
-        crate::session_flow::scenario_title(scenario_name),
-        clock(elapsed_s),
-        clock(total_duration_s)
-    );
+    let subtitle = crate::session_flow::scenario_title(scenario_name);
+    let left = clock((total_duration_s - elapsed_s).max(0.0));
+    let done_share = if total_duration_s > 0.0 {
+        (elapsed_s / total_duration_s).clamp(0.0, 1.0) as f32
+    } else {
+        0.0
+    };
+    let live = nav.live;
 
     commands
         .spawn((
@@ -296,14 +309,14 @@ pub fn spawn_pause_menu(
                         width: CARD_WIDTH,
                         flex_direction: FlexDirection::Column,
                         align_items: AlignItems::Center,
-                        padding: UiRect::all(SPACE_XL),
+                        padding: UiRect::all(Val::Px(32.0)),
                         row_gap: SPACE_LG,
                         border: UiRect::all(Val::Px(1.0)),
                         border_radius: BorderRadius::all(RADIUS_CARD),
                         ..default()
                     },
                     BackgroundColor(COLOR_CARD_BACKGROUND),
-                    BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.08)),
+                    BorderColor::all(COLOR_CARD_BORDER),
                     PauseCardRoot,
                 ))
                 .with_children(|card| {
@@ -391,12 +404,71 @@ pub fn spawn_pause_menu(
                             TextColor(COLOR_TEXT_MUTED),
                         ));
 
+                        // Session progress
+                        card.spawn((
+                            Node {
+                                width: Val::Percent(100.0),
+                                height: Val::Px(6.0),
+                                border_radius: BorderRadius::all(Val::Px(3.0)),
+                                ..default()
+                            },
+                            BackgroundColor(COLOR_BTN_IDLE),
+                        ))
+                        .with_child((
+                            Node {
+                                width: Val::Percent(done_share * 100.0),
+                                height: Val::Percent(100.0),
+                                border_radius: BorderRadius::all(Val::Px(3.0)),
+                                ..default()
+                            },
+                            BackgroundColor(COLOR_ACCENT),
+                        ));
+
+                        card.spawn(Node {
+                            width: Val::Percent(100.0),
+                            column_gap: SPACE_SM,
+                            ..default()
+                        })
+                        .with_children(|row| {
+                            crate::session_flow::spawn_stat(
+                                row,
+                                ui_fonts,
+                                &left,
+                                strings::stat_time_left(),
+                            );
+                            if let Some(on_target) = live.on_target_pct {
+                                crate::session_flow::spawn_stat(
+                                    row,
+                                    ui_fonts,
+                                    &format!("{on_target}%"),
+                                    strings::stat_on_target(),
+                                );
+                            } else {
+                                let shots = live.hits + live.misses;
+                                crate::session_flow::spawn_stat(
+                                    row,
+                                    ui_fonts,
+                                    &format!("{shots} / {}", live.total),
+                                    strings::stat_targets(),
+                                );
+                                let accuracy = (live.hits * 100)
+                                    .checked_div(shots)
+                                    .map_or("—".to_string(), |a| format!("{a}%"));
+                                crate::session_flow::spawn_stat(
+                                    row,
+                                    ui_fonts,
+                                    &accuracy,
+                                    strings::stat_accuracy(),
+                                );
+                            }
+                        });
+
                         // Buttons
                         card.spawn((Node {
+                            width: Val::Percent(100.0),
                             flex_direction: FlexDirection::Column,
                             row_gap: SPACE_SM,
                             align_items: AlignItems::Center,
-                            margin: UiRect::vertical(SPACE_SM),
                             ..default()
                         },))
                             .with_children(|button_col| {
@@ -446,6 +518,19 @@ pub fn spawn_pause_menu(
         });
 }
 
+/// A button's fill. Resume stays the filled primary action, whatever the pointer does.
+pub fn button_background(action: PauseButtonAction, hovered: bool) -> Color {
+    match (action, hovered) {
+        (PauseButtonAction::Resume, false) => COLOR_ACCENT,
+        (PauseButtonAction::Resume, true) => COLOR_ACCENT_HOVER,
+        (PauseButtonAction::QuitWithoutSaving | PauseButtonAction::ConfirmDiscard, false) => {
+            Color::NONE
+        }
+        (_, false) => COLOR_BTN_IDLE,
+        (_, true) => COLOR_BTN_HOVER,
+    }
+}
+
 #[allow(deprecated)]
 fn spawn_card_button(
     parent: &mut ChildSpawnerCommands,
@@ -456,28 +541,32 @@ fn spawn_card_button(
     is_danger: bool,
     ui_fonts: &UiFonts,
 ) {
-    let (bg_color, border_color, text_color) = if is_focused {
+    let (bg_color, border_color, text_color) = if action == PauseButtonAction::Resume {
+        (
+            COLOR_ACCENT,
+            if is_focused {
+                COLOR_TEXT_PRIMARY
+            } else {
+                COLOR_ACCENT
+            },
+            COLOR_ON_ACCENT,
+        )
+    } else if is_focused {
         (
             COLOR_BTN_HOVER,
             if is_danger {
                 COLOR_DANGER
             } else {
-                COLOR_ACCENT
+                COLOR_TEXT_PRIMARY
             },
-            COLOR_TEXT_PRIMARY,
+            if is_danger {
+                COLOR_DANGER
+            } else {
+                COLOR_TEXT_PRIMARY
+            },
         )
     } else if is_danger {
-        (
-            Color::srgba(1.0, 0.361, 0.361, 0.08),
-            COLOR_DANGER,
-            COLOR_DANGER,
-        )
-    } else if action == PauseButtonAction::Resume {
-        (
-            Color::srgba(0.239, 0.863, 0.592, 0.15),
-            COLOR_ACCENT,
-            COLOR_ACCENT,
-        )
+        (Color::NONE, COLOR_CARD_BORDER, COLOR_DANGER)
     } else {
         (
             COLOR_BTN_IDLE,

@@ -175,12 +175,14 @@ export interface SessionCard {
   time_on_target: number | null;
   duration_s: number;
   timing_suspect: boolean;
+  partial: boolean;
 }
 export interface CoachReport {
   at_ms: number;
   scope: string;
   sessions: number;
   source: string;
+  locale?: string;
   note: string | null;
   reply: {
     summary: string;

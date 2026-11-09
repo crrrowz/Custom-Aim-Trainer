@@ -218,7 +218,7 @@ export function TrackingChart({ bins, radius, yLabel }: { bins: TrackBin[]; radi
 }
 
 export function SkillRadar({ skills, name }: { skills: Skill[]; name: (id: string) => string }) {
-  const S = 340, C = S / 2, R = C - 62;
+  const S = 400, C = S / 2, R = C - 92;
   if (skills.length < 3) return null;
   const pt = (i: number, r: number) => {
     const a = -Math.PI / 2 + (i * 2 * Math.PI) / skills.length;
@@ -232,7 +232,7 @@ export function SkillRadar({ skills, name }: { skills: Skill[]; name: (id: strin
       {skills.map((s, i) => {
         const [x, y] = pt(i, R + 16);
         return (
-          <text key={s.skill} x={x} y={y + 4} textAnchor={Math.abs(x - C) < 12 ? "middle" : x > C ? "start" : "end"} fill={COLORS.muted} fontSize={10.5} direction="ltr">
+          <text key={s.skill} x={x} y={y + 4} textAnchor={Math.abs(x - C) < 12 ? "middle" : x > C ? "start" : "end"} fill={COLORS.muted} fontSize={13}>
             {name(s.skill)}
           </text>
         );

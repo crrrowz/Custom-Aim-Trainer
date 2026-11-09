@@ -1,4 +1,4 @@
-use trainer::session_flow::{hud_line, HudNumbers};
+use trainer::session_flow::{hud_cells, HudNumbers, HudTone};
 
 fn numbers() -> HudNumbers {
     HudNumbers {
@@ -13,20 +13,36 @@ fn numbers() -> HudNumbers {
 
 #[test]
 fn shows_time_left_progress_and_accuracy() {
-    assert_eq!(hud_line(numbers()), "01:02    12 / 48    75%");
+    let cells = hud_cells(numbers());
+    assert_eq!(cells[0].value, "01:02");
+    assert_eq!(cells[1].value, "12 / 48");
+    assert_eq!(cells[2].value, "75%");
+    assert_eq!(cells[2].tone, HudTone::Good);
 }
 
 #[test]
 fn tracking_shows_the_clock_and_time_on_target() {
     let mut n = numbers();
     n.tracking = true;
-    assert_eq!(hud_line(n), "01:02    62%");
+    let cells = hud_cells(n);
+    assert_eq!(cells.len(), 2);
+    assert_eq!(cells[1].value, "62%");
+    assert_eq!(cells[1].tone, HudTone::Warn);
 }
 
 #[test]
-fn no_shots_yet_is_not_zero_percent() {
+fn no_shots_yet_shows_no_percentage() {
     let mut n = numbers();
     n.hits = 0;
     n.misses = 0;
-    assert_eq!(hud_line(n), "01:02    0 / 48    100%");
+    let cells = hud_cells(n);
+    assert_eq!(cells[1].value, "0 / 48");
+    assert_eq!(cells[2].value, "—");
+}
+
+#[test]
+fn the_last_ten_seconds_are_highlighted() {
+    let mut n = numbers();
+    n.remaining_s = 9.5;
+    assert_eq!(hud_cells(n)[0].tone, HudTone::Warn);
 }

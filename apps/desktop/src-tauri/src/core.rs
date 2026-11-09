@@ -17,7 +17,7 @@ use aim_llm::{
 };
 use aim_scenarios::schema::Scenario;
 use aim_store::Store;
-use aim_telemetry::format::AftSession;
+use aim_telemetry::format::{quality_flags, AftSession};
 use aim_telemetry::read_aft;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -249,6 +249,8 @@ pub struct SessionCard {
     pub time_on_target: Option<f64>,
     pub duration_s: f64,
     pub timing_suspect: bool,
+    /// The player left this session early.
+    pub partial: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -259,6 +261,9 @@ pub struct CoachReport {
     pub source: String,
     pub note: Option<String>,
     pub reply: CoachReply,
+    /// Language the report was written in.
+    #[serde(default)]
+    pub locale: String,
 }
 
 /// What the AI coach is allowed to see and how it should write. Lives in a JSON file the player can edit.
@@ -571,6 +576,9 @@ impl<R: TrainerRunner> Engine<R> {
             "--form".to_string(),
             form.to_string(),
         ]);
+        if s.test_mode {
+            args.extend(["--rest".to_string(), "3".to_string()]);
+        }
         self.runner.run(&args)?;
 
         let files = recordings_in(&dir)?;
@@ -887,6 +895,7 @@ impl<R: TrainerRunner> Engine<R> {
                     time_on_target: d.time_on_target,
                     duration_s: d.duration_s,
                     timing_suspect: d.timing_suspect,
+                    partial: session.header.quality_flags & quality_flags::ABORTED != 0,
                 };
                 self.cards.borrow_mut().insert(path, card.clone());
                 out.push(card);
@@ -1252,10 +1261,34 @@ impl<R: TrainerRunner> Engine<R> {
                 source: source.to_string(),
                 note,
                 reply,
+                locale: s.locale.clone(),
             },
         );
         reports.truncate(MAX_REPORTS);
         self.store.set(KEY_REPORTS, &reports).map_err(err)
+    }
+
+    pub fn delete_report(&self, at_ms: u64) -> Res<()> {
+        let mut reports = self.reports()?;
+        reports.retain(|r| r.at_ms != at_ms);
+        self.store.set(KEY_REPORTS, &reports).map_err(err)
+    }
+
+    /// Deletes one recording. Only files inside the app's own sessions folder can be removed.
+    pub fn delete_session(&self, path: &str) -> Res<()> {
+        let file = Path::new(path).canonicalize().map_err(err)?;
+        let home = self.data_dir.join("sessions").canonicalize().map_err(err)?;
+        if !file.starts_with(&home) || file.extension().is_none_or(|e| e != "aft") {
+            return Err("That is not one of the app's recordings.".to_string());
+        }
+        std::fs::remove_file(&file).map_err(err)?;
+        self.cards.borrow_mut().remove(path);
+        if let Some(dir) = file.parent() {
+            if recordings_in(dir).unwrap_or_default().is_empty() {
+                std::fs::remove_dir_all(dir).map_err(err)?;
+            }
+        }
+        Ok(())
     }
 
     fn reports(&self) -> Res<Vec<CoachReport>> {
@@ -1737,6 +1770,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(custom_kind(&dir).as_deref(), Some("custom.strafe"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_recording_can_be_deleted_but_only_a_recording() {
+        let (mut e, dir) = engine("del", 1.0);
+        e.run_assessment().unwrap();
+        let cards = e.list_sessions().unwrap();
+        e.delete_session(&cards[0].path).unwrap();
+        assert_eq!(e.list_sessions().unwrap().len(), cards.len() - 1);
+        assert!(e
+            .delete_session(&dir.join("aimforge.db").to_string_lossy())
+            .is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_report_can_be_deleted() {
+        let (mut e, dir) = engine("delrep", 1.0);
+        e.run_assessment().unwrap();
+        e.generate_report("all").unwrap();
+        let at = e.view().unwrap().reports[0].at_ms;
+        e.delete_report(at).unwrap();
+        assert!(e.view().unwrap().reports.is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 

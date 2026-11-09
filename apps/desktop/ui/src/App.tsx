@@ -389,6 +389,7 @@ function Analysis({ ctx, initial }: { ctx: Ctx; initial?: string }) {
               <span dir="ltr">{ms(c.median_reaction_ms)}</span>
             </span>
             {c.assessment && <span className="tag good">{T("تقييم", "Assessment")}</span>}
+            {c.partial && <span className="tag warn">{T("ما كملت", "Not finished")}</span>}
             {c.timing_suspect && <span className="tag warn">{T("نسخة قديمة، الأوقات غير دقيقة", "Old recording, timing unreliable")}</span>}
           </button>
         ))}
@@ -401,6 +402,58 @@ const DIRECTION_NAMES: [string, string, string][] = [
   ["يمين", "Right", "→"], ["يمين فوق", "Up-right", "↗"], ["فوق", "Up", "↑"], ["يسار فوق", "Up-left", "↖"],
   ["يسار", "Left", "←"], ["يسار جوه", "Down-left", "↙"], ["جوه", "Down", "↓"], ["يمين جوه", "Down-right", "↘"],
 ];
+
+/** Destructive actions take two deliberate clicks. */
+function ConfirmButton({ label, confirm, onConfirm }: { label: string; confirm: string; onConfirm: () => void }) {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(false), 3000);
+    return () => clearTimeout(t);
+  }, [armed]);
+  return <button className={`btn ghost ${armed ? "danger" : ""}`} onClick={() => (armed ? onConfirm() : setArmed(true))}>{armed ? confirm : label}</button>;
+}
+
+function saveShareCard(card: SessionCard, d: Detail, lang: Lang) {
+  const c = document.createElement("canvas");
+  c.width = 1080;
+  c.height = 600;
+  const g = c.getContext("2d")!;
+  const font = (px: number, weight = 400) => `${weight} ${px}px "Plex Arabic", Inter, sans-serif`;
+  g.fillStyle = "#0a0c0f";
+  g.fillRect(0, 0, 1080, 600);
+  g.fillStyle = "#3ddc97";
+  g.fillRect(0, 0, 1080, 8);
+  g.fillStyle = "#e8edf3";
+  g.font = font(40, 600);
+  g.fillText("AimForge", 64, 96);
+  g.font = font(52, 600);
+  g.direction = lang === "ar" ? "rtl" : "ltr";
+  g.textAlign = lang === "ar" ? "right" : "left";
+  const x = lang === "ar" ? 1016 : 64;
+  g.fillText(scenarioTitle(card.scenario, lang), x, 200);
+  g.fillStyle = "#8a97a8";
+  g.font = font(28);
+  g.fillText(new Date(card.at_ms).toLocaleDateString(lang === "ar" ? "ar-IQ" : "en-GB"), x, 250);
+  g.direction = "ltr";
+  g.textAlign = "left";
+  const stats: [string, string][] = d.tracking.length
+    ? [[pct(d.time_on_target), T2(lang, "على الهدف", "On target")]]
+    : [[pct(d.accuracy), T2(lang, "الدقة", "Accuracy")], [ms(d.median_reaction_ms), T2(lang, "رد الفعل", "Reaction")], [ms(d.median_time_to_hit_ms), T2(lang, "وقت الإصابة", "Time to hit")]];
+  stats.forEach(([value, label], i) => {
+    const sx = 64 + i * 330;
+    g.fillStyle = "#3ddc97";
+    g.font = font(72, 600);
+    g.fillText(value, sx, 410);
+    g.fillStyle = "#8a97a8";
+    g.font = font(28);
+    g.fillText(label, sx, 460);
+  });
+  const a = document.createElement("a");
+  a.href = c.toDataURL("image/png");
+  a.download = `aimforge-${dayKey(card.at_ms)}.png`;
+  a.click();
+}
 
 function SessionView({ card, ctx, back }: { card: SessionCard; ctx: Ctx; back: () => void }) {
   const { T, lang } = ctx;
@@ -442,6 +495,8 @@ function SessionView({ card, ctx, back }: { card: SessionCard; ctx: Ctx; back: (
   return (
     <>
       <PageHead title={scenarioTitle(card.scenario, lang)} sub={new Date(card.at_ms).toLocaleString(lang === "ar" ? "ar-IQ" : "en-GB", { weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })}>
+        {detail && !detail.timing_suspect && <button className="btn ghost" onClick={() => saveShareCard(card, detail, lang)}>{T("بطاقة مشاركة", "Share card")}</button>}
+        <ConfirmButton label={T("احذف", "Delete")} confirm={T("متأكد؟ ما يرجع", "Sure? This is permanent")} onConfirm={async () => { await ctx.act("delete_session", { path: card.path }); back(); }} />
         <button className="btn ghost" onClick={back}>{T("كل الجلسات", "All sessions")}</button>
       </PageHead>
       {error && <div className="banner err">{error}</div>}
@@ -849,11 +904,35 @@ const TIERS: { id: Tier; name: [string, string]; p: Pick<CustomTargets, "radius_
   { id: "pro", name: ["محترف", "Pro"], p: { radius_deg: 0.4, min_distance_deg: 20, max_distance_deg: 50, speed_deg_s: 30, time_limit_s: 0.8 } },
 ];
 
+interface Preset { name: string; targets: CustomTargets }
+const PRESETS_KEY = "aimforge.presets";
+function readPresets(): Preset[] {
+  try { return JSON.parse(localStorage.getItem(PRESETS_KEY) ?? "[]"); } catch { return []; }
+}
+function writePresets(presets: Preset[]) {
+  try { localStorage.setItem(PRESETS_KEY, JSON.stringify(presets)); } catch { /* presets stay for this visit */ }
+}
+
 function Practice({ ctx }: { ctx: Ctx }) {
   const { view, T, act, lang, go } = ctx;
   const [c, setC] = useState<CustomTargets>({ mode: "flick", concurrent: 3, duration_s: 60, area_h_deg: 35, area_v_deg: 12, reversal_s: 0.55, ...TIERS[1].p });
   const [tier, setTier] = useState<Tier | null>("medium");
   const [section, setSection] = useState<"build" | "library">("build");
+  const [presets, setPresets] = useState<Preset[]>(readPresets);
+  const [presetName, setPresetName] = useState("");
+  const addPreset = () => {
+    const name = presetName.trim();
+    if (!name) return;
+    const next = [...presets.filter((p) => p.name !== name), { name, targets: c }];
+    setPresets(next);
+    writePresets(next);
+    setPresetName("");
+  };
+  const removePreset = (name: string) => {
+    const next = presets.filter((p) => p.name !== name);
+    setPresets(next);
+    writePresets(next);
+  };
   const set = (patch: Partial<CustomTargets>) => { setTier(null); setC({ ...c, ...patch }); };
   const usesDistance = c.mode === "flick" || c.mode === "multi";
   const usesSpeed = c.mode === "track" || c.mode === "strafe";
@@ -911,6 +990,21 @@ function Practice({ ctx }: { ctx: Ctx }) {
               <Slider label={T("مدة الجلسة", "Session length")} value={c.duration_s} min={15} max={300} step={15} unit="s" set={(duration_s) => set({ duration_s })} />
             </section>
           </div>
+          <section className="card">
+            <span className="label">{T("إعداداتك المحفوظة", "Your saved setups")}</span>
+            <div className="chips">
+              {presets.map((p) => (
+                <span className="preset" key={p.name}>
+                  <button onClick={() => { setTier(null); setC(p.targets); }}>{p.name}</button>
+                  <button aria-label={T("احذف", "Delete")} onClick={() => removePreset(p.name)}>×</button>
+                </span>
+              ))}
+            </div>
+            <form className="row composer-sm" onSubmit={(e) => { e.preventDefault(); addPreset(); }}>
+              <input className="grow" value={presetName} placeholder={T("اسم لهذي الإعدادات", "Name this setup")} onChange={(e) => setPresetName(e.target.value)} />
+              <button className="btn ghost" disabled={!presetName.trim()}>{T("احفظ", "Save")}</button>
+            </form>
+          </section>
           {history.length > 0 && (
             <section className="card">
               <span className="label">{T("آخر جلساتك بهذا النوع", "Your recent sessions in this mode")}</span>
@@ -1013,8 +1107,17 @@ function Coach({ ctx }: { ctx: Ctx }) {
           <article className="card report">
             <div className="row between">
               <span className="muted small">{scopeName(report.scope)} · {whenText(report.at_ms, lang)}</span>
-              <span className={`tag ${report.source === "ai" ? "good" : ""}`}>{report.source === "ai" ? T("ذكاء اصطناعي", "AI") : T("تحليل مدمج", "Built-in")}</span>
+              <span className="row">
+                <span className={`tag ${report.source === "ai" ? "good" : ""}`}>{report.source === "ai" ? T("ذكاء اصطناعي", "AI") : T("تحليل مدمج", "Built-in")}</span>
+                <ConfirmButton label={T("احذف", "Delete")} confirm={T("متأكد؟", "Sure?")} onConfirm={() => { act("delete_report", { at_ms: report.at_ms }); setSelected(0); }} />
+              </span>
             </div>
+            {report.locale && report.locale !== view.settings.locale && (
+              <div className="banner row between">
+                <span>{T("هذا التقرير مكتوب بلغة ثانية.", "This report is written in another language.")}</span>
+                <button className="btn ghost" disabled={working !== null} onClick={() => make(report.scope)}>{T("اكتبه من جديد بلغتي", "Rewrite in my language")}</button>
+              </div>
+            )}
             <p className="lead">{report.reply.summary}</p>
             {report.note && <div className="banner">{T("استخدمنا التحليل المدمج لأن:", "Used the built-in analysis because:")} {friendlyError(report.note, T)}</div>}
             {report.reply.strengths.length > 0 && (
@@ -1062,21 +1165,37 @@ function SettingsPage({ ctx }: { ctx: Ctx }) {
   const { view, T, act } = ctx;
   const [s, setS] = useState<Settings>(view.settings);
   const [saved, setSaved] = useState(false);
+  const first = useRef(true);
   const [key, setKey] = useState("");
   const [test, setTest] = useState<{ ok: boolean; text: string } | null>(null);
   const [testing, setTesting] = useState(false);
   const [config, setConfig] = useState<CoachConfig | null>(null);
   useEffect(() => { call<CoachConfig>("get_coach_config").then(setConfig, () => undefined); }, []);
+  // Everything except the API key saves itself shortly after a change.
+  const snapshot = JSON.stringify([s, config]);
+  useEffect(() => {
+    if (first.current) { first.current = false; return; }
+    const t = setTimeout(async () => {
+      await act("save_settings", { settings: s });
+      if (config) await call("save_coach_config", { config });
+      setSaved(true);
+    }, 500);
+    return () => clearTimeout(t);
+  }, [snapshot]);
   const set = (patch: Partial<Settings>) => { setSaved(false); setTest(null); setS({ ...s, ...patch }); };
   const source = AI_SOURCES.find((a) => a.id === s.ai_provider) ?? AI_SOURCES[0];
   const needsAi = s.ai_provider !== "template";
   const hasKey = view.ai_keys_set.includes(s.ai_provider);
+  const saveKey = async () => {
+    if (key.trim()) {
+      await act("set_ai_key", { provider: s.ai_provider, key });
+      setKey("");
+    }
+  };
   const saveAll = async () => {
     await act("save_settings", { settings: s });
-    if (key.trim()) await act("set_ai_key", { provider: s.ai_provider, key });
+    await saveKey();
     if (config) await call("save_coach_config", { config });
-    setKey("");
-    setSaved(true);
   };
   const runTest = async () => {
     setTesting(true);
@@ -1122,7 +1241,7 @@ function SettingsPage({ ctx }: { ctx: Ctx }) {
           </label>
           {needsAi && <label className="field">{T("اسم الموديل", "Model name")}<input dir="ltr" value={s.ai_model} onChange={(e) => set({ ai_model: e.target.value })} /></label>}
           {s.ai_provider === "custom" && <label className="field">{T("رابط الخادم (Base URL)", "Server URL (Base URL)")}<input dir="ltr" placeholder="http://localhost:11434/v1" value={s.ai_base_url} onChange={(e) => set({ ai_base_url: e.target.value })} /></label>}
-          {needsAi && <label className="field">API key{source.needsKey ? "" : T(" (اختياري)", " (optional)")}<input dir="ltr" type="password" autoComplete="off" placeholder={hasKey ? T("محفوظ. اكتب مفتاح جديد لتغييره", "Saved. Type a new key to replace it") : ""} value={key} onChange={(e) => { setKey(e.target.value); setSaved(false); }} /></label>}
+          {needsAi && <label className="field">API key{source.needsKey ? "" : T(" (اختياري)", " (optional)")}<input dir="ltr" type="password" autoComplete="off" placeholder={hasKey ? T("محفوظ. اكتب مفتاح جديد لتغييره", "Saved. Type a new key to replace it") : ""} value={key} onChange={(e) => setKey(e.target.value)} onBlur={saveKey} /></label>}
         </div>
         {needsAi && (
           <div className="row">
@@ -1144,10 +1263,7 @@ function SettingsPage({ ctx }: { ctx: Ctx }) {
           <p className="small muted">{T("نفس الإعدادات بملف JSON وتكدر تعدله:", "The same settings live in a JSON file you can edit:")} <code dir="ltr">{view.coach_config_path}</code></p>
         </section>
       )}
-      <div className="row savebar">
-        <button className="btn" onClick={saveAll}>{T("احفظ", "Save")}</button>
-        {saved && <span className="up">{T("انحفظ", "Saved")}</span>}
-      </div>
+      <p className="small muted savebar">{saved ? T("✓ كل التغييرات محفوظة", "✓ All changes saved") : T("التغييرات تنحفظ تلقائياً.", "Changes save automatically.")}</p>
     </>
   );
 }

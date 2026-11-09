@@ -117,6 +117,24 @@ async fn generate_report(app: tauri::AppHandle, scope: String) -> Result<View, S
 }
 
 #[tauri::command]
+async fn delete_session(app: tauri::AppHandle, path: String) -> Result<View, String> {
+    with_engine(app, move |e| {
+        e.delete_session(&path)?;
+        e.view()
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_report(app: tauri::AppHandle, at_ms: u64) -> Result<View, String> {
+    with_engine(app, move |e| {
+        e.delete_report(at_ms)?;
+        e.view()
+    })
+    .await
+}
+
+#[tauri::command]
 async fn set_ai_key(app: tauri::AppHandle, provider: String, key: String) -> Result<View, String> {
     with_engine(app, move |e| {
         e.set_ai_key(&provider, &key)?;
@@ -161,6 +179,8 @@ fn main() {
             run_scenario,
             session_detail,
             generate_report,
+            delete_session,
+            delete_report,
             set_ai_key,
             test_ai,
             get_coach_config,

@@ -1,19 +1,24 @@
 use bevy::prelude::*;
 
 // Color Palette
-pub const COLOR_DIM_BACKGROUND: Color = Color::srgba(0.059, 0.067, 0.082, 0.70); // #0F1115 @ 70% dim
-pub const COLOR_CARD_BACKGROUND: Color = Color::srgb(0.094, 0.106, 0.133); // #181B22
+pub const COLOR_DIM_BACKGROUND: Color = Color::srgba(0.039, 0.047, 0.059, 0.78); // #0A0C0F @ 78% dim
+pub const COLOR_CARD_BACKGROUND: Color = Color::srgb(0.071, 0.086, 0.106); // #12161B
 pub const COLOR_TEXT_PRIMARY: Color = Color::srgb(0.910, 0.918, 0.929); // #E8EAED
 pub const COLOR_TEXT_MUTED: Color = Color::srgb(0.604, 0.627, 0.651); // #9AA0A6
 pub const COLOR_ACCENT: Color = Color::srgb(0.239, 0.863, 0.592); // #3DDC97
-pub const COLOR_DANGER: Color = Color::srgb(1.0, 0.361, 0.361); // #FF5C5C
+pub const COLOR_DANGER: Color = Color::srgb(1.0, 0.42, 0.42); // #FF6B6B
+pub const COLOR_ACCENT_HOVER: Color = Color::srgb(0.357, 0.910, 0.675); // #5BE8AC
+pub const COLOR_WARN: Color = Color::srgb(0.898, 0.678, 0.271); // #E5AD45
+pub const COLOR_ON_ACCENT: Color = Color::srgb(0.024, 0.137, 0.102); // #06231A
+pub const COLOR_CARD_BORDER: Color = Color::srgba(1.0, 1.0, 1.0, 0.09);
+pub const COLOR_HUD_PANEL: Color = Color::srgba(0.039, 0.047, 0.059, 0.72);
 
-pub const COLOR_BTN_IDLE: Color = Color::srgb(0.141, 0.157, 0.192); // #242831
-pub const COLOR_BTN_HOVER: Color = Color::srgb(0.180, 0.200, 0.243); // #2E333E
+pub const COLOR_BTN_IDLE: Color = Color::srgb(0.102, 0.125, 0.153); // #1A2027
+pub const COLOR_BTN_HOVER: Color = Color::srgb(0.141, 0.173, 0.212); // #242C36
 pub const COLOR_BTN_PRESSED: Color = Color::srgb(0.071, 0.078, 0.098); // #121419
 
 // Spacing Scale
-pub const RADIUS_CARD: Val = Val::Px(8.0);
+pub const RADIUS_CARD: Val = Val::Px(14.0);
 pub const RADIUS_BUTTON: Val = Val::Px(8.0);
 
 pub const SPACE_XS: Val = Val::Px(4.0);
@@ -25,16 +30,18 @@ pub const SPACE_XL: Val = Val::Px(24.0);
 // Typography
 pub const FONT_SIZE_COUNTDOWN: f32 = 72.0;
 pub const FONT_SIZE_TITLE: f32 = 32.0;
-pub const FONT_SIZE_STAT: f32 = 24.0;
+pub const FONT_SIZE_STAT: f32 = 26.0;
+pub const FONT_SIZE_HUD_VALUE: f32 = 28.0;
+pub const FONT_SIZE_HUD_LABEL: f32 = 12.0;
 pub const FONT_SIZE_SUBTITLE: f32 = 14.0;
 pub const FONT_SIZE_BUTTON: f32 = 16.0;
 pub const FONT_SIZE_FOOTER: f32 = 12.0;
 
 // Element dimensions
-pub const CARD_WIDTH: Val = Val::Px(420.0);
-pub const CARD_WIDTH_LARGE: Val = Val::Px(500.0);
-pub const BUTTON_WIDTH: Val = Val::Px(320.0);
-pub const BUTTON_HEIGHT: Val = Val::Px(44.0);
+pub const CARD_WIDTH: Val = Val::Px(460.0);
+pub const CARD_WIDTH_LARGE: Val = Val::Px(520.0);
+pub const BUTTON_WIDTH: Val = Val::Percent(100.0);
+pub const BUTTON_HEIGHT: Val = Val::Px(46.0);
 
 // UI Strings. English unless the desktop app launches the game with --locale ar.
 pub mod strings {
@@ -80,6 +87,9 @@ pub mod strings {
         stat_accuracy => "ACCURACY", "الإصابة";
         stat_hits => "HITS", "الأهداف";
         stat_on_target => "ON TARGET", "على الهدف";
+        stat_time_left => "TIME LEFT", "الوقت الباقي";
+        stat_targets => "TARGETS", "الأهداف";
+        rest_label => "Rest", "استراحة";
         stat_length => "LENGTH", "المدة";
         stat_reaction => "REACTION", "رد الفعل";
         stage_label => "ASSESSMENT • TEST", "التقييم • اختبار";

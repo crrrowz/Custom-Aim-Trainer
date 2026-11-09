@@ -19,6 +19,10 @@ pub struct FlowOverlayRoot;
 #[derive(Component)]
 pub struct CountdownDigitMarker;
 
+/// The hint under a battery result; it counts down the rest before the next test.
+#[derive(Component)]
+pub struct RestHint;
+
 #[derive(Debug, Clone)]
 pub struct SessionFlowEngine {
     scenario_name: String,
@@ -234,15 +238,65 @@ pub struct HudNumbers {
     pub on_target_pct: u32,
 }
 
-pub fn hud_line(n: HudNumbers) -> String {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HudTone {
+    Normal,
+    Good,
+    Warn,
+    Bad,
+}
+
+pub struct HudCell {
+    pub value: String,
+    pub label: &'static str,
+    pub tone: HudTone,
+}
+
+fn tone_for_percent(percent: u32) -> HudTone {
+    match percent {
+        75.. => HudTone::Good,
+        50..=74 => HudTone::Warn,
+        _ => HudTone::Bad,
+    }
+}
+
+/// The numbers at the top of the screen during a session.
+pub fn hud_cells(n: HudNumbers) -> Vec<HudCell> {
     let left = n.remaining_s.ceil() as u32;
-    let clock = format!("{:02}:{:02}", left / 60, left % 60);
+    let time = HudCell {
+        value: format!("{:02}:{:02}", left / 60, left % 60),
+        label: strings::stat_time_left(),
+        tone: if left <= 10 {
+            HudTone::Warn
+        } else {
+            HudTone::Normal
+        },
+    };
     if n.tracking {
-        return format!("{clock}    {}%", n.on_target_pct);
+        return vec![
+            time,
+            HudCell {
+                value: format!("{}%", n.on_target_pct),
+                label: strings::stat_on_target(),
+                tone: tone_for_percent(n.on_target_pct),
+            },
+        ];
     }
     let shots = n.hits + n.misses;
-    let accuracy = (n.hits * 100).checked_div(shots).unwrap_or(100);
-    format!("{clock}    {shots} / {}    {accuracy}%", n.total)
+    let accuracy = (n.hits * 100).checked_div(shots);
+    vec![
+        time,
+        HudCell {
+            value: format!("{shots} / {}", n.total),
+            label: strings::stat_targets(),
+            tone: HudTone::Normal,
+        },
+        HudCell {
+            value: accuracy.map_or("—".to_string(), |a| format!("{a}%")),
+            label: strings::stat_accuracy(),
+            tone: accuracy.map_or(HudTone::Normal, tone_for_percent),
+        },
+    ]
 }
 
 type Instructions = (&'static str, &'static str, &'static str);
@@ -644,14 +698,14 @@ pub fn spawn_instructions_overlay(
                         width: CARD_WIDTH_LARGE,
                         flex_direction: FlexDirection::Column,
                         align_items: AlignItems::Center,
-                        padding: UiRect::all(SPACE_XL),
+                        padding: UiRect::all(Val::Px(32.0)),
                         row_gap: SPACE_LG,
                         border: UiRect::all(Val::Px(1.0)),
                         border_radius: BorderRadius::all(RADIUS_CARD),
                         ..default()
                     },
                     BackgroundColor(COLOR_CARD_BACKGROUND),
-                    BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.08)),
+                    BorderColor::all(COLOR_CARD_BORDER),
                 ))
                 .with_children(|card| {
                     if let Some((current, total)) = battery_info {
@@ -744,14 +798,14 @@ pub fn spawn_countdown_overlay(
                         width: CARD_WIDTH,
                         flex_direction: FlexDirection::Column,
                         align_items: AlignItems::Center,
-                        padding: UiRect::all(SPACE_XL),
+                        padding: UiRect::all(Val::Px(32.0)),
                         row_gap: SPACE_LG,
                         border: UiRect::all(Val::Px(1.0)),
                         border_radius: BorderRadius::all(RADIUS_CARD),
                         ..default()
                     },
                     BackgroundColor(COLOR_CARD_BACKGROUND),
-                    BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.08)),
+                    BorderColor::all(COLOR_CARD_BORDER),
                 ))
                 .with_children(|card| {
                     card.spawn((
@@ -789,7 +843,7 @@ pub fn spawn_countdown_overlay(
         });
 }
 
-fn spawn_stat(parent: &mut ChildSpawnerCommands, ui_fonts: &UiFonts, value: &str, label: &str) {
+pub fn spawn_stat(parent: &mut ChildSpawnerCommands, ui_fonts: &UiFonts, value: &str, label: &str) {
     parent
         .spawn((
             Node {
@@ -853,14 +907,14 @@ pub fn spawn_results_overlay(
                         width: CARD_WIDTH_LARGE,
                         flex_direction: FlexDirection::Column,
                         align_items: AlignItems::Center,
-                        padding: UiRect::all(SPACE_XL),
+                        padding: UiRect::all(Val::Px(32.0)),
                         row_gap: SPACE_LG,
                         border: UiRect::all(Val::Px(1.0)),
                         border_radius: BorderRadius::all(RADIUS_CARD),
                         ..default()
                     },
                     BackgroundColor(COLOR_CARD_BACKGROUND),
-                    BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.08)),
+                    BorderColor::all(COLOR_CARD_BORDER),
                 ))
                 .with_children(|card| {
                     // Header
@@ -937,6 +991,7 @@ pub fn spawn_results_overlay(
                     };
 
                     card.spawn((
+                        RestHint,
                         Text::new(hint),
                         TextFont {
                             font: FontSource::Handle(ui_fonts.regular.clone()),

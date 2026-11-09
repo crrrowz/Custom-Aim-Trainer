@@ -40,9 +40,7 @@ use trainer::target::{
     setup_target_assets, spawn_cluster_target, spawn_home_target, spawn_peek_target,
     spawn_tracking_target, spawn_trial_target, ActiveTargetMarker, TargetAssets,
 };
-use trainer::ui_tokens::{
-    COLOR_ACCENT, COLOR_BTN_HOVER, COLOR_BTN_IDLE, COLOR_DANGER, COLOR_TEXT_PRIMARY,
-};
+use trainer::ui_tokens::{COLOR_ACCENT, COLOR_DANGER, COLOR_TEXT_PRIMARY};
 use trainer::ScenarioResource;
 
 #[derive(Resource)]
@@ -56,6 +54,8 @@ pub struct TrainerConfig {
     pub duration_s: f64,
     /// `--duration`, applied to every stage of a battery.
     pub duration_override: Option<f64>,
+    /// Seconds of rest between the tests of a battery.
+    pub rest_s: f32,
     pub windowed: bool,
     pub fullscreen_exclusive: bool,
     pub backend: String,
@@ -102,6 +102,7 @@ pub struct TrainerState {
     pub reaction_times_s: Vec<f64>,
     pub session_saved: bool,
     pub drill: trainer::drill_rules::DrillRuntime,
+    pub rest_left_s: Option<f32>,
     pub flow_engine: SessionFlowEngine,
     pub battery_sequencer: Option<BatterySequencer>,
 }
@@ -121,11 +122,16 @@ fn parse_cli_args() -> (TrainerConfig, Option<f64>) {
     let mut max_frame_latency = 1u32;
     let mut output_path = None;
     let mut output_dir = None;
+    let mut rest_s = DEFAULT_REST_S;
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            "--rest" if i + 1 < args.len() => {
+                rest_s = args[i + 1].parse().unwrap_or(DEFAULT_REST_S);
+                i += 2;
+            }
             "--locale" if i + 1 < args.len() => {
                 trainer::ui_tokens::strings::set_arabic(args[i + 1] == "ar");
                 i += 2;
@@ -229,6 +235,7 @@ fn parse_cli_args() -> (TrainerConfig, Option<f64>) {
             sens,
             duration_s: 288.0,
             duration_override: None,
+            rest_s,
             windowed,
             fullscreen_exclusive,
             backend,
@@ -299,6 +306,7 @@ fn setup_trainer(
 
     commands.insert_resource(PauseManager::new());
     commands.insert_resource(PauseMenuNavigation {
+        live: Default::default(),
         focused_index: 0,
         click_guard_s: 0.0,
         is_confirming_discard: false,
@@ -332,6 +340,7 @@ fn setup_trainer(
         reaction_times_s: Vec::new(),
         session_saved: false,
         drill: Default::default(),
+        rest_left_s: None,
         flow_engine: SessionFlowEngine::new(config.scenario.clone()),
         battery_sequencer: if let Some(ref bat) = config.battery {
             let stages = resolve_battery_stages(bat).unwrap_or_else(|e| {
@@ -1235,6 +1244,9 @@ fn session_lifecycle_system(
             .unwrap_or(false);
 
         spawn_results_overlay(&mut commands, &ui_fonts, &summary, is_battery, has_next);
+        if has_next && config.rest_s > 0.0 {
+            state.rest_left_s = Some(config.rest_s);
+        }
     }
 }
 
@@ -1427,10 +1439,10 @@ fn pause_menu_button_system(
                 }
             }
             Interaction::Hovered => {
-                *bg_color = BackgroundColor(COLOR_BTN_HOVER);
+                *bg_color = BackgroundColor(trainer::pause::button_background(*action, true));
             }
             Interaction::None => {
-                *bg_color = BackgroundColor(COLOR_BTN_IDLE);
+                *bg_color = BackgroundColor(trainer::pause::button_background(*action, false));
             }
         }
     }
@@ -1522,32 +1534,79 @@ fn pause_menu_button_system(
     }
 }
 
+/// 03_DIAGNOSIS_ENGINE: short rests between tests keep the battery fair.
+const DEFAULT_REST_S: f32 = 15.0;
+
 #[derive(Component)]
 struct FeedbackText;
 
 #[derive(Component)]
-struct SessionHudText;
+struct SessionHudCell(usize);
+
+#[derive(Component)]
+struct SessionHudValue(usize);
+
+#[derive(Component)]
+struct SessionHudLabel(usize);
 
 fn spawn_feedback_hud(mut commands: Commands, ui_fonts: Res<trainer::fonts::UiFonts>) {
     commands
         .spawn(Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(18.0),
+            top: Val::Px(20.0),
             width: Val::Percent(100.0),
             justify_content: JustifyContent::Center,
             ..default()
         })
         .with_children(|root| {
-            root.spawn((
-                Text::new(""),
-                TextFont {
-                    font: bevy::text::FontSource::Handle(ui_fonts.semibold.clone()),
-                    font_size: bevy::text::FontSize::Px(26.0),
-                    ..default()
-                },
-                TextColor(COLOR_TEXT_PRIMARY),
-                SessionHudText,
-            ));
+            root.spawn(Node {
+                column_gap: Val::Px(8.0),
+                ..default()
+            })
+            .with_children(|row| {
+                for i in 0..3 {
+                    row.spawn((
+                        Node {
+                            display: Display::None,
+                            min_width: Val::Px(128.0),
+                            flex_direction: FlexDirection::Column,
+                            align_items: AlignItems::Center,
+                            row_gap: Val::Px(2.0),
+                            padding: UiRect::axes(Val::Px(18.0), Val::Px(10.0)),
+                            border_radius: BorderRadius::all(Val::Px(10.0)),
+                            ..default()
+                        },
+                        BackgroundColor(trainer::ui_tokens::COLOR_HUD_PANEL),
+                        SessionHudCell(i),
+                    ))
+                    .with_children(|cell| {
+                        cell.spawn((
+                            Text::new(""),
+                            TextFont {
+                                font: bevy::text::FontSource::Handle(ui_fonts.semibold.clone()),
+                                font_size: bevy::text::FontSize::Px(
+                                    trainer::ui_tokens::FONT_SIZE_HUD_VALUE,
+                                ),
+                                ..default()
+                            },
+                            TextColor(COLOR_TEXT_PRIMARY),
+                            SessionHudValue(i),
+                        ));
+                        cell.spawn((
+                            Text::new(""),
+                            TextFont {
+                                font: bevy::text::FontSource::Handle(ui_fonts.regular.clone()),
+                                font_size: bevy::text::FontSize::Px(
+                                    trainer::ui_tokens::FONT_SIZE_HUD_LABEL,
+                                ),
+                                ..default()
+                            },
+                            TextColor(trainer::ui_tokens::COLOR_TEXT_MUTED),
+                            SessionHudLabel(i),
+                        ));
+                    });
+                }
+            });
         });
     commands
         .spawn(Node {
@@ -1572,30 +1631,101 @@ fn spawn_feedback_hud(mut commands: Commands, ui_fonts: Res<trainer::fonts::UiFo
 }
 
 /// One line under the crosshair: how far the last flick went, or whether the player can shoot.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn update_session_hud(
-    state: Res<TrainerState>,
+    mut state: ResMut<TrainerState>,
     config: Res<TrainerConfig>,
+    time: Res<Time>,
     pause_manager: Res<PauseManager>,
-    mut text: Query<&mut Text, With<SessionHudText>>,
+    mut nav: ResMut<PauseMenuNavigation>,
+    mut cells: Query<(&SessionHudCell, &mut Node)>,
+    mut values: Query<(&SessionHudValue, &mut Text, &mut TextColor), Without<SessionHudLabel>>,
+    mut labels: Query<(&SessionHudLabel, &mut Text), Without<SessionHudValue>>,
+    mut rest_hint: Query<
+        &mut Text,
+        (
+            With<trainer::session_flow::RestHint>,
+            Without<SessionHudValue>,
+            Without<SessionHudLabel>,
+        ),
+    >,
 ) {
-    let Some(mut line) = text.iter_mut().next() else {
-        return;
-    };
-    let value = if state.flow_engine.is_running() {
+    use trainer::session_flow::{hud_cells, HudNumbers, HudTone};
+    use trainer::ui_tokens::{strings, COLOR_WARN};
+
+    if let Some(left) = state.rest_left_s {
+        let left = left - time.delta_secs();
+        if let Some(mut hint) = rest_hint.iter_mut().next() {
+            hint.0 = if left > 0.0 {
+                format!(
+                    "{} {}s   •   Esc",
+                    strings::rest_label(),
+                    left.ceil() as u32
+                )
+            } else {
+                strings::results_next_hint().to_string()
+            };
+        }
+        state.rest_left_s = (left > 0.0).then_some(left);
+    }
+
+    let running = state.flow_engine.is_running() && !pause_manager.is_paused;
+    let tracking = !state.scenario_def.hit_rule.accepts_shots();
+    let on_target = state.drill.on_target_percent().map(|p| p as u32);
+    if running {
+        nav.live = trainer::pause::LiveStats {
+            hits: state.hits_count,
+            misses: state.misses_count,
+            total: state.layout_engine.total_trials_or_targets() as u32,
+            on_target_pct: if tracking {
+                Some(on_target.unwrap_or(0))
+            } else {
+                None
+            },
+        };
+    }
+    let shown = if running {
         let elapsed = SessionClock::us_to_s(pause_manager.active_time_us(state.clock.now_us()));
-        trainer::session_flow::hud_line(trainer::session_flow::HudNumbers {
+        hud_cells(HudNumbers {
             remaining_s: (config.duration_s - elapsed).max(0.0),
             hits: state.hits_count,
             misses: state.misses_count,
             total: state.layout_engine.total_trials_or_targets() as u32,
-            tracking: !state.scenario_def.hit_rule.accepts_shots(),
-            on_target_pct: state.drill.on_target_percent().unwrap_or(0.0) as u32,
+            tracking,
+            on_target_pct: on_target.unwrap_or(0),
         })
     } else {
-        String::new()
+        Vec::new()
     };
-    if line.0 != value {
-        line.0 = value;
+    for (cell, mut node) in &mut cells {
+        let display = if cell.0 < shown.len() {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if node.display != display {
+            node.display = display;
+        }
+    }
+    for (slot, mut text, mut color) in &mut values {
+        if let Some(cell) = shown.get(slot.0) {
+            if text.0 != cell.value {
+                text.0 = cell.value.clone();
+            }
+            color.0 = match cell.tone {
+                HudTone::Normal => COLOR_TEXT_PRIMARY,
+                HudTone::Good => COLOR_ACCENT,
+                HudTone::Warn => COLOR_WARN,
+                HudTone::Bad => COLOR_DANGER,
+            };
+        }
+    }
+    for (slot, mut text) in &mut labels {
+        if let Some(cell) = shown.get(slot.0) {
+            if text.0 != cell.label {
+                text.0 = cell.label.to_string();
+            }
+        }
     }
 }
 
@@ -1738,8 +1868,8 @@ fn flow_update_system(
             }
         }
         FlowState::Results => {
-            let advance_pressed =
-                keyboard.just_pressed(KeyCode::Enter) || keyboard.just_pressed(KeyCode::Space);
+            let advance_pressed = state.rest_left_s.is_none()
+                && (keyboard.just_pressed(KeyCode::Enter) || keyboard.just_pressed(KeyCode::Space));
             let esc_pressed = keyboard.just_pressed(KeyCode::Escape);
 
             if esc_pressed {
