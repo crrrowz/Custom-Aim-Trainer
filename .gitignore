@@ -45,3 +45,6 @@ Thumbs.db
 
 # Claude Code personal settings
 .claude/settings.local.json
+
+# Tauri generated schemas
+apps/desktop/src-tauri/gen/

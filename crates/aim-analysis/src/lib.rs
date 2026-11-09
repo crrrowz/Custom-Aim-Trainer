@@ -233,4 +233,6 @@ pub use engagement::{
     EngagementMetrics, FlickMetrics,
 };
 pub use segment::AnalysisThresholds;
-pub use skills::{analyze_sessions, Evidence, Reliability, SkillEstimate, SkillId, SkillProfile};
+pub use skills::{
+    analyze_sessions, time_on_target, Evidence, Reliability, SkillEstimate, SkillId, SkillProfile,
+};

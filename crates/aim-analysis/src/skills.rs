@@ -584,3 +584,9 @@ pub fn analyze_sessions(sessions: &[AftSession], th: &AnalysisThresholds) -> Ski
         evidence,
     }
 }
+
+/// Share of tracking time spent on target, or `None` when the session has no moving target.
+pub fn time_on_target(session: &AftSession) -> Option<f64> {
+    let samples = tracking_metrics(session).on_target;
+    (!samples.is_empty()).then(|| mean(&samples))
+}

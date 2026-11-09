@@ -43,6 +43,9 @@ fn weights(skill: SkillId) -> (f64, f64) {
     }
 }
 
+/// (rule id, skill, severity, evidence, drills) before priorities are computed.
+type Candidate<'a> = (&'a str, SkillId, f64, Vec<(String, f64)>, Vec<String>);
+
 fn drills(names: &[&str]) -> Vec<String> {
     names.iter().map(|n| n.to_string()).collect()
 }
@@ -54,7 +57,7 @@ pub fn diagnose(profile: &SkillProfile) -> Vec<Finding> {
     let good = |id| score(id).is_some_and(|s| s >= GOOD_SCORE);
     let weak = |id| score(id).is_some_and(|s| s < WEAK_SCORE);
 
-    let mut candidates: Vec<(&str, SkillId, f64, Vec<(String, f64)>, Vec<String>)> = Vec::new();
+    let mut candidates: Vec<Candidate> = Vec::new();
     let mut add = |id, skill, severity: f64, evidence: Vec<(&str, f64)>, d: &[&str]| {
         candidates.push((
             id,

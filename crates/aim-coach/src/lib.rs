@@ -2,6 +2,7 @@
 //! Pure logic only: no I/O, no game engine, no network.
 
 pub mod diagnosis;
+pub mod drills;
 pub mod evaluation;
 pub mod narrative;
 pub mod plan;
