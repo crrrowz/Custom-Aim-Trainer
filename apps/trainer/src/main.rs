@@ -402,6 +402,8 @@ fn handle_window_focus(
         RawInputWorker::set_window_focused(ev.focused);
         if ev.focused {
             nav.on_focus_regained();
+        } else {
+            trainer::raw_input::release_cursor_clip();
         }
         if !state.flow_engine.is_running() {
             continue;
@@ -543,6 +545,7 @@ fn drain_and_evaluate_input_system(
     }
 
     let rules = state.scenario_def.rules.clone();
+    let shots_enabled = state.scenario_def.hit_rule.accepts_shots();
     if rules.counter_strafe && state.flow_engine.is_running() {
         use aim_telemetry::format::KeyCode as RecordedKey;
         let (left, right) = (KeyCode::KeyA, KeyCode::KeyD);
@@ -592,6 +595,9 @@ fn drain_and_evaluate_input_system(
                 t_us,
                 angles_at_click,
             } => {
+                if !shots_enabled {
+                    continue;
+                }
                 if render_start_t_us >= t_us {
                     state.input_latencies_us.push(render_start_t_us - t_us);
                 }

@@ -28,10 +28,11 @@ use windows_sys::Win32::UI::Input::{
     RIDEV_INPUTSINK, RIDI_DEVICENAME, RID_INPUT, RIM_TYPEMOUSE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
-    GetMessageW, PostMessageW, PostQuitMessage, RegisterClassExW, TranslateMessage, MSG,
-    RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_DOWN,
-    RI_MOUSE_RIGHT_BUTTON_UP, WM_CLOSE, WM_DESTROY, WM_INPUT, WNDCLASSEXW,
+    ClipCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+    GetForegroundWindow, GetMessageW, PostMessageW, PostQuitMessage, RegisterClassExW,
+    TranslateMessage, MSG, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP,
+    RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_UP, WM_CLOSE, WM_DESTROY, WM_INPUT,
+    WNDCLASSEXW,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +50,15 @@ pub struct RawInputEvent {
     pub device_id: usize,
     pub t_us: u64,
     pub payload: RawInputPayload,
+}
+
+/// Lets the cursor leave the game. winit only updates the clip while its window is focused, so
+/// after the focus has already gone (Win key, Alt-Tab) the OS would keep the cursor trapped.
+pub fn release_cursor_clip() {
+    // SAFETY: a null rectangle is the documented way to remove the clip; no memory is passed.
+    unsafe {
+        ClipCursor(std::ptr::null());
+    }
 }
 
 static TARGET_HWND: AtomicUsize = AtomicUsize::new(0);

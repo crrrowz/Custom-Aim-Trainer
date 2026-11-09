@@ -27,6 +27,13 @@ pub enum HitRule {
     ContinuousTracking,
 }
 
+impl HitRule {
+    /// Tracking is scored on staying on the target, so clicking does nothing there.
+    pub fn accepts_shots(self) -> bool {
+        self == Self::SingleShotKill
+    }
+}
+
 /// Starting point for angular distance measurement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DistanceAnchor {
