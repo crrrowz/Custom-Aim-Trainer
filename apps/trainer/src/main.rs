@@ -31,6 +31,11 @@ use trainer::pause::{
 };
 use trainer::raw_input::RawInputWorker;
 use trainer::recorder::{self, SessionRecorder};
+use trainer::session_flow::{
+    compute_session_results, despawn_flow_overlay, resolve_battery_stages, spawn_countdown_overlay,
+    spawn_instructions_overlay, spawn_results_overlay, BatterySequencer, FlowOverlayRoot,
+    FlowState, SessionFlowEngine, SessionResultsInput,
+};
 use trainer::target::{
     setup_target_assets, spawn_cluster_target, spawn_home_target, spawn_peek_target,
     spawn_tracking_target, spawn_trial_target, ActiveTargetMarker, TargetAssets,
@@ -41,6 +46,7 @@ use trainer::ScenarioResource;
 #[derive(Resource)]
 pub struct TrainerConfig {
     pub scenario: String,
+    pub battery: Option<String>,
     pub seed: Option<u64>,
     pub form: Option<u32>,
     pub dpi: u32,
@@ -52,6 +58,7 @@ pub struct TrainerConfig {
     pub present_mode_str: String,
     pub max_frame_latency: u32,
     pub output_path: Option<PathBuf>,
+    pub output_dir: Option<PathBuf>,
 }
 
 /// Seed used to generate this session's trials, derived alongside the scenario
@@ -88,11 +95,15 @@ pub struct TrainerState {
     pub next_target_id: u32,
     pub hits_count: u32,
     pub misses_count: u32,
+    pub reaction_times_s: Vec<f64>,
     pub session_saved: bool,
+    pub flow_engine: SessionFlowEngine,
+    pub battery_sequencer: Option<BatterySequencer>,
 }
 
 fn parse_cli_args() -> (TrainerConfig, Option<f64>) {
     let mut scenario = "assess.v1.flick_static".to_string();
+    let mut battery: Option<String> = None;
     let mut cli_seed: Option<u64> = None;
     let mut form: Option<u32> = None;
     let mut dpi = 800u32;
@@ -104,6 +115,7 @@ fn parse_cli_args() -> (TrainerConfig, Option<f64>) {
     let mut present_mode_str = "auto-novsync".to_string();
     let mut max_frame_latency = 1u32;
     let mut output_path = None;
+    let mut output_dir = None;
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -111,6 +123,14 @@ fn parse_cli_args() -> (TrainerConfig, Option<f64>) {
         match args[i].as_str() {
             "--scenario" if i + 1 < args.len() => {
                 scenario = args[i + 1].clone();
+                i += 2;
+            }
+            "--battery" if i + 1 < args.len() => {
+                battery = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--output-dir" if i + 1 < args.len() => {
+                output_dir = Some(PathBuf::from(&args[i + 1]));
                 i += 2;
             }
             "--seed" if i + 1 < args.len() => {
@@ -193,6 +213,7 @@ fn parse_cli_args() -> (TrainerConfig, Option<f64>) {
     (
         TrainerConfig {
             scenario,
+            battery,
             seed: cli_seed,
             form,
             dpi,
@@ -204,6 +225,7 @@ fn parse_cli_args() -> (TrainerConfig, Option<f64>) {
             present_mode_str,
             max_frame_latency,
             output_path,
+            output_dir,
         },
         duration_override,
     )
@@ -296,7 +318,22 @@ fn setup_trainer(
         next_target_id: 1,
         hits_count: 0,
         misses_count: 0,
+        reaction_times_s: Vec::new(),
         session_saved: false,
+        flow_engine: SessionFlowEngine::new(config.scenario.clone()),
+        battery_sequencer: if let Some(ref bat) = config.battery {
+            let stages = resolve_battery_stages(bat).unwrap_or_else(|e| {
+                eprintln!("ERROR: {}", e);
+                std::process::exit(1);
+            });
+            let out_dir = config
+                .output_dir
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("sessions"));
+            Some(BatterySequencer::new(bat.clone(), stages, out_dir))
+        } else {
+            None
+        },
     });
 }
 
@@ -351,6 +388,9 @@ fn handle_window_focus(
 ) {
     for ev in focus_events.read() {
         RawInputWorker::set_window_focused(ev.focused);
+        if !state.flow_engine.is_running() {
+            continue;
+        }
         if ev.focused {
             if let Some(mut cursor) = q_cursor.iter_mut().next() {
                 if !pause_manager.is_paused {
@@ -415,6 +455,9 @@ fn drain_and_evaluate_input_system(
 
     let mut batch = Vec::new();
     while let Ok(event) = state.worker.receiver.try_recv() {
+        if !state.flow_engine.is_running() {
+            continue;
+        }
         state.event_count += 1;
         *state.device_counts.entry(event.device_id).or_insert(0) += 1;
 
@@ -539,6 +582,7 @@ fn drain_and_evaluate_input_system(
                                     completed: _,
                                 } => {
                                     state.hits_count += 1;
+                                    state.reaction_times_s.push(trial_elapsed_s);
                                     println!(
                                         "[Trial {}/{}] HIT! Time: {:.3}s (Dist: {:.2}°). Hits: {}, Misses: {}",
                                         trial_idx + 1,
@@ -562,6 +606,7 @@ fn drain_and_evaluate_input_system(
                                     completed: _,
                                 } => {
                                     state.hits_count += 1;
+                                    state.reaction_times_s.push(trial_elapsed_s);
                                     println!(
                                         "[Trial {}/{}] PEEK HIT! Time: {:.3}s. Hits: {}, Misses: {}",
                                         trial_idx + 1,
@@ -899,6 +944,9 @@ fn drain_and_evaluate_input_system(
 }
 
 fn track_frame_time_system(mut state: ResMut<TrainerState>) {
+    if !state.flow_engine.is_running() {
+        return;
+    }
     let now_us = state.clock.now_us();
     let frame_us = now_us.saturating_sub(state.last_frame_t_us);
     state.last_frame_t_us = now_us;
@@ -906,17 +954,42 @@ fn track_frame_time_system(mut state: ResMut<TrainerState>) {
     state.recorder.record_frame(now_us, now_us);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn session_lifecycle_system(
+    mut commands: Commands,
     config: Res<TrainerConfig>,
     mut state: ResMut<TrainerState>,
     pause_manager: Res<PauseManager>,
-    mut exit: MessageWriter<AppExit>,
+    ui_fonts: Res<trainer::fonts::UiFonts>,
+    mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    target_query: Query<Entity, With<ActiveTargetMarker>>,
+    q_overlay: Query<Entity, With<PauseOverlayRoot>>,
 ) {
+    if !state.flow_engine.is_running() {
+        return;
+    }
+
     let now_qpc_us = state.clock.now_us();
     let elapsed_s = SessionClock::us_to_s(pause_manager.active_time_us(now_qpc_us));
     let completed_all = state.layout_engine.is_completed();
 
     if elapsed_s >= config.duration_s || completed_all {
+        state.flow_engine.finish_running();
+
+        // 1. Despawn any remaining in-game targets
+        for entity in &target_query {
+            commands.entity(entity).despawn();
+        }
+
+        // 2. Unlock cursor
+        if let Some(mut cursor) = q_cursor.iter_mut().next() {
+            cursor.grab_mode = CursorGrabMode::None;
+            cursor.visible = true;
+        }
+
+        // 3. Despawn pause menu if open
+        despawn_pause_menu(&mut commands, &q_overlay);
+
         let total_count = state.layout_engine.total_trials_or_targets();
         println!("\n=== AimForge Trainer Session Completed ===");
         println!("Elapsed time: {:.2}s", elapsed_s);
@@ -1050,7 +1123,34 @@ fn session_lifecycle_system(
 
         save_session_telemetry(&mut state, &config, false);
 
-        exit.write(AppExit::Success);
+        if let Some(ref mut seq) = state.battery_sequencer {
+            seq.record_stage_completed();
+        }
+
+        let target_path_str = config
+            .output_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| format!("session-{}.aft", state.recorder.setup.session_id));
+
+        let results_input = SessionResultsInput {
+            scenario_name: state.scenario_def.id.clone(),
+            hits: state.hits_count,
+            misses: state.misses_count,
+            reaction_times_s: state.reaction_times_s.clone(),
+            session_duration_s: elapsed_s,
+            saved_path: target_path_str,
+        };
+        let summary = compute_session_results(&results_input);
+
+        let is_battery = state.battery_sequencer.is_some();
+        let has_next = state
+            .battery_sequencer
+            .as_ref()
+            .map(|seq| seq.current_index() + 1 < seq.total_stages())
+            .unwrap_or(false);
+
+        spawn_results_overlay(&mut commands, &ui_fonts, &summary, is_battery, has_next);
     }
 }
 
@@ -1110,6 +1210,10 @@ fn pause_menu_toggle_system(
     q_overlay: Query<Entity, With<PauseOverlayRoot>>,
     config: Res<TrainerConfig>,
 ) {
+    if !state.flow_engine.is_running() && !pause_manager.is_paused {
+        return;
+    }
+
     if keyboard.just_pressed(KeyCode::Escape) {
         let now_us = state.clock.now_us();
         if pause_manager.is_paused {
@@ -1331,15 +1435,187 @@ fn pause_menu_button_system(
     }
 }
 
-fn lock_cursor_startup(mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindow>>) {
+fn lock_cursor_startup(
+    mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    mut commands: Commands,
+    ui_fonts: Res<trainer::fonts::UiFonts>,
+    state: Res<TrainerState>,
+) {
     if let Some(mut cursor) = q_cursor.iter_mut().next() {
-        cursor.grab_mode = CursorGrabMode::Confined;
-        cursor.visible = false;
+        cursor.grab_mode = CursorGrabMode::None;
+        cursor.visible = true;
+    }
+
+    let bat_info = state
+        .battery_sequencer
+        .as_ref()
+        .map(|seq| (seq.current_index(), seq.total_stages()));
+    spawn_instructions_overlay(&mut commands, &ui_fonts, &state.scenario_def.id, bat_info);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flow_update_system(
+    mut commands: Commands,
+    time: Res<Time>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    mut state: ResMut<TrainerState>,
+    mut config: ResMut<TrainerConfig>,
+    ui_fonts: Res<trainer::fonts::UiFonts>,
+    mut q_cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    q_overlay: Query<Entity, With<FlowOverlayRoot>>,
+    mut q_digit: Query<&mut Text, With<trainer::session_flow::CountdownDigitMarker>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let current_flow = state.flow_engine.state();
+    match current_flow {
+        FlowState::Instructions => {
+            if keyboard.just_pressed(KeyCode::Escape) {
+                state.flow_engine.handle_esc_exit();
+                despawn_flow_overlay(&mut commands, &q_overlay);
+                println!("\nSession cancelled during instructions.");
+                exit.write(AppExit::Success);
+                return;
+            }
+
+            if keyboard.just_pressed(KeyCode::Space)
+                || keyboard.just_pressed(KeyCode::Enter)
+                || mouse_buttons.just_pressed(MouseButton::Left)
+            {
+                if state.flow_engine.handle_start_trigger() {
+                    despawn_flow_overlay(&mut commands, &q_overlay);
+                    spawn_countdown_overlay(&mut commands, &ui_fonts, 3);
+                }
+            }
+        }
+        FlowState::Countdown { seconds_remaining } => {
+            if keyboard.just_pressed(KeyCode::Escape) {
+                state.flow_engine.handle_esc_exit();
+                despawn_flow_overlay(&mut commands, &q_overlay);
+                println!("\nSession cancelled during countdown.");
+                exit.write(AppExit::Success);
+                return;
+            }
+
+            let dt = time.delta_secs();
+            let transitioned = state.flow_engine.tick_countdown(dt);
+            if transitioned {
+                // Countdown complete -> Transition to Running!
+                despawn_flow_overlay(&mut commands, &q_overlay);
+                if let Some(mut cursor) = q_cursor.iter_mut().next() {
+                    cursor.grab_mode = CursorGrabMode::Confined;
+                    cursor.visible = false;
+                }
+                // Reset clock start to this exact instant
+                state.clock.reset_start();
+                println!(
+                    "\n--- Session START: {} (Duration: {:.1}s) ---",
+                    state.scenario_def.id, config.duration_s
+                );
+            } else if let FlowState::Countdown {
+                seconds_remaining: new_sec,
+            } = state.flow_engine.state()
+            {
+                if new_sec != seconds_remaining {
+                    for mut text in &mut q_digit {
+                        **text = format!("{}", new_sec);
+                    }
+                }
+            }
+        }
+        FlowState::Results => {
+            let advance_pressed =
+                keyboard.just_pressed(KeyCode::Enter) || keyboard.just_pressed(KeyCode::Space);
+            let esc_pressed = keyboard.just_pressed(KeyCode::Escape);
+
+            if esc_pressed {
+                despawn_flow_overlay(&mut commands, &q_overlay);
+                println!("\nTrainer closing from results screen.");
+                exit.write(AppExit::Success);
+                return;
+            }
+
+            if advance_pressed {
+                let has_next = if let Some(ref mut seq) = state.battery_sequencer {
+                    seq.advance()
+                } else {
+                    false
+                };
+
+                if has_next {
+                    let (next_sc_id, next_out_path) = {
+                        let seq = state.battery_sequencer.as_ref().unwrap();
+                        (
+                            seq.current_scenario_id().unwrap().to_string(),
+                            seq.current_output_path(),
+                        )
+                    };
+                    println!("\nAdvancing to next battery scenario: {}", next_sc_id);
+                    let (next_sc_def, next_sc_seed) =
+                        load_scenario(&next_sc_id, config.form, config.seed);
+                    config.scenario = next_sc_id.clone();
+                    config.output_path = Some(next_out_path.clone());
+                    config.duration_s = trainer::resolve_scenario_duration(&next_sc_def, None);
+
+                    despawn_flow_overlay(&mut commands, &q_overlay);
+
+                    state.scenario_def = next_sc_def.clone();
+                    let new_init_t = state.clock.now_us();
+                    state.layout_engine =
+                        LayoutEngineState::new(&next_sc_def, next_sc_seed.seed, new_init_t);
+                    state.hits_count = 0;
+                    state.misses_count = 0;
+                    state.reaction_times_s.clear();
+                    state.session_saved = false;
+                    state.recorder = SessionRecorder::new(recorder::RecorderSetup {
+                        session_id: uuid::Uuid::new_v4().to_string(),
+                        scenario_id: next_sc_id.clone(),
+                        form: next_sc_seed.form,
+                        seed: next_sc_seed.seed,
+                        dpi: config.dpi,
+                        sens: config.sens,
+                        width: state.recorder.setup.width,
+                        height: state.recorder.setup.height,
+                        hz: state.recorder.setup.hz,
+                    });
+                    state.flow_engine.reset_for_next_scenario(next_sc_id);
+
+                    let bat_info = state
+                        .battery_sequencer
+                        .as_ref()
+                        .map(|seq| (seq.current_index(), seq.total_stages()));
+                    spawn_instructions_overlay(
+                        &mut commands,
+                        &ui_fonts,
+                        &state.scenario_def.id,
+                        bat_info,
+                    );
+                } else {
+                    despawn_flow_overlay(&mut commands, &q_overlay);
+                    println!("\nSession results accepted. Exiting.");
+                    exit.write(AppExit::Success);
+                }
+            }
+        }
+        FlowState::Running | FlowState::ExitedWithoutSave => {}
     }
 }
 
 fn main() {
     let (mut config, duration_override) = parse_cli_args();
+    if let Some(ref bat) = config.battery {
+        let stages = resolve_battery_stages(bat).unwrap_or_else(|e| {
+            eprintln!("ERROR: {}", e);
+            std::process::exit(1);
+        });
+        if let Some(first) = stages.first() {
+            config.scenario = first.clone();
+        }
+        if let Some(ref dir) = config.output_dir {
+            let _ = std::fs::create_dir_all(dir);
+            config.output_path = Some(dir.join(format!("0_{}.aft", config.scenario)));
+        }
+    }
     let (scenario_def, scenario_seed) = load_scenario(&config.scenario, config.form, config.seed);
     config.duration_s = trainer::resolve_scenario_duration(&scenario_def, duration_override);
 
@@ -1429,6 +1705,7 @@ fn main() {
         .add_systems(
             Update,
             (
+                flow_update_system,
                 window_close_system,
                 pause_menu_toggle_system,
                 pause_menu_button_system,

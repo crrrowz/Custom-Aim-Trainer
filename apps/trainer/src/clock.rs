@@ -17,6 +17,15 @@ impl SessionClock {
         }
     }
 
+    /// Resets the baseline starting QPC counter to the current instant.
+    pub fn reset_start(&mut self) {
+        let mut qpc_now = 0i64;
+        unsafe {
+            QueryPerformanceCounter(&mut qpc_now);
+        }
+        self.qpc_start = qpc_now;
+    }
+
     /// Queries the current QPC counter and computes microseconds elapsed since session start.
     #[inline]
     pub fn now_us(&self) -> u64 {

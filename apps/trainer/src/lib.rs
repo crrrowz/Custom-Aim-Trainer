@@ -8,6 +8,7 @@ pub mod pause;
 pub mod raw_input;
 pub mod recorder;
 pub mod replay;
+pub mod session_flow;
 pub mod target;
 pub mod ui_tokens;
 
