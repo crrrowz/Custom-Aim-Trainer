@@ -37,6 +37,14 @@ impl SessionClock {
         ((qpc_diff * 1_000_000u128) / (self.qpc_freq as u128)) as u64
     }
 
+    /// Moves a raw input timestamp onto this clock. The input thread keeps counting from its own start,
+    /// while `reset_start` moves this clock when a session begins.
+    #[inline]
+    pub fn from_input_us(&self, input_t_us: u64, input_qpc_start: i64) -> u64 {
+        let shift = (self.qpc_start - input_qpc_start).max(0) as u128;
+        input_t_us.saturating_sub(((shift * 1_000_000u128) / (self.qpc_freq as u128)) as u64)
+    }
+
     /// Converts an elapsed microsecond timestamp to seconds as f64.
     #[inline]
     pub fn us_to_s(us: u64) -> f64 {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { call, type ChatAnswer, type CustomTargets, type Detail, type Flick, type Plan, type Settings, type View } from "./api";
 import { AimPath, DirectionWheel, ReactionTimeline, ShotScatter, SkillLines, SkillRadar, Spark, SpeedChart, TrackingChart, type Series } from "./charts";
 import { drillInfo, drillNames, evidenceNames, groupNames, scenarioNames, skillNames, type DrillInfo, type Lang } from "./i18n";
@@ -100,13 +100,15 @@ export function App() {
       <main>
         {!view.trainer_found && <div className="banner">{T("ما لكينا برنامج اللعبة. ابنيه بـ: cargo build --release -p trainer", "Game program not found. Build it with: cargo build --release -p trainer")}</div>}
         {error && <div className="banner err">{T("صار خطأ", "Something went wrong")}: {error}</div>}
-        {tab === "home" && <Home ctx={ctx} />}
-        {tab === "analysis" && <Analysis ctx={ctx} initial={recording} />}
-        {tab === "progress" && <Progress ctx={ctx} />}
-        {tab === "plan" && <PlanPage ctx={ctx} />}
-        {tab === "practice" && <Practice ctx={ctx} />}
-        {tab === "coach" && <Coach ctx={ctx} />}
-        {tab === "settings" && <SettingsPage ctx={ctx} />}
+        <ScreenGuard key={tab} message={T("هذي الصفحة واجهت خطأ. الصفحات الثانية تشتغل عادي.", "This page hit an error. The other pages still work.")} retry={T("أعد المحاولة", "Try again")}>
+          {tab === "home" && <Home ctx={ctx} />}
+          {tab === "analysis" && <Analysis ctx={ctx} initial={recording} />}
+          {tab === "progress" && <Progress ctx={ctx} />}
+          {tab === "plan" && <PlanPage ctx={ctx} />}
+          {tab === "practice" && <Practice ctx={ctx} />}
+          {tab === "coach" && <Coach ctx={ctx} />}
+          {tab === "settings" && <SettingsPage ctx={ctx} />}
+        </ScreenGuard>
       </main>
       {busy && RUNS_TRAINER.has(busy) && (
         <div className="overlay">
@@ -117,6 +119,24 @@ export function App() {
       )}
     </div>
   );
+}
+
+/** One broken screen must never blank the whole app. */
+class ScreenGuard extends Component<{ message: string; retry: string; children: ReactNode }, { error: string | null }> {
+  state = { error: null as string | null };
+  static getDerivedStateFromError(e: unknown) {
+    return { error: String(e) };
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="empty">
+        <p>{this.props.message}</p>
+        <p className="small">{this.state.error}</p>
+        <button className="btn" onClick={() => this.setState({ error: null })}>{this.props.retry}</button>
+      </div>
+    );
+  }
 }
 
 function Onboarding({ ctx }: { ctx: Ctx }) {
@@ -366,7 +386,7 @@ function Legend({ items }: { items: [string, string][] }) {
 function Replay({ detail, ctx }: { detail: Detail; ctx: Ctx }) {
   const { T } = ctx;
   const [filter, setFilter] = useState("all");
-  const list = useMemo(() => flickSort[filter](detail.flicks), [detail, filter]);
+  const list = useMemo(() => flickSort[filter](detail.flicks.filter((f) => f.path.length > 0)), [detail, filter]);
   const [index, setIndex] = useState(0);
   const flick = list[Math.min(index, list.length - 1)];
   const end = flick ? flick.path[flick.path.length - 1].t_ms : 0;

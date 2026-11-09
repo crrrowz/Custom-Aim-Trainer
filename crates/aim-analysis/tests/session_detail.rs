@@ -134,6 +134,45 @@ fn pause_time_is_reported_and_excluded_from_timing() {
     assert!((d.flicks[1].t_s - 3.0).abs() < 1e-6, "{}", d.flicks[1].t_s);
 }
 
+/// Real recordings: the trainer leaves despawn at 0 for trial targets.
+fn with_zero_despawn() -> AftSession {
+    let mut s = one_flick();
+    s.streams
+        .targets
+        .records
+        .push(target(2, SPAWN + 1_000_000, 20.0, 0.0));
+    s.streams
+        .targets
+        .records
+        .push(target(3, SPAWN + 2_000_000, 30.0, 0.0));
+    for t in &mut s.streams.targets.records {
+        t.despawn_t_us = 0;
+    }
+    s.streams.shots.records.push(ShotRecord {
+        t_us: SPAWN + 1_400_000,
+        hit_target_id: None,
+        hitzone: HitZone::None,
+    });
+    s
+}
+
+#[test]
+fn targets_without_a_despawn_time_still_have_a_path() {
+    let d = session_detail(&with_zero_despawn());
+    assert_eq!(d.flicks.len(), 3);
+    assert!(d.flicks.iter().all(|f| !f.path.is_empty()));
+}
+
+#[test]
+fn a_miss_is_attached_when_there_is_no_despawn_time() {
+    let d = session_detail(&with_zero_despawn());
+    assert!(!d.flicks[1].hit);
+    assert!(
+        d.flicks[1].shot_ms.is_some(),
+        "the miss belongs to target 2"
+    );
+}
+
 #[test]
 fn an_empty_session_does_not_panic() {
     let mut s = sample_session();

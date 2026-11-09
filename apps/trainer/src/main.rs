@@ -472,10 +472,12 @@ fn drain_and_evaluate_input_system(
     let now_active_s = SessionClock::us_to_s(now_active_us);
 
     let mut batch = Vec::new();
-    while let Ok(event) = state.worker.receiver.try_recv() {
+    let input_qpc_start = state.worker.qpc_start;
+    while let Ok(mut event) = state.worker.receiver.try_recv() {
         if !state.flow_engine.is_running() {
             continue;
         }
+        event.t_us = state.clock.from_input_us(event.t_us, input_qpc_start);
         state.event_count += 1;
         *state.device_counts.entry(event.device_id).or_insert(0) += 1;
 

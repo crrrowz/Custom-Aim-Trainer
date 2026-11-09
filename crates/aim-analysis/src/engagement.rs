@@ -3,7 +3,7 @@
 use crate::segment::{segment, AnalysisThresholds, Trace};
 use crate::{active_duration_between, extract_pause_intervals};
 use aim_core::sensitivity::VALORANT_YAW_DEG_PER_COUNT;
-use aim_telemetry::format::AftSession;
+use aim_telemetry::format::{AftSession, TargetRecord};
 use serde::{Deserialize, Serialize};
 
 /// Clicks further than this many target radii away are ordinary misses, not premature clicks.
@@ -25,6 +25,8 @@ pub struct EngagementMetrics {
     /// Shot minus onset, pause time excluded.
     pub movement_time_us: Option<u64>,
     pub shot_t_us: Option<u64>,
+    /// When this target stopped being the player's job, see [`target_end`].
+    pub end_t_us: u64,
     pub primary_end_t_us: Option<u64>,
     pub stable_t_us: Option<u64>,
     pub is_home: bool,
@@ -64,12 +66,39 @@ pub fn deg_per_count(session: &AftSession) -> f64 {
     }
 }
 
+/// When a target's time was over. The trainer records no despawn time for trial targets (it stays 0),
+/// so this falls back to the target's own hit, then the next target to appear, then the last input.
+pub fn target_end(session: &AftSession, target: &TargetRecord) -> u64 {
+    if target.despawn_t_us > target.spawn_t_us {
+        return target.despawn_t_us;
+    }
+    let spawn = target.spawn_t_us;
+    let hit = session
+        .streams
+        .shots
+        .records
+        .iter()
+        .find(|s| s.hit_target_id == Some(target.id) && s.t_us >= spawn)
+        .map(|s| s.t_us);
+    let next = session
+        .streams
+        .targets
+        .records
+        .iter()
+        .map(|t| t.spawn_t_us)
+        .filter(|&t| t > spawn)
+        .min();
+    let last_input = session.streams.input.t_us.last().copied().unwrap_or(spawn);
+    hit.or(next).unwrap_or(last_input.max(spawn))
+}
+
 pub fn build_trace(session: &AftSession) -> Trace {
     let targets = &session.streams.targets.records;
     let start = targets.iter().map(|t| t.spawn_t_us).min().unwrap_or(0);
     let end = targets
         .iter()
         .map(|t| t.despawn_t_us)
+        .chain(session.streams.shots.records.iter().map(|s| s.t_us))
         .max()
         .unwrap_or(start);
     let input = &session.streams.input;
@@ -110,7 +139,8 @@ pub fn compute_engagement_metrics_with(
         if target.params.path_spline.is_some() {
             continue;
         }
-        let (spawn, despawn) = (target.spawn_t_us, target.despawn_t_us);
+        let spawn = target.spawn_t_us;
+        let despawn = target_end(session, target);
         let aim = (target.params.initial_pos[0], target.params.initial_pos[1]);
         let radius = target.params.radius_deg;
         let displayed = displayed_at(session, spawn);
@@ -139,6 +169,7 @@ pub fn compute_engagement_metrics_with(
             time_to_hit_us: hit.map(|s| active_duration_between(&pauses, spawn, s.t_us)),
             movement_time_us: None,
             shot_t_us: shot.map(|s| s.t_us),
+            end_t_us: end_t,
             primary_end_t_us: None,
             stable_t_us: None,
             is_home: aim.0.abs() < 0.01 && aim.1.abs() < 0.01,

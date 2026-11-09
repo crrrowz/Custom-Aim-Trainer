@@ -1,7 +1,7 @@
 //! Everything the analysis screen draws for one recording: each flick's real crosshair path,
 //! speed over time, where shots landed, and tracking error over the session.
 
-use crate::engagement::{build_trace, compute_engagement_metrics, median};
+use crate::engagement::{build_trace, compute_engagement_metrics, median, target_end};
 use crate::{active_duration_between, extract_pause_intervals};
 use aim_scenarios::schema::TrackingTrajectory;
 use aim_scenarios::trajectory::target_angles_at;
@@ -132,7 +132,7 @@ pub fn session_detail(session: &AftSession) -> SessionDetail {
             continue;
         };
         let aim = (target.params.initial_pos[0], target.params.initial_pos[1]);
-        let end_t = e.shot_t_us.unwrap_or(target.despawn_t_us);
+        let end_t = e.shot_t_us.unwrap_or(e.end_t_us);
         let from = trace.index_at(e.spawn_t_us);
         let to = (trace.index_at(end_t) + PATH_TAIL_MS).min(trace.len().saturating_sub(1));
         let path = (from..=to)
@@ -187,7 +187,7 @@ pub fn session_detail(session: &AftSession) -> SessionDetail {
         .targets
         .records
         .iter()
-        .map(|t| t.despawn_t_us)
+        .map(|t| target_end(session, t))
         .max()
         .unwrap_or(session_start);
     let paused: u64 = pauses.iter().map(|&(a, b)| b.saturating_sub(a)).sum();
