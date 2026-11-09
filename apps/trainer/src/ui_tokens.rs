@@ -23,6 +23,7 @@ pub const SPACE_LG: Val = Val::Px(16.0);
 pub const SPACE_XL: Val = Val::Px(24.0);
 
 // Typography
+pub const FONT_SIZE_COUNTDOWN: f32 = 72.0;
 pub const FONT_SIZE_TITLE: f32 = 32.0;
 pub const FONT_SIZE_SUBTITLE: f32 = 14.0;
 pub const FONT_SIZE_BUTTON: f32 = 16.0;
@@ -30,6 +31,7 @@ pub const FONT_SIZE_FOOTER: f32 = 12.0;
 
 // Element dimensions
 pub const CARD_WIDTH: Val = Val::Px(420.0);
+pub const CARD_WIDTH_LARGE: Val = Val::Px(500.0);
 pub const BUTTON_WIDTH: Val = Val::Px(320.0);
 pub const BUTTON_HEIGHT: Val = Val::Px(44.0);
 
@@ -46,4 +48,9 @@ pub mod strings {
     pub const SAVING: &str = "Saving…";
     pub const SAVED: &str = "Saved";
     pub const NOTICE_FOCUS_LOST: &str = "Paused — the game window lost focus";
+
+    pub const INSTRUCTIONS_START_HINT: &str = "Click or press Space to start";
+    pub const INSTRUCTIONS_ESC_HINT: &str = "Esc  Quit without saving";
+    pub const RESULTS_TITLE: &str = "SESSION RESULTS";
+    pub const RESULTS_FOOTER_HINT: &str = "Enter / Space / Esc  Close";
 }
