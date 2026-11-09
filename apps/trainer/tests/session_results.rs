@@ -9,6 +9,7 @@ fn test_compute_session_results_median_rt_and_accuracy() {
         reaction_times_s: vec![0.300, 0.250, 0.400, 0.280, 0.320],
         session_duration_s: 45.2,
         saved_path: "session-123.aft".to_string(),
+        time_on_target_pct: None,
     };
 
     let summary = compute_session_results(&input);
@@ -33,6 +34,7 @@ fn test_compute_session_results_with_pause_excludes_pause_time() {
         reaction_times_s: vec![0.220, 0.260],
         session_duration_s: 15.0, // active session length
         saved_path: "session-pause.aft".to_string(),
+        time_on_target_pct: None,
     };
 
     let summary = compute_session_results(&input);

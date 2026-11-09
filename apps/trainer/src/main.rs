@@ -534,6 +534,13 @@ fn drain_and_evaluate_input_system(
     if let Some((tracking_id, new_angles, radius_deg)) =
         state.layout_engine.update_tracking_target(now_active_us)
     {
+        state.drill.track_frames += 1;
+        if aim_core::geometry::SphericalTarget::new(new_angles, radius_deg)
+            .intersect_ray(current_angles)
+            .is_hit
+        {
+            state.drill.track_frames_on += 1;
+        }
         let spawn_dist = state.scenario_def.spawn_distance_m as f32;
         let new_pos = trainer::target::angles_to_world_pos(new_angles, spawn_dist);
         for (_, mut marker, mut transform, _) in &mut target_query {
@@ -1216,6 +1223,7 @@ fn session_lifecycle_system(
             reaction_times_s: state.reaction_times_s.clone(),
             session_duration_s: elapsed_s,
             saved_path: target_path_str,
+            time_on_target_pct: state.drill.on_target_percent(),
         };
         let summary = compute_session_results(&results_input);
 
@@ -1581,6 +1589,7 @@ fn update_session_hud(
             misses: state.misses_count,
             total: state.layout_engine.total_trials_or_targets() as u32,
             tracking: !state.scenario_def.hit_rule.accepts_shots(),
+            on_target_pct: state.drill.on_target_percent().unwrap_or(0.0) as u32,
         })
     } else {
         String::new()

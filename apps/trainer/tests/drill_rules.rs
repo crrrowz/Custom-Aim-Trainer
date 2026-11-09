@@ -131,3 +131,12 @@ fn each_rule_rejects_its_own_mistake() {
     };
     assert_eq!(check(&strafe, &running), Some(Rejection::Moving));
 }
+
+#[test]
+fn on_target_share_counts_frames() {
+    let mut r = DrillRuntime::default();
+    assert_eq!(r.on_target_percent(), None);
+    r.track_frames = 4;
+    r.track_frames_on = 3;
+    assert_eq!(r.on_target_percent(), Some(75.0));
+}

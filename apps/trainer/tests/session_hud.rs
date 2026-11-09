@@ -7,6 +7,7 @@ fn numbers() -> HudNumbers {
         misses: 3,
         total: 48,
         tracking: false,
+        on_target_pct: 62,
     }
 }
 
@@ -16,10 +17,10 @@ fn shows_time_left_progress_and_accuracy() {
 }
 
 #[test]
-fn tracking_shows_only_the_clock() {
+fn tracking_shows_the_clock_and_time_on_target() {
     let mut n = numbers();
     n.tracking = true;
-    assert_eq!(hud_line(n), "01:02");
+    assert_eq!(hud_line(n), "01:02    62%");
 }
 
 #[test]

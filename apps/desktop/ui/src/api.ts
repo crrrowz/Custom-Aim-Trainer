@@ -55,6 +55,8 @@ export interface Plan {
   item_index: number;
   retest_ready: boolean;
   levels: Record<string, number>;
+  today_done: boolean;
+  focus: Finding[];
 }
 export interface SkillChange {
   skill: string;

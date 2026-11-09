@@ -203,7 +203,9 @@ input[type="range"] { width: 100%; padding: 0; background: none; border: 0; acce
 @keyframes fade { to { opacity: .5; } }
 @media (prefers-reduced-motion: reduce) { .pulse, .skeleton { animation: none; } }
 
-.days-strip { margin-bottom: 4px; }
+.days-strip { margin-bottom: 4px; align-items: center; }
+.days-strip input[type="date"] { padding: 3px 8px; font-size: 13px; color-scheme: dark; }
+.spaced-b { margin-bottom: 14px; }
 .session-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
 .session-card { display: flex; flex-direction: column; gap: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px; text-align: start; cursor: pointer; transition: border-color .12s; }
 .session-card:hover { border-color: var(--accent); }

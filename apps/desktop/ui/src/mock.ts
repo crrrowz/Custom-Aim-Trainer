@@ -44,6 +44,8 @@ let view: View = {
   plan: {
     state: { Active: { block: 1, day: 2, completed: 1 } }, block_days: 6, item_index: 1, retest_ready: false,
     levels: { confirm_click: 0.42, deceleration_ladder: 0.36 },
+    today_done: false,
+    focus: [{ id: "D6", headline: "نقر متسرّع", why: "تطلق قبل الوصول، فتضيع الرصاصة الأولى.", severity: 0.62, evidence: [["S09.premature_rate", 0.31]], drills: ["confirm_click"] }],
     today_items: [
       { kind: "WarmUp", drill: "warmup", minutes: 2, varied: false },
       { kind: "FocusA", drill: "confirm_click", minutes: 5, varied: false },

@@ -142,6 +142,9 @@ pub struct PlanRecord {
     pub no_change_before: bool,
     #[serde(default = "default_maintenance")]
     pub maintenance: String,
+    /// Calendar day of the last finished daily session.
+    #[serde(default)]
+    pub last_completed_day: Option<u32>,
 }
 
 fn default_maintenance() -> String {
@@ -204,6 +207,10 @@ pub struct PlanView {
     pub item_index: usize,
     pub retest_ready: bool,
     pub levels: HashMap<String, f64>,
+    /// Today's session is finished; the next one opens tomorrow.
+    pub today_done: bool,
+    /// Why this block trains what it trains.
+    pub focus: Vec<FindingView>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -298,6 +305,23 @@ fn scenario_key(scenario_id: &str) -> String {
     } else {
         format!("drill.{stem}")
     }
+}
+
+/// A custom session is named after its target type, read from the scenario saved beside the recording.
+fn custom_kind(dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join("custom.ron")).ok()?;
+    let kind = if text.contains("ConcurrentCluster") {
+        "multi"
+    } else if text.contains("HeadLevelPeeks") {
+        "peek"
+    } else if text.contains("ReactiveStrafe") {
+        "strafe"
+    } else if text.contains("Tracking") {
+        "track"
+    } else {
+        "flick"
+    };
+    Some(format!("custom.{kind}"))
 }
 
 fn run_started_ms(dir: &Path) -> u64 {
@@ -602,6 +626,7 @@ impl<R: TrainerRunner> Engine<R> {
             last_trained: today(),
             no_change_before: false,
             maintenance,
+            last_completed_day: None,
         })
     }
 
@@ -654,12 +679,16 @@ impl<R: TrainerRunner> Engine<R> {
     /// Plays the next drill of today's session and moves the difficulty for that drill.
     pub fn run_next_item(&mut self) -> Res<()> {
         let mut plan = self.plan()?.ok_or("No plan yet.")?;
+        let s = self.settings()?;
+        if !s.test_mode && plan.last_completed_day == Some(today()) {
+            self.tell("done_today");
+            return Ok(());
+        }
         let items = Self::today_items(&plan);
         let item = items
             .get(plan.item_index)
             .cloned()
             .ok_or("Today's session is already finished.")?;
-        let s = self.settings()?;
         let seconds = if s.test_mode {
             TEST_MODE_DRILL_SECONDS
         } else {
@@ -705,6 +734,7 @@ impl<R: TrainerRunner> Engine<R> {
                 .clone()
                 .apply(PlanEvent::DayCompleted { today: today() });
             plan.item_index = 0;
+            plan.last_completed_day = Some(today());
         }
         self.save_plan(&plan)
     }
@@ -749,13 +779,17 @@ impl<R: TrainerRunner> Engine<R> {
     pub fn next_block(&mut self) -> Res<()> {
         let mut plan = self.plan()?.ok_or("No plan yet.")?;
         let assessments = self.assessments()?;
-        let latest = assessments.last().ok_or("Take an assessment first.")?;
+        let latest = assessments
+            .iter()
+            .rfind(|a| a.complete)
+            .ok_or("Take an assessment first.")?;
         plan.state = plan.state.clone().apply(PlanEvent::NextBlock);
         plan.findings = plan_focus(&latest.profile, &latest.findings);
         plan.maintenance = maintenance_drill(&latest.profile, &plan.findings).to_string();
         plan.baseline = assessments.len() - 1;
         plan.item_index = 0;
         plan.last_trained = today();
+        plan.last_completed_day = None;
         self.save_plan(&plan)
     }
 
@@ -844,7 +878,7 @@ impl<R: TrainerRunner> Engine<R> {
                     path: path.clone(),
                     at_ms: run_started_ms(&dir),
                     assessment: name.starts_with("assessment"),
-                    scenario: scenario_key(&d.scenario_id),
+                    scenario: custom_kind(&dir).unwrap_or_else(|| scenario_key(&d.scenario_id)),
                     targets: d.targets,
                     hits: d.hits,
                     accuracy: d.accuracy,
@@ -1015,7 +1049,7 @@ impl<R: TrainerRunner> Engine<R> {
 
     fn coach_input(&self, s: &Settings, cards: &[SessionCard], config: &CoachConfig) -> Res<Value> {
         let assessments = self.assessments()?;
-        let latest = assessments.last();
+        let latest = assessments.iter().rfind(|a| a.complete);
         let round = |v: f64| (v * 100.0).round() / 100.0;
         let mut data = serde_json::Map::new();
         data.insert("locale".to_string(), json!(s.locale));
@@ -1080,7 +1114,7 @@ impl<R: TrainerRunner> Engine<R> {
         let l = s.lang();
         let ar = l == Locale::Ar;
         let assessments = self.assessments()?;
-        let latest = assessments.last();
+        let latest = assessments.iter().rfind(|a| a.complete);
         let timed: Vec<&SessionCard> = cards.iter().filter(|c| c.accuracy.is_some()).collect();
         let accuracy = (!timed.is_empty()).then(|| {
             timed.iter().filter_map(|c| c.accuracy).sum::<f64>() / timed.len() as f64 * 100.0
@@ -1235,28 +1269,35 @@ impl<R: TrainerRunner> Engine<R> {
     pub fn view(&self) -> Res<View> {
         let settings = self.settings()?;
         let locale = settings.lang();
-        let history = self.assessments()?;
+        let history: Vec<AssessmentRecord> = self
+            .assessments()?
+            .into_iter()
+            .filter(|a| a.complete)
+            .collect();
         let latest = history.last().cloned();
+        let describe = |f: &Finding| {
+            let (headline, why) = finding_text(&f.id, locale);
+            FindingView {
+                id: f.id.clone(),
+                headline: headline.to_string(),
+                why: why.to_string(),
+                severity: f.severity,
+                evidence: f.evidence.clone(),
+                drills: f.drills.clone(),
+            }
+        };
         let findings = latest
             .iter()
             .flat_map(|a| a.findings.iter())
-            .map(|f| {
-                let (headline, why) = finding_text(&f.id, locale);
-                FindingView {
-                    id: f.id.clone(),
-                    headline: headline.to_string(),
-                    why: why.to_string(),
-                    severity: f.severity,
-                    evidence: f.evidence.clone(),
-                    drills: f.drills.clone(),
-                }
-            })
+            .map(describe)
             .collect();
         let plan = match self.plan()? {
             Some(p) => Some(PlanView {
                 today_items: Self::today_items(&p),
                 item_index: p.item_index,
                 retest_ready: self.retest_ready(&p)?,
+                today_done: !settings.test_mode && p.last_completed_day == Some(today()),
+                focus: p.findings.iter().map(describe).collect(),
                 state: p.state,
                 block_days: BLOCK_DAYS,
                 levels: self.levels()?,
@@ -1644,6 +1685,58 @@ mod tests {
         assert_eq!(cards.len(), 7);
         assert!(cards.iter().all(|c| c.assessment));
         assert!(cards.iter().any(|c| c.scenario == "assess.v1.flick_static"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn one_training_day_per_calendar_day_outside_test_mode() {
+        let (mut e, dir) = engine("oneday", 1.15);
+        e.run_assessment().unwrap();
+        e.accept_plan().unwrap();
+        let items = e.view().unwrap().plan.unwrap().today_items.len();
+        for _ in 0..items {
+            e.run_next_item().unwrap();
+        }
+        let view = e.view().unwrap();
+        assert!(view.plan.as_ref().unwrap().today_done);
+        let calls = e.runner.calls.borrow().len();
+        e.run_next_item().unwrap();
+        assert_eq!(e.runner.calls.borrow().len(), calls, "no game is launched");
+        assert_eq!(e.view().unwrap().notice.as_deref(), Some("done_today"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_partial_assessment_does_not_replace_results() {
+        let (mut e, dir) = engine("keep", 1.15);
+        e.run_assessment().unwrap();
+        let before = e.view().unwrap().latest.unwrap().at_ms;
+        e.runner.full_battery.set(false);
+        e.run_assessment().unwrap();
+        assert_eq!(e.view().unwrap().latest.unwrap().at_ms, before);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_plan_explains_itself() {
+        let (mut e, dir) = engine("why", 0.97);
+        e.run_assessment().unwrap();
+        assert!(!e.view().unwrap().plan.unwrap().focus.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn custom_sessions_are_named_by_target_type() {
+        let dir = std::env::temp_dir().join(format!("aimforge-kind-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("custom.ron"), "(layout:ConcurrentCluster(x:1))").unwrap();
+        assert_eq!(custom_kind(&dir).as_deref(), Some("custom.multi"));
+        std::fs::write(
+            dir.join("custom.ron"),
+            "(layout:Tracking(trajectory:ReactiveStrafe()))",
+        )
+        .unwrap();
+        assert_eq!(custom_kind(&dir).as_deref(), Some("custom.strafe"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

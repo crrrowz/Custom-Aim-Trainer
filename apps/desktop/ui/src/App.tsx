@@ -29,6 +29,26 @@ const NAV: [Tab, string, string, string][] = [
 const whenText = (ms: number, lang: Lang) =>
   ms ? new Date(ms).toLocaleString(lang === "ar" ? "ar-IQ" : "en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
 
+/** The backend reports in English; players should read problems in their own language. */
+function friendlyError(raw: string, T: Ctx["T"]): string {
+  const known: [string, string, string][] = [
+    ["Trainer program not found", "ما لكينا برنامج اللعبة. ابنيه بـ: cargo build --profile play -p trainer", "Game program not found. Build it with: cargo build --profile play -p trainer"],
+    ["No target fits", "ماكو هدف يطلع بهذي المساحة. وسّعها أو قرّب الأهداف.", "No target fits inside that area. Widen it or bring the targets closer."],
+    ["Add an API key", "ضيف مفتاح API لهذا المصدر من الإعدادات.", "Add an API key for this source in Settings."],
+    ["Choose a model", "اكتب اسم الموديل بالإعدادات.", "Enter a model name in Settings."],
+    ["Enter the server URL", "اكتب رابط الخادم بالإعدادات.", "Enter the server URL in Settings."],
+    ["could not reach", "ما كدرنا نوصل للمصدر. تأكد من الرابط والإنترنت.", "Could not reach the source. Check the URL and your connection."],
+    ["returned 401", "المفتاح مرفوض. تأكد منه.", "The key was rejected. Check it."],
+    ["returned 403", "المصدر رفض الطلب. تأكد من صلاحيات المفتاح.", "The source refused the request. Check the key's permissions."],
+    ["returned 404", "الموديل أو الرابط غلط.", "The model or URL is wrong."],
+    ["returned 429", "وصلت حد الاستخدام عند المصدر. جرب بعد شوية.", "You hit the source's usage limit. Try again shortly."],
+    ["not in your data", "رد الذكاء الاصطناعي بيه رقم مو من بياناتك، فما استخدمناه.", "The AI used a number that is not in your data, so it was not used."],
+    ["The retest opens", "إعادة الاختبار تفتح بعد يوم راحة.", "The retest opens after a rest day."],
+  ];
+  const match = known.find(([needle]) => raw.includes(needle));
+  return match ? T(match[1], match[2]) : raw;
+}
+
 export function App() {
   const [view, setView] = useState<View | null>(null);
   const [tab, setTab] = useState<Tab>("home");
@@ -53,7 +73,7 @@ export function App() {
     try {
       setView(await call<View>(command, args));
     } catch (e) {
-      setError(String(e));
+      setError(friendlyError(String(e), T));
     } finally {
       setBusy(null);
     }
@@ -83,6 +103,7 @@ export function App() {
         {!view.trainer_found && <div className="banner">{T("ما لكينا برنامج اللعبة. ابنيه بـ: cargo build --release -p trainer", "Game program not found. Build it with: cargo build --release -p trainer")}</div>}
         {error && <div className="banner err">{T("صار خطأ", "Something went wrong")}: {error}</div>}
         {view.notice === "stopped" && <div className="banner">{T("طلعت قبل ما ينسجل شي، فما انحسبت هذي المرة.", "You left before anything was recorded, so this one did not count.")}</div>}
+        {view.notice === "done_today" && <div className="banner">{T("خلصت جلسة اليوم. الجلسة الجاية تفتح باجر.", "Today's session is done. The next one opens tomorrow.")}</div>}
         {view.notice === "incomplete" && <div className="banner">{T("التقييم ما كمل. نتائجك انحفظت بالتحليل، بس الخطة تحتاج كل الاختبارات الثمانية.", "The assessment was not finished. Your results are in Analysis, but a plan needs all eight tests.")}</div>}
         <ScreenGuard key={tab} message={T("هذي الصفحة واجهت خطأ. الصفحات الثانية تشتغل عادي.", "This page hit an error. The other pages still work.")} retry={T("أعد المحاولة", "Try again")}>
           {tab === "home" && <Home ctx={ctx} />}
@@ -136,6 +157,7 @@ function Onboarding({ ctx }: { ctx: Ctx }) {
         <Num label={T("الحساسية", "Sensitivity")} value={s.sens} step={0.01} min={0.01} set={(sens) => setS({ ...s, sens })} />
         <LangSelect ctx={ctx} value={s.locale} set={(locale) => setS({ ...s, locale })} />
       </div>
+      <p className="small muted">{T("تلكاهم بـ VALORANT: Settings ← General ← Mouse Sensitivity، والـ DPI من برنامج ماوسك.", "Find these in VALORANT under Settings, General, Mouse Sensitivity; DPI is in your mouse software.")}</p>
       <button className="btn wide" onClick={() => act("save_settings", { settings: { ...s, onboarded: true } })}>{T("كمل", "Continue")}</button>
     </div>
   );
@@ -184,6 +206,8 @@ function Home({ ctx }: { ctx: Ctx }) {
   let hero: { title: string; sub: string; cta: string; run: () => void };
   if (!view.latest) {
     hero = { title: T("ابدأ بالتقييم", "Start with an assessment"), sub: T("7 اختبارات بحوالي 9 دقايق، وبعدها تعرف وين مشكلتك بالضبط.", "7 tests in about 9 minutes, then you will know exactly what to fix."), cta: T("ابدأ التقييم", "Start assessment"), run: () => act("run_assessment") };
+  } else if (active && plan!.today_done) {
+    hero = { title: T("خلصت جلسة اليوم", "Today's session is done"), sub: T("الجلسة الجاية تفتح باجر. الراحة جزء من التحسن، وتكدر تلعب تدريب حر.", "The next one opens tomorrow. Rest is part of improving; free practice is still open."), cta: T("التدريب الحر", "Free practice"), run: () => go("practice") };
   } else if (active) {
     const left = (plan!.today_items.length - plan!.item_index);
     hero = { title: T(`اليوم ${active.day} من ${plan!.block_days}`, `Day ${active.day} of ${plan!.block_days}`), sub: T(`باقي ${left} تمارين بجلسة اليوم.`, `${left} drills left in today's session.`), cta: T("كمل جلسة اليوم", "Continue today's session"), run: () => go("plan") };
@@ -202,7 +226,10 @@ function Home({ ctx }: { ctx: Ctx }) {
         <section className="card hero">
           <h2>{hero.title}</h2>
           <p className="muted">{hero.sub}</p>
-          <button className="btn" onClick={hero.run}>{hero.cta}</button>
+          <div className="row">
+            <button className="btn" onClick={hero.run}>{hero.cta}</button>
+            {view.latest && <button className="btn ghost" disabled={!view.trainer_found} onClick={() => act("run_assessment")}>{T("إعادة التقييم الكامل", "Retake full assessment")}</button>}
+          </div>
         </section>
         <section className="card score">
           <span className="label">{T("المستوى العام", "Overall")}</span>
@@ -267,10 +294,16 @@ const dayKey = (ms: number) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
 
+const T2 = (lang: Lang, ar: string, en: string) => (lang === "ar" ? ar : en);
+const MODE_NAMES: Record<string, [string, string]> = {
+  flick: ["فليك", "Flick"], multi: ["أهداف متعددة", "Multi target"], peek: ["ظهور من الجدار", "Wall peek"],
+  track: ["تتبع سلس", "Smooth track"], strafe: ["تتبع strafe", "Strafe track"], practice: ["جلسة", "Session"],
+};
+
 function scenarioTitle(id: string, lang: Lang): string {
   const key = id.split(".").pop() ?? id;
   if (id.startsWith("assess.")) return pick(scenarioNames[key], lang, key);
-  if (id.startsWith("custom.")) return pick(drillNames.custom, lang, key);
+  if (id.startsWith("custom.")) return `${T2(lang, "حر", "Free")}: ${pick(MODE_NAMES[key], lang, key)}`;
   return pick(drillNames[key], lang, key);
 }
 
@@ -324,7 +357,8 @@ function Analysis({ ctx, initial }: { ctx: Ctx; initial?: string }) {
     <>
       <PageHead title={T("التحليل", "Analysis")} sub={T("اختار يوم، وافتح أي جلسة حتى تشوف تفاصيلها.", "Pick a day and open any session for its details.")} />
       <div className="chips days-strip">
-        {days.slice(0, 14).map((d) => <button key={d} className={d === day ? "on" : ""} onClick={() => setDay(d)}>{dayName(d)}</button>)}
+        {days.slice(0, 10).map((d) => <button key={d} className={d === day ? "on" : ""} onClick={() => setDay(d)}>{dayName(d)}</button>)}
+        <input type="date" aria-label={T("اختار يوم", "Pick a day")} value={day} max={today} onChange={(e) => e.target.value && setDay(e.target.value)} />
       </div>
       <div className="stats">
         <Stat value={String(cards.length)} label={T("جلسات", "Sessions")} />
@@ -340,6 +374,7 @@ function Analysis({ ctx, initial }: { ctx: Ctx; initial?: string }) {
         </section>
       )}
       <h2 className="group">{T("جلسات هذا اليوم", "Sessions this day")}</h2>
+      {cards.length === 0 && <Empty text={T("ما لعبت بهذا اليوم.", "No sessions on this day.")} />}
       <div className="session-grid">
         {cards.map((c) => (
           <button key={c.path} className="session-card" onClick={() => setOpen(c)}>
@@ -537,6 +572,17 @@ function Replay({ detail, ctx }: { detail: Detail; ctx: Ctx }) {
   }, [playing, rate, end]);
 
   const move = (d: number) => setIndex((i) => Math.max(0, Math.min(list.length - 1, i + d)));
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+        e.preventDefault();
+        setIndex((i) => Math.max(0, Math.min(list.length - 1, i + ((e.key === "ArrowRight") === (document.documentElement.dir !== "rtl") ? 1 : -1))));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [list.length]);
   const labels = { onset: T("بداية", "Start"), primary: T("نهاية الحركة", "First stop"), shot: T("نقرة", "Click") };
   const filters: [string, string][] = [["all", T("الكل", "All")], ["misses", T("الأخطاء", "Misses")], ["slowest", T("الأبطأ", "Slowest")], ["overshoot", T("أكبر تجاوز", "Biggest overshoot")]];
 
@@ -642,6 +688,25 @@ function Progress({ ctx }: { ctx: Ctx }) {
           <ValueBars rows={volume} unit={T("د", "min")} />
         </section>
       </div>
+      {view.latest && (
+        <section className="card">
+          <h2>{T("درجات مهاراتك الآن", "Your skill scores now")}</h2>
+          {[...view.latest.profile.skills].sort((a, b) => a.score - b.score).map((s) => {
+            const color = s.score >= 60 ? "var(--good)" : s.score >= 40 ? "var(--warn)" : "var(--bad)";
+            return (
+              <div className="skill" key={s.skill}>
+                <div>{pick(skillNames[s.skill], lang, s.skill)}{s.reliability === "Low" && <small className="muted">{T("بيانات قليلة", "little data")}</small>}</div>
+                <div className="track" title={`${s.ci95[0].toFixed(0)}–${s.ci95[1].toFixed(0)}`}>
+                  <div className="ci" style={{ left: `${s.ci95[0]}%`, width: `${Math.max(s.ci95[1] - s.ci95[0], 1)}%` }} />
+                  <div className="val" style={{ left: `${s.score}%`, background: color }} />
+                </div>
+                <div className="num">{s.score.toFixed(0)}</div>
+              </div>
+            );
+          })}
+          <p className="small muted">{T("الشريط الفاتح هو نطاق الثقة. الدرجات أولية لحد ما تتجمع بيانات لاعبين.", "The light band is the confidence range. Scores are provisional until player data exists.")}</p>
+        </section>
+      )}
       {view.history.length > 0 && (
         <section className="card">
           <h2>{T("مهاراتك بالتقييمات", "Your skills across assessments")}</h2>
@@ -665,15 +730,16 @@ function PlanPage({ ctx }: { ctx: Ctx }) {
       <PageHead title={T("خطة التدريب", "Training plan")} />
       {!plan && <Empty text={T("الخطة تتبنى من نتائج تقييمك.", "Your plan is built from your assessment.")} action={<button className="btn" onClick={() => go("home")}>{T("ابدأ التقييم", "Start assessment")}</button>} />}
       {plan && <PlanBody ctx={ctx} plan={plan} />}
-      {view.findings.length > 0 && (
+      {plan && plan.focus.length > 0 && (
         <section className="card">
           <h2>{T("ليش هذي الخطة", "Why this plan")}</h2>
-          {view.findings.map((f) => (
+          {plan.focus.map((f) => (
             <div className="finding" key={f.id}>
               <b>{f.headline}</b>
               <p className="muted">{f.why}</p>
               <div className="evidence">
                 {f.evidence.map(([k, v]) => {
+                  if (k === "score") return <span key={k}><b>{v.toFixed(0)}</b>{T("درجتك بهذي المهارة", "Your score in this skill")}</span>;
                   const e = evidenceNames[k];
                   return <span key={k}><b>{e?.pct ? `${(v * 100).toFixed(0)}%` : `${v.toFixed(2)}${e?.unit ? ` ${e.unit}` : ""}`}</b>{pick(e?.name, lang, k)}</span>;
                 })}
@@ -717,6 +783,9 @@ function PlanBody({ ctx, plan }: { ctx: Ctx; plan: Plan }) {
       <section className="card hero">
         <h2>{T("خطة 6 أيام جاهزة", "A 6-day plan is ready")}</h2>
         <p className="muted">{T("كل يوم حوالي 16 دقيقة، وتركز على أهم مشكلتين بس.", "About 16 minutes a day, focused only on your top two problems.")}</p>
+        <div className="evidence spaced-b">
+          {plan.focus.flatMap((f) => f.drills.slice(0, 1)).map((d) => <span key={d}><b>{pick(drillNames[d], lang, d)}</b>{pick(drillInfo[d]?.purpose, lang, "")}</span>)}
+        </div>
         <button className="btn" onClick={() => act("accept_plan")}>{T("ابدأ الخطة", "Start plan")}</button>
       </section>
     );
@@ -744,7 +813,7 @@ function PlanBody({ ctx, plan }: { ctx: Ctx; plan: Plan }) {
           <span className="label">{T("الكتلة", "Block")} {block}</span>
           <h2 className="tight">{T(`اليوم ${day} من ${plan.block_days}`, `Day ${day} of ${plan.block_days}`)} · {minutes} {T("دقيقة", "min")}</h2>
         </div>
-        <button className="btn" disabled={!view.trainer_found || plan.item_index >= plan.today_items.length} onClick={() => act("run_next_item")}>{T("شغّل التمرين الجاي", "Play next drill")}</button>
+        <button className="btn" disabled={!view.trainer_found || plan.today_done || plan.item_index >= plan.today_items.length} onClick={() => act("run_next_item")}>{plan.today_done ? T("خلصت اليوم، تعال باجر", "Done for today") : T("شغّل التمرين الجاي", "Play next drill")}</button>
       </div>
       <div className="days">{Array.from({ length: plan.block_days }, (_, i) => <i key={i} className={i < day - 1 ? "on" : i === day - 1 ? "now" : ""} />)}</div>
       <ol className="steps">
@@ -947,7 +1016,7 @@ function Coach({ ctx }: { ctx: Ctx }) {
               <span className={`tag ${report.source === "ai" ? "good" : ""}`}>{report.source === "ai" ? T("ذكاء اصطناعي", "AI") : T("تحليل مدمج", "Built-in")}</span>
             </div>
             <p className="lead">{report.reply.summary}</p>
-            {report.note && <div className="banner">{T("استخدمنا التحليل المدمج لأن:", "Used the built-in analysis because:")} {report.note}</div>}
+            {report.note && <div className="banner">{T("استخدمنا التحليل المدمج لأن:", "Used the built-in analysis because:")} {friendlyError(report.note, T)}</div>}
             {report.reply.strengths.length > 0 && (
               <>
                 <h2>{T("نقاط قوتك", "Your strengths")}</h2>
@@ -1017,7 +1086,7 @@ function SettingsPage({ ctx }: { ctx: Ctx }) {
       await call<string>("test_ai");
       setTest({ ok: true, text: T("المصدر يشتغل.", "The source works.") });
     } catch (e) {
-      setTest({ ok: false, text: String(e) });
+      setTest({ ok: false, text: friendlyError(String(e), T) });
     }
     setTesting(false);
   };
@@ -1104,7 +1173,7 @@ function LangSelect({ ctx, value, set }: { ctx: Ctx; value: string; set: (v: str
 function Num(props: { label: string; value: number; step: number; min?: number; set: (v: number) => void }) {
   return (
     <label className="field">{props.label}
-      <input type="number" dir="ltr" value={props.value} step={props.step} min={props.min} onChange={(e) => { const v = e.target.valueAsNumber; if (Number.isFinite(v)) props.set(v); }} />
+      <input type="number" dir="ltr" value={props.value} step={props.step} min={props.min} onChange={(e) => { const v = e.target.valueAsNumber; if (Number.isFinite(v) && v >= (props.min ?? 0)) props.set(v); }} />
     </label>
   );
 }

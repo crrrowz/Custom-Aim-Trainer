@@ -79,6 +79,8 @@ pub mod strings {
         results_next_hint => "Enter / Space  Next test   •   Esc  Stop", "Enter / Space  الاختبار الجاي   •   Esc  توقف";
         stat_accuracy => "ACCURACY", "الإصابة";
         stat_hits => "HITS", "الأهداف";
+        stat_on_target => "ON TARGET", "على الهدف";
+        stat_length => "LENGTH", "المدة";
         stat_reaction => "REACTION", "رد الفعل";
         stage_label => "ASSESSMENT • TEST", "التقييم • اختبار";
         hud_ready => "READY", "جاهز";

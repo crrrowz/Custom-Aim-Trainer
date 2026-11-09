@@ -120,6 +120,8 @@ pub struct DrillRuntime {
     pub watch: Option<FlickWatch>,
     pub last_reach: Option<f64>,
     pub player: PlayerMotion,
+    pub track_frames: u32,
+    pub track_frames_on: u32,
 }
 
 impl DrillRuntime {
@@ -131,6 +133,12 @@ impl DrillRuntime {
         if let Some(w) = &mut self.watch {
             w.update(yaw, pitch);
         }
+    }
+
+    /// Share of tracking frames with the crosshair on the target, as a percentage.
+    pub fn on_target_percent(&self) -> Option<f64> {
+        (self.track_frames > 0)
+            .then(|| f64::from(self.track_frames_on) * 100.0 / f64::from(self.track_frames))
     }
 
     pub fn reach(&self) -> Option<f64> {

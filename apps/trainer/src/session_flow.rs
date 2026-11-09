@@ -231,13 +231,14 @@ pub struct HudNumbers {
     pub misses: u32,
     pub total: u32,
     pub tracking: bool,
+    pub on_target_pct: u32,
 }
 
 pub fn hud_line(n: HudNumbers) -> String {
     let left = n.remaining_s.ceil() as u32;
     let clock = format!("{:02}:{:02}", left / 60, left % 60);
     if n.tracking {
-        return clock;
+        return format!("{clock}    {}%", n.on_target_pct);
     }
     let shots = n.hits + n.misses;
     let accuracy = (n.hits * 100).checked_div(shots).unwrap_or(100);
@@ -448,6 +449,7 @@ pub struct SessionResultsInput {
     pub reaction_times_s: Vec<f64>,
     pub session_duration_s: f64,
     pub saved_path: String,
+    pub time_on_target_pct: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -460,6 +462,7 @@ pub struct SessionResultsSummary {
     pub median_rt_ms: Option<f64>,
     pub session_duration_s: f64,
     pub saved_path: String,
+    pub time_on_target_pct: Option<f64>,
 }
 
 /// Pure computation function for session results.
@@ -494,6 +497,7 @@ pub fn compute_session_results(input: &SessionResultsInput) -> SessionResultsSum
         median_rt_ms,
         session_duration_s: input.session_duration_s,
         saved_path: input.saved_path.clone(),
+        time_on_target_pct: input.time_on_target_pct,
     }
 }
 
@@ -895,9 +899,20 @@ pub fn spawn_results_overlay(
                         ..default()
                     })
                     .with_children(|row| {
-                        spawn_stat(row, ui_fonts, &accuracy, strings::stat_accuracy());
-                        spawn_stat(row, ui_fonts, &hits, strings::stat_hits());
-                        spawn_stat(row, ui_fonts, &rt_str, strings::stat_reaction());
+                        if let Some(on_target) = summary.time_on_target_pct {
+                            let length = format!("{:.0}s", summary.session_duration_s);
+                            spawn_stat(
+                                row,
+                                ui_fonts,
+                                &format!("{on_target:.0}%"),
+                                strings::stat_on_target(),
+                            );
+                            spawn_stat(row, ui_fonts, &length, strings::stat_length());
+                        } else {
+                            spawn_stat(row, ui_fonts, &accuracy, strings::stat_accuracy());
+                            spawn_stat(row, ui_fonts, &hits, strings::stat_hits());
+                            spawn_stat(row, ui_fonts, &rt_str, strings::stat_reaction());
+                        }
                     });
 
                     card.spawn((
