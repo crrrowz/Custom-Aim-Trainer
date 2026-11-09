@@ -23,6 +23,8 @@ export interface Skill {
 export interface Assessment {
   day: number;
   form: number;
+  at_ms?: number;
+  files?: string[];
   profile: { norms_version: string; skills: Skill[] };
 }
 export interface Finding {
@@ -74,6 +76,9 @@ export interface Practice {
   name: string;
   hit_rate: number;
   difficulty: number | null;
+  at_ms?: number;
+  file?: string | null;
+  mode?: string | null;
 }
 export interface View {
   settings: Settings;
@@ -97,6 +102,52 @@ export interface CustomTargets {
   time_limit_s: number;
   concurrent: number;
   duration_s: number;
+}
+export interface PathPoint {
+  t_ms: number;
+  x: number;
+  y: number;
+  speed: number;
+}
+export interface Flick {
+  id: number;
+  t_s: number;
+  radius_deg: number;
+  distance_deg: number | null;
+  octant: number | null;
+  reaction_ms: number | null;
+  anticipated: boolean;
+  time_to_hit_ms: number | null;
+  gain: number | null;
+  corrections: number;
+  hit: boolean;
+  premature: boolean;
+  path: PathPoint[];
+  onset_ms: number | null;
+  primary_end_ms: number | null;
+  stable_ms: number | null;
+  shot_ms: number | null;
+  endpoint: [number, number] | null;
+}
+export interface TrackBin {
+  t_s: number;
+  error_deg: number;
+  on_target: number;
+}
+export interface Detail {
+  scenario_id: string;
+  duration_s: number;
+  targets: number;
+  hits: number;
+  accuracy: number | null;
+  median_reaction_ms: number | null;
+  median_time_to_hit_ms: number | null;
+  median_gain: number | null;
+  paused_s: number;
+  flicks: Flick[];
+  tracking: TrackBin[];
+  time_on_target: number | null;
+  tracking_radius_deg: number | null;
 }
 export interface ChatAnswer {
   reply: { headline: string; explanation: string; tips: string[]; next_step: string };
