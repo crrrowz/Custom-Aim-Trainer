@@ -29,6 +29,20 @@ const assessment = (shift: number, at_ms: number) => ({
 });
 
 const now = Date.now();
+// The real backend writes findings and reports in the chosen language; the sample data does the same.
+const en = () => view.settings.locale === "en";
+const FINDINGS = {
+  D6: { ar: ["نقر متسرّع", "تطلق قبل الوصول، فتضيع الرصاصة الأولى."], en: ["Clicking too early", "You fire before arriving, so the first bullet misses."] },
+  D2: { ar: ["تجاوز منتظم للهدف", "حركتك الأولى تتجاوز الهدف بشكل متوقّع، وهذا يتصحّح بسرعة."], en: ["Steady overshoot", "Your first movement goes past the target by a predictable amount, which is quick to fix."] },
+};
+const localize = (v: View): View => {
+  const lang = en() ? "en" : "ar";
+  const tr = <F extends { id: string; headline: string; why: string }>(f: F): F => {
+    const t = FINDINGS[f.id as keyof typeof FINDINGS]?.[lang];
+    return t ? { ...f, headline: t[0], why: t[1] } : f;
+  };
+  return { ...v, findings: v.findings.map(tr), plan: v.plan && { ...v.plan, focus: v.plan.focus.map(tr) } };
+};
 let view: View = {
   settings: {
     onboarded: true, dpi: 800, sens: 0.35, locale: "ar", windowed: false, test_mode: true,
@@ -146,7 +160,12 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
   if (command === "generate_report") {
     const report: CoachReport = {
       at_ms: Date.now(), scope: args!.scope as string, sessions: 22, source: "built-in", note: null,
-      reply: {
+      reply: en() ? {
+        summary: "I reviewed 22 sessions. Your accuracy averages 61% and rose by 8 points in the latest sessions.",
+        strengths: ["Head level: score 74", "Reactive tracking: score 64"],
+        weaknesses: [{ title: "Clicking too early (click timing)", detail: "You fire before arriving, so the first bullet misses.", fix: "Drill: confirm click" }],
+        next_steps: ["Confirm click", "Deceleration ladder"],
+      } : {
         summary: "راجعت 22 جلسة. دقتك بالمعدل 61%، وتحسنت بـ 8 نقطة بالجلسات الأخيرة.",
         strengths: ["مستوى الرأس: درجتك 74", "التتبع التفاعلي: درجتك 64"],
         weaknesses: [{ title: "نقر متسرّع (توقيت النقر)", detail: "تطلق قبل الوصول، فتضيع الرصاصة الأولى.", fix: "تمرين: نقر بعد الوصول" }],
@@ -155,5 +174,5 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
     };
     view = { ...view, reports: [report, ...view.reports] };
   }
-  return view as T;
+  return localize(view) as T;
 }
