@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 
 const SPAWN_DISTANCE_M: f64 = 15.0;
 const OCTANTS: u32 = 8;
+/// Half the visible screen, in degrees from the centre, with a small margin: the game uses a 103 degree
+/// horizontal field of view on a 16:9 screen, which shows about 51 degrees left and right and 35 up and down.
+pub const ON_SCREEN_H_DEG: f64 = 48.0;
+pub const ON_SCREEN_V_DEG: f64 = 33.0;
 const SECONDS_PER_TRIAL: f64 = 1.5;
 const PEEK_SPEED_MPS: f64 = 5.73;
 
@@ -135,7 +139,8 @@ fn strafe(speed: f64, mean_reversal_s: f64) -> TrackingTrajectory {
 /// Builds a drill at difficulty `d`. From day 3 `varied` spreads the distances around the same skill.
 pub fn build_drill(name: &str, d: f64, varied: bool, seconds: f64) -> Option<Scenario> {
     let id = format!("drill.{name}");
-    let far = lerp(20.0, 40.0, d);
+    // Flicks come in every direction, so the farthest one must still be on screen straight up.
+    let far = lerp(20.0, 40.0, d).min(ON_SCREEN_V_DEG - 1.5);
     let spread = if varied {
         vec![far * 0.6, far * 0.8, far]
     } else {
@@ -248,6 +253,28 @@ fn default_reversal() -> f64 {
     0.55
 }
 
+impl CustomTargets {
+    /// The same settings, limited so every target appears on screen and the nearest distance never
+    /// exceeds the farthest. Flick targets come in every direction, so straight up must fit as well.
+    pub fn on_screen(&self) -> Self {
+        let mut c = self.clone();
+        let edge = |limit: f64| (limit - c.radius_deg).max(1.0);
+        let reach = match c.mode {
+            CustomMode::Flick => edge(ON_SCREEN_V_DEG),
+            _ => edge(ON_SCREEN_H_DEG),
+        };
+        let (lo, hi) = (
+            c.min_distance_deg.min(c.max_distance_deg),
+            c.min_distance_deg.max(c.max_distance_deg),
+        );
+        c.max_distance_deg = hi.min(reach);
+        c.min_distance_deg = lo.min(c.max_distance_deg);
+        c.area_h_deg = c.area_h_deg.min(edge(ON_SCREEN_H_DEG));
+        c.area_v_deg = c.area_v_deg.min(edge(ON_SCREEN_V_DEG));
+        c
+    }
+}
+
 fn distance_steps(c: &CustomTargets) -> Vec<f64> {
     let (lo, hi) = (
         c.min_distance_deg.min(c.max_distance_deg),
@@ -261,6 +288,7 @@ fn distance_steps(c: &CustomTargets) -> Vec<f64> {
 }
 
 pub fn build_custom(c: &CustomTargets) -> Result<Scenario, String> {
+    let c = &c.on_screen();
     let id = "custom.practice".to_string();
     let scenario = match c.mode {
         CustomMode::Flick => flick(
@@ -390,6 +418,51 @@ mod tests {
         let table = aim_scenarios::generator::generate_cluster_candidates(&s, 7);
         assert!(!table.is_empty());
         assert!(s.rules.clip_to_area);
+    }
+
+    #[test]
+    fn the_hardest_drills_stay_on_screen() {
+        for name in [
+            "deceleration_ladder",
+            "commit_flick",
+            "confirm_click",
+            "speed_push",
+        ] {
+            let TargetLayout::Fitts { grid, .. } =
+                build_drill(name, 1.0, true, 60.0).unwrap().layout
+            else {
+                panic!("{name} is a flick drill");
+            };
+            assert!(
+                grid.distances_deg
+                    .iter()
+                    .all(|d| *d + 1.0 <= ON_SCREEN_V_DEG),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn custom_targets_stay_on_screen() {
+        let mut c = multi(90.0, 80.0);
+        c.mode = CustomMode::Flick;
+        c.min_distance_deg = 70.0;
+        c.max_distance_deg = 60.0;
+        let fixed = c.on_screen();
+        assert!(fixed.min_distance_deg <= fixed.max_distance_deg);
+        assert!(fixed.max_distance_deg + fixed.radius_deg <= ON_SCREEN_V_DEG);
+        let TargetLayout::Fitts { grid, .. } = build_custom(&c).unwrap().layout else {
+            panic!("flick builds a Fitts layout");
+        };
+        assert!(grid
+            .distances_deg
+            .iter()
+            .all(|d| d + c.radius_deg <= ON_SCREEN_V_DEG));
+
+        c.mode = CustomMode::Track;
+        let fixed = c.on_screen();
+        assert!(fixed.area_h_deg + fixed.radius_deg <= ON_SCREEN_H_DEG);
+        assert!(fixed.area_v_deg + fixed.radius_deg <= ON_SCREEN_V_DEG);
     }
 
     #[test]
