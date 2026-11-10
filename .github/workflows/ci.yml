@@ -1,48 +1,79 @@
 name: CI
 
+# Every pull request into main must pass these checks before it can be merged.
 on:
   push:
-    branches: [ main, master ]
+    branches: [main]
   pull_request:
-    branches: [ main, master ]
+    branches: [main]
+
+# A newer push to the same pull request cancels the run it replaces.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check-architecture-boundaries:
-    name: Architecture Dependency Boundaries
+  boundaries:
+    name: Architecture boundaries
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Self-Test Boundary Script
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Self-test the boundary script
         shell: pwsh
         run: ./scripts/check-boundaries.ps1 -SelfTest
-
-      - name: Run Dependency Boundary Verification
+      - name: Domain crates stay free of engine, UI, network and database
         shell: pwsh
         run: ./scripts/check-boundaries.ps1
 
-  ci-windows:
-    name: Rust Windows CI
+  workspace:
+    name: Rust workspace
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
-      - name: Rustfmt Check
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
         run: cargo fmt --all -- --check
-
-      - name: Clippy Warnings Check
+      - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace
 
-      - name: Run Workspace Tests
-        run: cargo test --workspace --verbose
+  desktop:
+    name: Desktop app
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/ui/package-lock.json
+      - name: Install UI packages
+        working-directory: apps/desktop/ui
+        run: npm ci --no-audit --no-fund
+      # Type-checks the UI, and produces the dist folder the Tauri backend embeds at compile time.
+      - name: Build UI
+        working-directory: apps/desktop/ui
+        run: npm run build
+      - name: Formatting
+        working-directory: apps/desktop/src-tauri
+        run: cargo fmt -- --check
+      - name: Clippy
+        working-directory: apps/desktop/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Tests
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --lib

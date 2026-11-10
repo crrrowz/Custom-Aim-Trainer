@@ -11,13 +11,60 @@ measurements trustworthy and comparable over time. The rules below exist for tha
   solve. It saves work on both sides.
 - Windows is required to run the trainer. Analysis and coaching crates build and test anywhere.
 
-## Workflow
+## From idea to merged change
 
-1. Branch from `main`. Do not commit to `main` directly.
-2. Write the test first when you change behaviour, and see it fail before the fix.
-3. Keep one change per commit, with a message that says what changed and why
+1. **Fork** the repository on GitHub (outside contributors) or work in a branch (maintainers).
+   Nobody pushes to `main` directly; every change arrives through a pull request.
+2. **Branch from the latest `main`**, named after what it does:
+   `fix/centre-dot-timeout`, `feat/drill-library-preview`, `docs/worktrees`.
+
+   ```powershell
+   git fetch origin
+   git switch -c fix/centre-dot-timeout origin/main
+   ```
+
+3. **Make the change** following the steps under [Working on a change](#working-on-a-change).
+4. **Push and open a pull request into `main`.** The template asks what changed, why, and how you
+   checked it. Link the issue (`Closes #123`).
+5. **CI runs** (see [Checks before merging](#checks-before-merging)). Fix anything it reports by
+   pushing more commits to the same branch; the run starts again by itself.
+6. **Review.** A maintainer reviews, asks for changes if needed, and merges once CI is green.
+   Pull requests are squash-merged or rebased so `main` stays a readable history.
+7. **Clean up:** delete the branch after the merge (GitHub offers a button), and remove its worktree
+   if you used one.
+
+## Parallel work with worktrees
+
+A git worktree is a second folder checked out from the same repository on its own branch. It lets
+you keep one change building or under review while you work on another, without stashing or
+switching branches, and without two changes touching the same files by accident.
+
+```powershell
+# A new folder next to the repository, on a new branch from main.
+git worktree add ..\aimforge-drill-preview -b feat/drill-library-preview origin/main
+
+# See every worktree and its branch.
+git worktree list
+
+# When the pull request is merged: remove the folder, then the branch.
+git worktree remove ..\aimforge-drill-preview
+git branch -d feat/drill-library-preview
+```
+
+Rules that keep this safe:
+
+- One branch per worktree, one task per branch. Two worktrees should not edit the same files.
+- Builds share nothing by default, so each worktree compiles from scratch. Point them at one build
+  folder to save time and disk: `$env:CARGO_TARGET_DIR = "D:\cargo-target\aimforge"`.
+- `git worktree remove` refuses to delete a folder with uncommitted changes. Commit or save them first.
+- Run `git worktree prune` if you deleted a worktree folder by hand.
+
+## Working on a change
+
+1. Write the test first when you change behaviour, and see it fail before the fix.
+2. Keep one change per commit, with a message that says what changed and why
    (`fix(trainer): ...`, `feat(ui): ...`, `docs: ...`).
-4. Run all checks before every commit:
+3. Run all checks before every commit:
 
    ```powershell
    cargo fmt --all -- --check
@@ -28,8 +75,29 @@ measurements trustworthy and comparable over time. The rules below exist for tha
 
    If you touched the desktop app, also run `cargo clippy --all-targets -- -D warnings` and
    `cargo test --lib` in `apps/desktop/src-tauri`, and `npm run build` in `apps/desktop/ui`.
-5. Check UI changes in a running app or in the browser preview (`npm --prefix apps/desktop/ui run dev`),
+4. Check UI changes in a running app or in the browser preview (`npm --prefix apps/desktop/ui run dev`),
    in both Arabic and English, and describe what you checked in the pull request.
+
+## Checks before merging
+
+Every pull request into `main` runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml) on
+Windows. It has three jobs, and all three must pass before the pull request can be merged:
+
+| Job | What it checks |
+| --- | --- |
+| Architecture boundaries | `aim-analysis` and `aim-coach` do not depend on Bevy, Tauri, winit, reqwest or rusqlite |
+| Rust workspace | `cargo fmt`, `cargo clippy -D warnings` and `cargo test` for every crate and the trainer |
+| Desktop app | the UI type-checks and builds, then `cargo fmt`, `clippy` and the backend tests in `apps/desktop/src-tauri` |
+
+When a check fails, open it from the pull request page and read the first error. Most failures are
+one of these:
+
+- **Formatting:** run `cargo fmt --all` (and `cargo fmt` inside `apps/desktop/src-tauri`) and push.
+- **Clippy:** fix the warning it names; warnings fail the build on purpose.
+- **A test:** run the same test locally (`cargo test -p <crate> <test name>`), fix the cause, push.
+- **Boundaries:** move the code that needs the outside dependency out of the domain crate.
+
+A newer push cancels the older run, so you only wait for the latest one.
 
 ## Rules that protect the data
 
