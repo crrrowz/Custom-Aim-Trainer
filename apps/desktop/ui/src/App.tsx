@@ -88,6 +88,13 @@ export function App() {
     <div className="shell">
       <nav className="nav" aria-label="main">
         <div className="brand">Aim<span>Forge</span></div>
+        <div className="lang-switch" role="group" aria-label="Language / اللغة">
+          {(["ar", "en"] as const).map((l) => (
+            <button key={l} className={lang === l ? "on" : ""} aria-pressed={lang === l} onClick={() => lang !== l && act("save_settings", { settings: { ...view.settings, locale: l } })}>
+              {l === "ar" ? "العربية" : "English"}
+            </button>
+          ))}
+        </div>
         {NAV.map(([id, ar, en, d]) => (
           <button key={id} className={tab === id ? "on" : ""} onClick={() => ctx.go(id)}>
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
@@ -106,7 +113,7 @@ export function App() {
         {view.notice === "stopped" && <div className="banner">{T("طلعت قبل ما ينسجل شي، فما انحسبت هذي المرة.", "You left before anything was recorded, so this one did not count.")}</div>}
         {view.notice === "new_best" && <div className="banner good">{T("رقم قياسي جديد لهذا التمرين!", "New personal best for this drill!")}</div>}
         {view.notice === "done_today" && <div className="banner">{T("خلصت جلسة اليوم. الجلسة الجاية تفتح باجر.", "Today's session is done. The next one opens tomorrow.")}</div>}
-        {view.notice === "incomplete" && <div className="banner">{T("التقييم وقف قبل ما يخلص. الاختبارات اللي خلصتها انحفظت، ولما تبدي مرة ثانية تكمل من الاختبار الجاي مو من الأول. بين الاختبارات أكو استراحة قصيرة، والجاي يبدي لحاله أو بـ Enter. زر Esc يوقف التقييم.", "The assessment stopped before the end. The tests you finished are saved; the next start continues from the next test, not from the beginning. Between tests there is a short rest; the next one starts by itself or with Enter. Esc stops the assessment.")}</div>}
+        {view.notice === "incomplete" && <div className="banner">{T("التقييم وقف قبل ما يخلص، وكل اللي لعبته انحفظ وتشوفه بالتحليل. الاختبار ينحسب بالتقييم بس إذا كمل للآخر، فلما تبدي مرة ثانية تكمل من الاختبار اللي وقفت بي، مو من الأول.", "The assessment stopped before the end, and everything you played is saved and shown in Analysis. A test only counts toward the assessment when it runs to the end, so the next start continues from the test you left, not from the beginning.")}</div>}
         <ScreenGuard key={tab} message={T("هذي الصفحة واجهت خطأ. الصفحات الثانية تشتغل عادي.", "This page hit an error. The other pages still work.")} retry={T("أعد المحاولة", "Try again")}>
           {tab === "home" && <Home ctx={ctx} />}
           {tab === "analysis" && <Analysis ctx={ctx} initial={recording} />}
@@ -369,6 +376,10 @@ function Analysis({ ctx, initial }: { ctx: Ctx; initial?: string }) {
   const [day, setDay] = useState(() => (open ? dayKey(open.at_ms) : latestDay ?? dayKey(Date.now())));
   const [metric, setMetric] = useState<DayMetric>("accuracy");
   const [shown, setShown] = useState(PAGE);
+  const [selecting, setSelecting] = useState(false);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const togglePick = (path: string) => setPicked((p) => { const n = new Set(p); if (n.has(path)) n.delete(path); else n.add(path); return n; });
+  const stopSelecting = () => { setSelecting(false); setPicked(new Set()); };
 
   if (view.sessions.length === 0) {
     return (
@@ -383,7 +394,7 @@ function Analysis({ ctx, initial }: { ctx: Ctx; initial?: string }) {
   const locale = lang === "ar" ? "ar-IQ" : "en-GB";
   const today = dayKey(Date.now());
   const yesterday = dayKey(Date.now() - 86400000);
-  const choose = (d: string) => { setDay(d); setShown(PAGE); };
+  const choose = (d: string) => { setDay(d); setShown(PAGE); stopSelecting(); };
   const longDate = new Date(`${day}T12:00`).toLocaleDateString(locale, { weekday: "long", day: "numeric", month: "long" });
   const cards = view.sessions.filter((s) => dayKey(s.at_ms) === day);
   const scored = cards.map(sessionScore).filter((v): v is number => v !== null);
@@ -451,15 +462,23 @@ function Analysis({ ctx, initial }: { ctx: Ctx; initial?: string }) {
           <p className="muted small">{T("كل نقطة جلسة. مرر الماوس عليها حتى تشوف اسمها والفرق عن الجلسة اللي قبلها.", "Each point is a session. Hover to see its name and the change from the session before.")}</p>
         </section>
       )}
-      <div className="row between">
+      <div className="list-head">
         <h2 className="group">{T("جلسات هذا اليوم", "Sessions this day")} <small className="muted">({cards.length})</small></h2>
+        {cards.length > 0 && (selecting ? (
+          <div className="row">
+            <span className="muted small">{T(`محدد ${picked.size}`, `${picked.size} selected`)}</span>
+            <button className="btn ghost small" onClick={() => setPicked(picked.size === cards.length ? new Set() : new Set(cards.map((c) => c.path)))}>{picked.size === cards.length ? T("إلغاء الكل", "Select none") : T("حدد كل اليوم", "Select the whole day")}</button>
+            {picked.size > 0 && <ConfirmButton label={T(`احذف ${picked.size}`, `Delete ${picked.size}`)} confirm={T("متأكد؟ ما يرجع", "Sure? This is permanent")} onConfirm={async () => { await ctx.act("delete_sessions", { paths: [...picked] }); stopSelecting(); }} />}
+            <button className="btn ghost small" onClick={stopSelecting}>{T("خلص", "Done")}</button>
+          </div>
+        ) : <button className="btn ghost small" onClick={() => setSelecting(true)}>{T("تحديد", "Select")}</button>)}
       </div>
       {cards.length === 0 && <Empty text={T("ما لعبت بهذا اليوم.", "No sessions on this day.")} />}
       <div className="session-grid">
         {cards.slice(0, shown).map((c) => (
-          <button key={c.path} className="session-card" onClick={() => setOpen(c)}>
+          <button key={c.path} className={`session-card ${selecting ? "selectable" : ""} ${picked.has(c.path) ? "picked" : ""}`} aria-pressed={selecting ? picked.has(c.path) : undefined} onClick={() => (selecting ? togglePick(c.path) : setOpen(c))}>
             <span className="row between">
-              <b>{scenarioTitle(c.scenario, lang)}</b>
+              <b>{selecting && <i className="check" aria-hidden="true" />}{scenarioTitle(c.scenario, lang)}</b>
               <small>{time(c)}</small>
             </span>
             <span className="big-num">{pct(sessionScore(c))}</span>
@@ -499,7 +518,7 @@ function ConfirmButton({ label, confirm, onConfirm }: { label: string; confirm: 
   return <button className={`btn ghost ${armed ? "danger" : ""}`} onClick={() => (armed ? onConfirm() : setArmed(true))}>{armed ? confirm : label}</button>;
 }
 
-function saveShareCard(card: SessionCard, d: Detail, lang: Lang) {
+async function saveShareCard(card: SessionCard, d: Detail, lang: Lang): Promise<string> {
   const c = document.createElement("canvas");
   c.width = 1080;
   c.height = 600;
@@ -534,10 +553,11 @@ function saveShareCard(card: SessionCard, d: Detail, lang: Lang) {
     g.font = font(28);
     g.fillText(label, sx, 460);
   });
-  const a = document.createElement("a");
-  a.href = c.toDataURL("image/png");
-  a.download = `aimforge-${dayKey(card.at_ms)}.png`;
-  a.click();
+  const blob = await new Promise<Blob>((ok, fail) => c.toBlob((b) => (b ? ok(b) : fail(new Error("png"))), "image/png"));
+  const png = Array.from(new Uint8Array(await blob.arrayBuffer()));
+  const stamp = new Date(card.at_ms);
+  const name = `aimforge-${dayKey(card.at_ms)}-${String(stamp.getHours()).padStart(2, "0")}${String(stamp.getMinutes()).padStart(2, "0")}`;
+  return call<string>("save_share_card", { png, name });
 }
 
 function SessionView({ card, ctx, back }: { card: SessionCard; ctx: Ctx; back: () => void }) {
@@ -545,6 +565,10 @@ function SessionView({ card, ctx, back }: { card: SessionCard; ctx: Ctx; back: (
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<"replay" | "trend" | "map" | "dirs">("replay");
+  const [sharedTo, setSharedTo] = useState<string | null>(null);
+  const share = async () => {
+    try { setSharedTo(await saveShareCard(card, detail!, lang)); } catch (e) { setError(String(e)); }
+  };
 
   useEffect(() => {
     call<Detail>("session_detail", { path: card.path }).then(setDetail, (e) => setError(String(e)));
@@ -561,7 +585,7 @@ function SessionView({ card, ctx, back }: { card: SessionCard; ctx: Ctx; back: (
   });
   const [early, late] = [seg(flicks.slice(0, third)), seg(flicks.slice(-third))];
 
-  const shots = flicks.filter((f) => f.endpoint);
+  const shots = flicks.filter((f) => f.endpoint && f.octant !== null);
   const offX = avg(shots.map((f) => f.endpoint![0])) ?? 0;
   const offY = avg(shots.map((f) => f.endpoint![1])) ?? 0;
   const spread = avg(shots.map((f) => Math.hypot(f.endpoint![0], f.endpoint![1]))) ?? 0;
@@ -571,20 +595,43 @@ function SessionView({ card, ctx, back }: { card: SessionCard; ctx: Ctx; back: (
     Math.abs(offY) >= 0.1 ? `${Math.abs(offY).toFixed(2)}° ${offY > 0 ? T("فوق", "up") : T("جوه", "down")}` : null,
   ].filter(Boolean).join(" · ");
 
+  // Error along the movement: positive went past the target, negative stopped short of it.
+  const along = shots.map((f) => {
+    const a = ((f.octant ?? 0) * Math.PI) / 4;
+    return f.endpoint![0] * Math.cos(a) + f.endpoint![1] * Math.sin(a);
+  });
+  const reach = avg(along) ?? 0;
+  const misses = shots.filter((f) => !f.hit);
+  const missAlong = misses.map((f) => { const a = ((f.octant ?? 0) * Math.PI) / 4; return f.endpoint![0] * Math.cos(a) + f.endpoint![1] * Math.sin(a); });
+  const pastShare = missAlong.length ? missAlong.filter((v) => v > 0).length / missAlong.length : null;
+  const radius = avg(shots.map((f) => f.radius_deg)) ?? 0.5;
+  let shotVerdict: string;
+  if (shots.length < 5) shotVerdict = T("طلقات قليلة، العب جلسة أطول حتى يطلع نمط واضح.", "Too few shots for a clear pattern; play a longer session.");
+  else if (Math.abs(reach) > radius * 0.35) shotVerdict = reach > 0
+    ? T(`مشكلتك الأوضح: تعبر الهدف. طلقاتك توقف بعد مركزه بـ ${reach.toFixed(2)}° بالمعدل باتجاه حركتك. خفف قبل الوصول.`, `Your clearest problem: you go past the target. Shots land ${reach.toFixed(2)}° beyond its centre along your movement. Slow down before arriving.`)
+    : T(`مشكلتك الأوضح: توقف قبل الهدف. طلقاتك تنزل قبل مركزه بـ ${Math.abs(reach).toFixed(2)}° بالمعدل. كمّل الحركة للمركز.`, `Your clearest problem: you stop short. Shots land ${Math.abs(reach).toFixed(2)}° before the centre on average. Carry the movement to the centre.`);
+  else if (bias) shotVerdict = T(`طلقاتك مايلة ${bias} بالمعدل، وهذا ميلان ثابت تكدر تصححه.`, `Your shots lean ${bias} on average, a steady lean you can correct.`);
+  else if (spread > radius * 1.2) shotVerdict = T("طلقاتك متمركزة بس منتشرة. الثبات قبل النقرة يجمعها.", "Your shots are centred but scattered. Settling before the click tightens them.");
+  else shotVerdict = T("طلقاتك متمركزة ومجموعة. حلو.", "Your shots are centred and tight. Good.");
+
   const dirs = DIRECTION_NAMES.map(([ar, en, arrow], o) => {
     const list = flicks.filter((f) => f.octant === o);
     return { name: `${arrow}  ${T(ar, en)}`, n: list.length, acc: list.length ? list.filter((f) => f.hit).length / list.length : 0, time: avg(list.map((f) => f.time_to_hit_ms).filter((v): v is number => v !== null)) };
   }).filter((d) => d.n > 0);
   const maxTime = Math.max(...dirs.map((d) => d.time ?? 0), 1);
+  const rated = dirs.filter((d) => d.n >= 3);
+  const weakest = rated.length > 1 ? rated.reduce((a, b) => (b.acc < a.acc ? b : a)) : null;
+  const slowest = rated.length > 1 ? rated.reduce((a, b) => ((b.time ?? 0) > (a.time ?? 0) ? b : a)) : null;
 
   return (
     <>
       <PageHead title={scenarioTitle(card.scenario, lang)} sub={new Date(card.at_ms).toLocaleString(lang === "ar" ? "ar-IQ" : "en-GB", { weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })}>
-        {detail && !detail.timing_suspect && <button className="btn ghost" onClick={() => saveShareCard(card, detail, lang)}>{T("بطاقة مشاركة", "Share card")}</button>}
+        {detail && !detail.timing_suspect && <button className="btn ghost" onClick={share}>{T("بطاقة مشاركة", "Share card")}</button>}
         <ConfirmButton label={T("احذف", "Delete")} confirm={T("متأكد؟ ما يرجع", "Sure? This is permanent")} onConfirm={async () => { await ctx.act("delete_session", { path: card.path }); back(); }} />
         <button className="btn ghost" onClick={back}>{T("كل الجلسات", "All sessions")}</button>
       </PageHead>
       {error && <div className="banner err">{error}</div>}
+      {sharedTo && <div className="banner good">{T("انحفظت بطاقة المشاركة هنا:", "Share card saved to:")} <code dir="ltr">{sharedTo}</code></div>}
       {!detail && !error && <div className="skeleton" />}
       {detail?.timing_suspect && <div className="banner">{T("هذي الجلسة انسجلت قبل إصلاح الساعة، فأرقام الوقت مخفية.", "This session was recorded before the clock fix, so timing numbers are hidden.")}</div>}
       {detail && (
@@ -618,6 +665,7 @@ function SessionView({ card, ctx, back }: { card: SessionCard; ctx: Ctx; back: (
               <div className="tabs" role="tablist">
                 {tabs.map(([id, name]) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "on" : ""} onClick={() => setTab(id)}>{name}</button>)}
               </div>
+              <div className="tab-pane">
               {tab === "replay" && <Replay detail={detail} ctx={ctx} />}
               {tab === "trend" && (
                 <>
@@ -634,29 +682,38 @@ function SessionView({ card, ctx, back }: { card: SessionCard; ctx: Ctx; back: (
                 </>
               )}
               {tab === "map" && (
-                <section className="card split">
-                  <div>
-                    <h2>{T("خريطة طلقاتك", "Your shot map")}</h2>
-                    <div className="stats">
-                      <Stat value={pct(inside)} label={T("داخل الهدف", "Inside the target")} />
-                      <Stat value={`${spread.toFixed(2)}°`} label={T("متوسط البعد عن المركز", "Average distance from centre")} />
-                    </div>
-                    <p>{bias ? T(`طلقاتك مايلة ${bias} بالمعدل.`, `Your shots lean ${bias} on average.`) : T("طلقاتك متمركزة، ماكو ميلان واضح.", "Your shots are centred, with no clear lean.")}</p>
-                    <p className="muted small">{T("الدائرة الخضراء هي الهدف، والدائرة الأكبر ضعف حجمه. علامة + هي مركز كل طلقاتك.", "The green circle is the target; the larger ring is twice its size. + marks the centre of all your shots.")}</p>
+                <section className="card shotmap">
+                  <div className="shotmap-chart">
+                    <ShotScatter flicks={flicks} hitLabel={T("إصابة", "Hit")} missLabel={T("خطأ", "Miss")} />
                     <Legend items={[["#3ddc97", T("إصابة", "Hit")], ["#ff6b6b", T("خطأ", "Miss")]]} />
                   </div>
-                  <ShotScatter flicks={flicks} hitLabel={T("إصابة", "Hit")} missLabel={T("خطأ", "Miss")} />
+                  <div className="shotmap-info">
+                    <h2>{T("وين نزلت طلقاتك", "Where your shots landed")}</h2>
+                    <p className="verdict">{shotVerdict}</p>
+                    <div className="mini-stats">
+                      <div><b>{pct(inside)}</b><span>{T("داخل الهدف", "Inside the target")}</span></div>
+                      <div><b dir="ltr">{`${reach >= 0 ? "+" : "−"}${Math.abs(reach).toFixed(2)}°`}</b><span>{T("بعد/قبل المركز باتجاه الحركة", "Past (+) or short (−) of centre")}</span></div>
+                      <div><b dir="ltr">{`${spread.toFixed(2)}°`}</b><span>{T("متوسط البعد عن المركز", "Average distance from centre")}</span></div>
+                      <div><b>{pastShare === null ? "—" : pct(pastShare)}</b><span>{T("من الأخطاء عبرت الهدف", "Of misses went past")}</span></div>
+                    </div>
+                    <p className="muted small">{T("كل نقطة طلقة، مرسومة حول مركز هدفها. الدائرة الخضراء حجم الهدف، والأكبر ضعفه. علامة + مركز كل طلقاتك.", "Each dot is a shot drawn around its target's centre. The green circle is the target size and the larger one twice that. + marks the centre of all your shots.")}</p>
+                  </div>
                 </section>
               )}
               {tab === "dirs" && (
                 <section className="card">
                   <h2>{T("الدقة والسرعة بكل اتجاه", "Accuracy and speed in each direction")}</h2>
                   <p className="muted small">{T("الاتجاه هو وين تحركت حتى توصل الهدف.", "Direction is where you had to move to reach the target.")}</p>
+                  {weakest && slowest && (
+                    <p className="verdict">{weakest.name === slowest.name
+                      ? T(`أضعف اتجاه عندك: ${weakest.name}، أقل دقة وأبطأ. تمرين الاتجاه الضعيف يركز عليه.`, `Your weakest direction is ${weakest.name}: least accurate and slowest. The weak-direction drill focuses on it.`)
+                      : T(`أقل دقة: ${weakest.name} · أبطأ: ${slowest.name}.`, `Least accurate: ${weakest.name} · Slowest: ${slowest.name}.`)}</p>
+                  )}
                   <table className="dir-table">
                     <thead><tr><th>{T("الاتجاه", "Direction")}</th><th>{T("الدقة", "Accuracy")}</th><th>{T("الوقت", "Time")}</th><th>{T("أهداف", "Targets")}</th></tr></thead>
                     <tbody>
                       {dirs.map((d) => (
-                        <tr key={d.name}>
+                        <tr key={d.name} className={d === weakest || d === slowest ? "weak" : ""}>
                           <td>{d.name}</td>
                           <td><span className="bar-cell"><span className="meter wide"><i style={{ width: `${Math.round(d.acc * 100)}%`, background: "var(--accent)" }} /></span><b dir="ltr">{Math.round(d.acc * 100)}%</b></span></td>
                           <td><span className="bar-cell"><span className="meter wide"><i style={{ width: `${Math.round(((d.time ?? 0) / maxTime) * 100)}%` }} /></span><b dir="ltr">{ms(d.time)}</b></span></td>
@@ -667,6 +724,7 @@ function SessionView({ card, ctx, back }: { card: SessionCard; ctx: Ctx; back: (
                   </table>
                 </section>
               )}
+              </div>
             </>
           )}
         </>
@@ -688,10 +746,22 @@ function Replay({ detail, ctx }: { detail: Detail; ctx: Ctx }) {
   const end = flick ? flick.path[flick.path.length - 1].t_ms : 0;
   const [ms, setMs] = useState(end);
   const [playing, setPlaying] = useState(false);
+  const [auto, setAuto] = useState(false);
   const [rate, setRate] = useState(0.25);
   const raf = useRef(0);
+  const autoRef = useRef(auto);
+  autoRef.current = auto;
+  // Kept apart from the animation's cleanup: finishing a target stops the animation, and that cleanup
+  // must not cancel the move to the next target.
+  const advance = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const cancelAdvance = () => { if (advance.current) clearTimeout(advance.current); advance.current = undefined; };
+  useEffect(() => cancelAdvance, []);
+  useEffect(() => { if (!auto) cancelAdvance(); }, [auto]);
 
-  useEffect(() => { setMs(end); setPlaying(false); }, [flick?.id, end]);
+  // A new target starts from the beginning when auto play is on, and shows the whole path otherwise.
+  useEffect(() => {
+    if (autoRef.current) { setMs(0); setPlaying(true); } else { setMs(end); setPlaying(false); }
+  }, [flick?.id, end]);
   useEffect(() => {
     if (!playing) return;
     let last = performance.now();
@@ -700,16 +770,24 @@ function Replay({ detail, ctx }: { detail: Detail; ctx: Ctx }) {
       last = now;
       let done = false;
       setMs((m) => {
-        const next = m + dt;
-        if (next >= end) { done = true; return end; }
-        return next;
+        const v = m + dt;
+        if (v >= end) { done = true; return end; }
+        return v;
       });
-      if (done) setPlaying(false);
-      else raf.current = requestAnimationFrame(step);
+      if (!done) { raf.current = requestAnimationFrame(step); return; }
+      setPlaying(false);
+      // Auto play waits a moment on the finished path, then moves to the next target.
+      if (autoRef.current) {
+        cancelAdvance();
+        advance.current = setTimeout(() => setIndex((i) => {
+          if (i + 1 >= list.length) { setAuto(false); return i; }
+          return i + 1;
+        }), 700);
+      }
     };
     raf.current = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf.current);
-  }, [playing, rate, end]);
+  }, [playing, rate, end, list.length]);
 
   const move = (d: number) => setIndex((i) => Math.max(0, Math.min(list.length - 1, i + d)));
   useEffect(() => {
@@ -719,30 +797,54 @@ function Replay({ detail, ctx }: { detail: Detail; ctx: Ctx }) {
         e.preventDefault();
         setIndex((i) => Math.max(0, Math.min(list.length - 1, i + ((e.key === "ArrowRight") === (document.documentElement.dir !== "rtl") ? 1 : -1))));
       }
+      if (e.key === " ") { e.preventDefault(); setPlaying((p) => !p); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [list.length]);
   const labels = { onset: T("بداية", "Start"), primary: T("نهاية الحركة", "First stop"), shot: T("نقرة", "Click") };
   const filters: [string, string][] = [["all", T("الكل", "All")], ["misses", T("الأخطاء", "Misses")], ["slowest", T("الأبطأ", "Slowest")], ["overshoot", T("أكبر تجاوز", "Biggest overshoot")]];
+  const playOne = () => { setAuto(false); if (ms >= end) setMs(0); setPlaying(!playing); };
+  const playAll = () => {
+    if (auto) { setAuto(false); setPlaying(false); return; }
+    setAuto(true);
+    setMs(0);
+    setPlaying(true);
+  };
+  const rates: [number, string][] = [[0.1, "0.1×"], [0.25, "0.25×"], [0.5, "0.5×"], [1, "1×"]];
+  const position = list.length ? Math.min(index, list.length - 1) + 1 : 0;
 
   return (
-    <section className="card">
-      <div className="row between">
+    <section className="card replay-card">
+      <header className="replay-head">
         <div className="seg">
-          {filters.map(([id, name]) => <button key={id} className={filter === id ? "on" : ""} onClick={() => { setFilter(id); setIndex(0); }}>{name}</button>)}
+          {filters.map(([id, name]) => <button key={id} className={filter === id ? "on" : ""} onClick={() => { setFilter(id); setIndex(0); setAuto(false); }}>{name}</button>)}
         </div>
-        <span className="muted small">{list.length ? `${Math.min(index, list.length - 1) + 1} / ${list.length}` : ""}</span>
-      </div>
+        <span className="muted small" dir="ltr">{position} / {list.length}</span>
+      </header>
       {!flick ? <Empty text={T("ماكو أهداف بهذا الفلتر.", "No targets match this filter.")} /> : (
         <>
           <div className="strip" dir="ltr">
-            {list.map((f, i) => <button key={f.id} aria-label={`${i + 1}`} className={`${f.hit ? "h" : "m"} ${f.id === flick.id ? "on" : ""}`} onClick={() => setIndex(i)} />)}
+            {list.map((f, i) => <button key={f.id} aria-label={`${i + 1}`} className={`${f.hit ? "h" : "m"} ${f.id === flick.id ? "on" : ""}`} onClick={() => { setAuto(false); setIndex(i); }} />)}
           </div>
           <div className="replay">
-            <AimPath flick={flick} progressMs={ms} labels={labels} />
-            <aside>
-              <span className={`tag ${flick.hit ? "good" : "bad"}`}>{flick.hit ? T("إصابة", "Hit") : T("خطأ", "Miss")}</span>
+            <div className="replay-stage">
+              <AimPath flick={flick} progressMs={ms} labels={labels} />
+              <div className="transport" dir="ltr">
+                <button className="btn ghost sq" aria-label={T("السابق", "Previous")} onClick={() => { setAuto(false); move(-1); }}>‹</button>
+                <button className="btn" onClick={playOne}>{playing && !auto ? T("إيقاف", "Pause") : T("شغّل هذا", "Play this")}</button>
+                <button className={`btn ${auto ? "" : "ghost"}`} onClick={playAll} aria-pressed={auto}>{auto ? T("أوقف التلقائي", "Stop auto play") : T("تشغيل تلقائي", "Auto play")}</button>
+                <button className="btn ghost sq" aria-label={T("التالي", "Next")} onClick={() => { setAuto(false); move(1); }}>›</button>
+                <div className="seg speed" role="group" aria-label={T("السرعة", "Speed")}>
+                  {rates.map(([r, name]) => <button key={r} className={rate === r ? "on" : ""} onClick={() => setRate(r)}>{name}</button>)}
+                </div>
+              </div>
+            </div>
+            <aside className="replay-info">
+              <div className="row between">
+                <b>{T(`الهدف ${position}`, `Target ${position}`)}</b>
+                <span className={`tag ${flick.hit ? "good" : "bad"}`}>{flick.hit ? T("إصابة", "Hit") : T("خطأ", "Miss")}</span>
+              </div>
               <p className="note">{flickNote(flick, T)}</p>
               <dl>
                 <dt>{T("المسافة", "Distance")}</dt><dd>{flick.distance_deg === null ? "—" : `${flick.distance_deg.toFixed(1)}°`}</dd>
@@ -751,17 +853,10 @@ function Replay({ detail, ctx }: { detail: Detail; ctx: Ctx }) {
                 <dt>{T("الحركة الأولى", "First movement")}</dt><dd>{flick.gain === null ? "—" : `${(flick.gain * 100).toFixed(0)}%`}</dd>
                 <dt>{T("التصحيحات", "Corrections")}</dt><dd>{flick.corrections}</dd>
               </dl>
-              <div className="row">
-                <button className="btn ghost sq" aria-label={T("السابق", "Previous")} onClick={() => move(-1)}>‹</button>
-                <button className="btn" onClick={() => { if (ms >= end) setMs(0); setPlaying(!playing); }}>{playing ? T("إيقاف", "Pause") : T("شغّل", "Play")}</button>
-                <button className="btn ghost sq" aria-label={T("التالي", "Next")} onClick={() => move(1)}>›</button>
-                <select aria-label={T("السرعة", "Speed")} value={rate} onChange={(e) => setRate(Number(e.target.value))}>
-                  <option value={0.1}>0.1×</option><option value={0.25}>0.25×</option><option value={1}>1×</option>
-                </select>
-              </div>
+              <small className="muted">{T("مسافة: تشغيل/إيقاف · الأسهم: الهدف السابق والتالي", "Space: play/pause · Arrows: previous and next target")}</small>
             </aside>
           </div>
-          <SpeedChart flick={flick} progressMs={ms} onScrub={(v) => { setPlaying(false); setMs(v); }} labels={{ y: T("السرعة °/ث", "Speed °/s"), ...labels }} />
+          <SpeedChart flick={flick} progressMs={ms} onScrub={(v) => { setAuto(false); setPlaying(false); setMs(v); }} labels={{ y: T("السرعة °/ث", "Speed °/s"), ...labels }} />
         </>
       )}
     </section>
@@ -774,37 +869,50 @@ type Bucket = { label: string; tick: boolean; cards: SessionCard[] };
 
 const kindOf = (c: SessionCard): Kind => (c.assessment ? "assessment" : c.scenario.startsWith("custom.") ? "free" : "plan");
 
-/** Groups sessions for a chart: sessions in a day, days in a week or month, months in a year. */
+/** Groups sessions for a chart. Fixed periods show every day (or month) on the axis, played or not. */
 function bucketize(cards: SessionCard[], range: Range, lang: Lang): Bucket[] {
   const locale = lang === "ar" ? "ar-IQ" : "en-GB";
   const sorted = [...cards].sort((a, b) => a.at_ms - b.at_ms);
-  if (sorted.length === 0) return [];
-  const span = (sorted[sorted.length - 1].at_ms - sorted[0].at_ms) / 86400000;
-  const unit = range === "today" ? "session" : range === "year" || (range === "all" && span > 62) ? "month" : "day";
-  if (unit === "session") {
+  if (range === "today") {
     const every = Math.ceil(sorted.length / 8);
     return sorted.map((c, i) => ({ label: new Date(c.at_ms).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }), tick: i % every === 0 || i === sorted.length - 1, cards: [c] }));
   }
-  const keyOf = (ms: number) => (unit === "month" ? dayKey(ms).slice(0, 7) : dayKey(ms));
-  const groups = new Map<string, SessionCard[]>();
-  for (const c of sorted) groups.set(keyOf(c.at_ms), [...(groups.get(keyOf(c.at_ms)) ?? []), c]);
-  const weekStart = lang === "ar" ? 6 : 1;
-  let lastWeek = "";
-  return [...groups.entries()].map(([k, cs], i) => {
-    if (unit === "month") {
-      return { label: new Date(`${k}-15T12:00`).toLocaleDateString(locale, { month: "short", year: "2-digit" }), tick: true, cards: cs };
-    }
-    const d = new Date(`${k}T12:00`);
-    const label = range === "week"
-      ? d.toLocaleDateString(locale, { weekday: "short", day: "numeric" })
-      : d.toLocaleDateString(locale, { day: "numeric", month: "short" });
-    // Over a month, label the first day played in each week so the axis reads in weeks.
-    const back = (d.getDay() - weekStart + 7) % 7;
-    const week = dayKey(d.getTime() - back * 86400000);
-    const tick = range === "week" || groups.size <= 10 || i === 0 || week !== lastWeek;
-    lastWeek = week;
-    return { label, tick, cards: cs };
-  });
+  const group = (keyOf: (ms: number) => string) => {
+    const m = new Map<string, SessionCard[]>();
+    for (const c of sorted) m.set(keyOf(c.at_ms), [...(m.get(keyOf(c.at_ms)) ?? []), c]);
+    return m;
+  };
+  const monthKey = (ms: number) => dayKey(ms).slice(0, 7);
+  // Month name only; the year is added in January, where it changes.
+  const monthLabel = (k: string) => new Date(`${k}-15T12:00`).toLocaleDateString(locale, k.endsWith("-01") ? { month: "short", year: "numeric" } : { month: "short" });
+  if (range === "week" || range === "month") {
+    const n = range === "week" ? 7 : 30;
+    const byDay = group(dayKey);
+    const weekStart = lang === "ar" ? 6 : 1;
+    return Array.from({ length: n }, (_, i) => {
+      const d = new Date(Date.now() - (n - 1 - i) * 86400000);
+      const k = dayKey(d.getTime());
+      const label = range === "week" ? d.toLocaleDateString(locale, { weekday: "short", day: "numeric" }) : d.toLocaleDateString(locale, { day: "numeric", month: "short" });
+      return { label, tick: range === "week" || d.getDay() === weekStart || i === n - 1, cards: byDay.get(k) ?? [] };
+    });
+  }
+  if (range === "year") {
+    const byMonth = group(monthKey);
+    const now = new Date();
+    return Array.from({ length: 12 }, (_, i) => {
+      const k = monthKey(new Date(now.getFullYear(), now.getMonth() - 11 + i, 15).getTime());
+      return { label: monthLabel(k), tick: true, cards: byMonth.get(k) ?? [] };
+    });
+  }
+  if (sorted.length === 0) return [];
+  const span = (sorted[sorted.length - 1].at_ms - sorted[0].at_ms) / 86400000;
+  const byMonth = span > 62;
+  const groups = group(byMonth ? monthKey : dayKey);
+  return [...groups.entries()].map(([k, cs]) => ({
+    label: byMonth ? monthLabel(k) : new Date(`${k}T12:00`).toLocaleDateString(locale, { day: "numeric", month: "short" }),
+    tick: true,
+    cards: cs,
+  }));
 }
 
 const accuracyOf = (c: SessionCard) => { const v = sessionScore(c); return v === null ? null : v * 100; };
@@ -828,9 +936,11 @@ function Progress({ ctx }: { ctx: Ctx }) {
   const list = ofKind.filter((s) => (scenario === "all" || s.scenario === scenario) && s.at_ms >= since);
   const days = new Set(view.sessions.map((s) => dayKey(s.at_ms)));
   const buckets = bucketize(list, range, lang);
-  const seriesOf = (f: (c: SessionCard) => number | null, unit: string) => buckets.flatMap((b) => {
+  const posOf = (i: number) => (buckets.length === 1 ? 0.5 : i / (buckets.length - 1));
+  const axis = buckets.map((b, i) => ({ pos: posOf(i), label: b.label, tick: b.tick })).filter((t) => t.tick);
+  const seriesOf = (f: (c: SessionCard) => number | null, unit: string) => buckets.flatMap((b, i) => {
     const v = avg(b.cards.map(f).filter((x): x is number => x !== null));
-    return v === null ? [] : [{ label: b.label, tick: b.tick, value: v, tip: `${b.label}: ${Math.round(v)} ${unit} · ${b.cards.length} ${T("جلسة", "sessions")}` }];
+    return v === null ? [] : [{ label: b.label, pos: posOf(i), value: v, tip: `${b.label}: ${Math.round(v)} ${unit} · ${b.cards.length} ${T("جلسة", "sessions")}` }];
   });
   const accuracy = seriesOf(accuracyOf, "%");
   const reaction = seriesOf((c) => c.median_reaction_ms, "ms");
@@ -920,6 +1030,24 @@ function Progress({ ctx }: { ctx: Ctx }) {
             </table>
           </div>
           {compare.length > 1 && <p className="muted small">{T("الأخضر هو الأحسن بكل عمود.", "Green marks the best in each column.")}</p>}
+          {compare.length > 1 && (
+            <div className="compare-charts">
+              {([
+                ["acc", T("الدقة", "Accuracy"), "%", T("أعلى أحسن", "Higher is better")],
+                ["react", T("رد الفعل", "Reaction"), "ms", T("أقل أسرع", "Lower is faster")],
+                ["hit", T("وقت الإصابة", "Time to hit"), "ms", T("أقل أسرع", "Lower is faster")],
+                ["min", T("دقايق التدريب", "Minutes trained"), T("د", "min"), T("كم تدربت", "How long you trained")],
+              ] as const).map(([k, title, unit, note]) => (
+                <div key={k} className="compare-chart">
+                  <div className="row between"><b>{title}</b><small className="muted">{note}</small></div>
+                  <ValueBars height={180} unit={unit} max={k === "acc" ? 100 : undefined} rows={compareRows.map((r) => {
+                    const v = r[k] ?? 0;
+                    return { label: new Date(`${r.d}T12:00`).toLocaleDateString(locale, { day: "numeric", month: "short" }), value: Math.round(v), tip: `${r.label}: ${Math.round(v)} ${unit}` };
+                  })} />
+                </div>
+              ))}
+            </div>
+          )}
         </section>
       )}
 
@@ -936,7 +1064,7 @@ function Progress({ ctx }: { ctx: Ctx }) {
           <section className="card">
             <h2>{T("الدقة", "Accuracy")} <small className="muted">· {T(`كل نقطة ${unitWord}`, `each point is a ${unitWord}`)}</small></h2>
             {accuracy.length < 2 && <p className="muted small">{T("تحتاج نقطتين على الأقل حتى يطلع خط. اختار فترة أطول أو العب أكثر.", "At least two points are needed for a line. Pick a longer period or play more.")}</p>}
-            <TrendLine points={accuracy} unit="%" better="up" />
+            <TrendLine points={accuracy} unit="%" better="up" axis={axis} />
           </section>
           <div className="split-2">
             <section className="card">
@@ -948,14 +1076,14 @@ function Progress({ ctx }: { ctx: Ctx }) {
                       ? T(`صرت أسرع بـ ${Math.round(reactFirst - reactLast)} ms. أقل أحسن.`, `${Math.round(reactFirst - reactLast)} ms faster. Lower is better.`)
                       : T(`صرت أبطأ بـ ${Math.round(reactLast - reactFirst)} ms. يمكن تعب أو قلة نوم.`, `${Math.round(reactLast - reactFirst)} ms slower. Fatigue or sleep can do this.`)
                     : T("أقل أحسن.", "Lower is better.")}</p>
-                  <TrendLine points={reaction} unit="ms" better="down" />
+                  <TrendLine points={reaction} unit="ms" better="down" axis={axis} height={220} />
                 </>
               )}
             </section>
             <section className="card">
               <h2>{T("دقايق التدريب", "Minutes trained")}</h2>
               <p className="muted small">{T(`المعدل ${Math.round(avg(volume.map((v) => v.value)) ?? 0)} دقيقة لكل ${unitWord}. التدريب القصير المنتظم أحسن من الطويل المتقطع.`, `Average ${Math.round(avg(volume.map((v) => v.value)) ?? 0)} minutes per ${unitWord}. Short regular practice beats long irregular sessions.`)}</p>
-              <ValueBars rows={volume} unit={T("د", "min")} />
+              <ValueBars rows={volume} unit={T("د", "min")} height={220} />
             </section>
           </div>
         </>
@@ -1307,9 +1435,7 @@ function Practice({ ctx, initial }: { ctx: Ctx; initial?: string }) {
               {usesLimit && <Slider label={T("وقت كل هدف", "Time per target")} value={c.time_limit_s} min={0.3} max={5} step={0.1} unit="s" set={(time_limit_s) => set({ time_limit_s })} />}
               {c.mode === "multi" && <Slider label={T("عدد الأهداف سوه", "Targets at once")} value={c.concurrent} min={2} max={6} step={1} unit="" set={(concurrent) => set({ concurrent })} />}
               <Slider label={T("مدة الجلسة", "Session length")} value={c.duration_s} min={15} max={300} step={15} unit="s" set={(duration_s) => set({ duration_s })} />
-            </section>
-          </div>
-          <section className="card">
+          <div className="presets-inline">
             <span className="label">{T("إعداداتك المحفوظة", "Your saved setups")}</span>
             <div className="chips">
               {presets.map((p) => (
@@ -1323,7 +1449,9 @@ function Practice({ ctx, initial }: { ctx: Ctx; initial?: string }) {
               <input className="grow" value={presetName} placeholder={T("اسم لهذي الإعدادات", "Name this setup")} onChange={(e) => setPresetName(e.target.value)} />
               <button className="btn ghost" disabled={!presetName.trim()}>{T("احفظ", "Save")}</button>
             </form>
-          </section>
+          </div>
+            </section>
+          </div>
           {history.length > 0 && (
             <section className="card">
               <h2>{T(`تقدمك بـ ${pick(MODES.find((m) => m.id === c.mode)?.name, lang, c.mode)}`, `Your progress in ${pick(MODES.find((m) => m.id === c.mode)?.name, lang, c.mode)}`)}</h2>
@@ -1335,17 +1463,15 @@ function Practice({ ctx, initial }: { ctx: Ctx; initial?: string }) {
               </div>
               {modeTrend.length > 1 ? <TrendLine points={modeTrend} unit="%" better="up" /> : <p className="muted small">{T("العب جلسة ثانية بهذا النوع حتى يطلع الخط.", "Play another session in this mode to see a line.")}</p>}
               <p className="muted small">{T("النتيجة نسبة الإصابة. غيّر الإعدادات بحذر، لأن الأرقام بين إعدادات مختلفة ما تنقارن تماماً.", "The score is the hit rate. Settings changes make sessions less comparable.")}</p>
-            </section>
-          )}
-          {history.length > 0 && (
-            <section className="card">
-              <span className="label">{T("آخر جلساتك بهذا النوع", "Your recent sessions in this mode")}</span>
-              {history.slice(-5).reverse().map((p, i) => (
-                <button className="line" key={i} onClick={() => p.file && go("analysis", p.file)}>
-                  <span><b>{(p.hit_rate * 100).toFixed(0)}%</b><small>{whenText(p.at_ms ?? 0, lang)}</small></span>
-                  <span className="chev">›</span>
-                </button>
-              ))}
+              <details className="recent">
+                <summary>{T(`آخر جلساتك بهذا النوع (${Math.min(history.length, 5)})`, `Your recent sessions in this mode (${Math.min(history.length, 5)})`)}</summary>
+                {history.slice(-5).reverse().map((p, i) => (
+                  <button className="line" key={i} onClick={() => p.file && go("analysis", p.file)}>
+                    <span><b>{(p.hit_rate * 100).toFixed(0)}%</b><small>{whenText(p.at_ms ?? 0, lang)}</small></span>
+                    <span className="chev">›</span>
+                  </button>
+                ))}
+              </details>
             </section>
           )}
         </>
@@ -1454,6 +1580,9 @@ function Coach({ ctx }: { ctx: Ctx }) {
   const { view, T, act, lang, go } = ctx;
   const [selected, setSelected] = useState(0);
   const [working, setWorking] = useState<string | null>(null);
+  const [selecting, setSelecting] = useState(false);
+  const [picked, setPicked] = useState<Set<number>>(new Set());
+  const togglePick = (at: number) => setPicked((p) => { const n = new Set(p); if (n.has(at)) n.delete(at); else n.add(at); return n; });
   const reports = view.reports;
   const report = reports[Math.min(selected, reports.length - 1)];
   const make = async (scope: string) => {
@@ -1487,10 +1616,21 @@ function Coach({ ctx }: { ctx: Ctx }) {
       {report && (
         <div className="reports">
           <aside className="card report-list">
-            <span className="label">{T("تقاريرك", "Your reports")}</span>
+            <div className="row between">
+              <span className="label">{T("تقاريرك", "Your reports")}</span>
+              {selecting
+                ? <button className="btn ghost small" onClick={() => { setSelecting(false); setPicked(new Set()); }}>{T("خلص", "Done")}</button>
+                : reports.length > 1 && <button className="btn ghost small" onClick={() => setSelecting(true)}>{T("تحديد", "Select")}</button>}
+            </div>
+            {selecting && (
+              <div className="row">
+                <button className="btn ghost small" onClick={() => setPicked(picked.size === reports.length ? new Set() : new Set(reports.map((r) => r.at_ms)))}>{picked.size === reports.length ? T("إلغاء الكل", "Select none") : T("حدد الكل", "Select all")}</button>
+                {picked.size > 0 && <ConfirmButton label={T(`احذف ${picked.size}`, `Delete ${picked.size}`)} confirm={T("متأكد؟", "Sure?")} onConfirm={async () => { await act("delete_reports", { atMs: [...picked] }); setPicked(new Set()); setSelecting(false); setSelected(0); }} />}
+              </div>
+            )}
             {reports.map((r, i) => (
-              <button key={r.at_ms} className={i === selected ? "on" : ""} onClick={() => setSelected(i)}>
-                <b>{scopeName(r.scope)}</b>
+              <button key={r.at_ms} className={`${!selecting && i === selected ? "on" : ""} ${picked.has(r.at_ms) ? "picked" : ""}`} aria-pressed={selecting ? picked.has(r.at_ms) : undefined} onClick={() => (selecting ? togglePick(r.at_ms) : setSelected(i))}>
+                <b>{selecting && <i className="check" aria-hidden="true" />}{scopeName(r.scope)}</b>
                 <small>{whenText(r.at_ms, lang)} · {r.sessions} {T("جلسة", "sessions")}</small>
               </button>
             ))}
@@ -1574,6 +1714,7 @@ function SettingsPage({ ctx }: { ctx: Ctx }) {
     }, 500);
     return () => clearTimeout(t);
   }, [snapshot]);
+  useEffect(() => { setS((p) => (p.locale === view.settings.locale ? p : { ...p, locale: view.settings.locale })); }, [view.settings.locale]);
   const set = (patch: Partial<Settings>) => { setSaved(false); setTest(null); setS({ ...s, ...patch }); };
   const source = AI_SOURCES.find((a) => a.id === s.ai_provider) ?? AI_SOURCES[0];
   const needsAi = s.ai_provider !== "template";
@@ -1601,88 +1742,132 @@ function SettingsPage({ ctx }: { ctx: Ctx }) {
     }
     setTesting(false);
   };
+  const sections: [string, string][] = [["set-mouse", T("الماوس", "Mouse")], ["set-game", T("داخل اللعبة", "In the game")], ["set-app", T("التطبيق", "App")], ["set-coach", T("المدرب", "Coach")]];
   return (
     <>
       <PageHead title={T("الإعدادات", "Settings")} sub={T("كل تغيير ينحفظ لحاله.", "Every change saves by itself.")} />
-      <nav className="settings-nav">
-        {[["set-mouse", T("الماوس", "Mouse")], ["set-game", T("داخل اللعبة", "In the game")], ["set-app", T("التطبيق", "App")], ["set-coach", T("المدرب", "Coach")]].map(([id, name]) => (
-          <a key={id} href={`#${id}`}>{name}</a>
-        ))}
-      </nav>
-      <section className="card" id="set-mouse">
-        <h2>{T("الماوس", "Mouse")}</h2>
-        <p className="muted small">{T("نفس أرقام لعبتك بالضبط. منها نحسب كم سنتيمتر تحتاج حتى تلف 360.", "Exactly the numbers from your game. They give the centimetres for a full turn.")}</p>
-        <div className="grid2">
-          <Num label="DPI" value={s.dpi} step={50} min={50} set={(dpi) => set({ dpi })} />
-          <Num label={T("الحساسية", "Sensitivity")} value={s.sens} step={0.01} min={0.01} set={(sens) => set({ sens })} />
-        </div>
-        <p className="small muted">{T("الحساب الحالي", "Current")}: <b dir="ltr">{view.cm360.toFixed(1)} cm/360</b>. {T("غيرها بس إذا غيرتها باللعبة، لأن المقارنات تعتمد عليها.", "Change this only when you change it in the game; comparisons depend on it.")}</p>
-      </section>
-      <section className="card" id="set-game">
-        <h2>{T("داخل اللعبة", "In the game")}</h2>
-        <p className="muted small">{T("شكل التصويب والصوت أثناء التدريب.", "How aiming looks and sounds while you train.")}</p>
-        <div className="grid2">
-          <Slider label={T("صوت الإصابة والخطأ", "Hit and miss sound")} value={s.sound_volume} min={0} max={100} step={5} unit="%" set={(sound_volume) => set({ sound_volume })} />
-          <CrosshairEditor ctx={ctx} value={s.crosshair} set={(crosshair) => set({ crosshair })} />
-        </div>
-        <Toggle checked={s.windowed} set={(windowed) => set({ windowed })} label={T("شغّل اللعبة بنافذة", "Run the game in a window")} help={T("ملء الشاشة أدق بالتوقيت. النافذة أسهل إذا تبدل بين البرامج.", "Full screen has steadier timing; a window is easier when switching apps.")} />
-      </section>
-      <section className="card" id="set-app">
-        <h2>{T("التطبيق", "App")}</h2>
-        <div className="grid2"><LangSelect ctx={ctx} value={s.locale} set={(locale) => set({ locale })} /></div>
-        <Toggle checked={s.test_mode} set={(test_mode) => set({ test_mode })} label={T("وضع التجربة", "Test mode")} help={T("تمارين 20 ثانية وبدون انتظار يوم الراحة. للتجربة بس، لأن النتائج ما تعتبر قياس حقيقي.", "20-second drills and no rest-day wait. For trying things only; results are not a real measurement.")} />
-      </section>
-      <section className="card" id="set-coach">
-        <h2>{T("المدرب", "Coach")}</h2>
-        <p className="muted small">{T("التقارير تنكتب بالتحليل المدمج بدون إنترنت، أو بذكاء اصطناعي تختاره انت.", "Reports are written by the built-in analysis offline, or by an AI you choose.")}</p>
-        <h3 className="sub">{T("مصدر الذكاء الاصطناعي", "AI source")}</h3>
-        <div className="grid2">
-          <label className="field">{T("المصدر", "Source")}
-            <select value={s.ai_provider} onChange={(e) => { const a = AI_SOURCES.find((x) => x.id === e.target.value)!; set({ ai_provider: a.id, ai_model: a.model, ai_base_url: a.id === "custom" ? s.ai_base_url : "" }); setKey(""); }}>
-              <option value="template">{T("التحليل المدمج (بدون AI)", "Built-in analysis (no AI)")}</option>
-              <option value="claude">Claude</option>
-              <option value="openai">OpenAI</option>
-              <option value="gemini">Gemini</option>
-              <option value="openrouter">OpenRouter</option>
-              <option value="custom">{T("مخصص (Custom)", "Custom")}</option>
-            </select>
-          </label>
-          {needsAi && <label className="field">{T("اسم الموديل", "Model name")}<input dir="ltr" value={s.ai_model} onChange={(e) => set({ ai_model: e.target.value })} /></label>}
-          {s.ai_provider === "custom" && <label className="field">{T("رابط الخادم (Base URL)", "Server URL (Base URL)")}<input dir="ltr" placeholder="http://localhost:11434/v1" value={s.ai_base_url} onChange={(e) => set({ ai_base_url: e.target.value })} /></label>}
-        </div>
-        {needsAi && (
-          <div className="key-row">
-            <label className="field grow">API key{source.needsKey ? "" : T(" (اختياري)", " (optional)")}
-              <input dir="ltr" type="password" autoComplete="off" placeholder={hasKey ? T("محفوظ. اكتب مفتاح جديد لتغييره", "Saved. Type a new key to replace it") : ""} value={key} onChange={(e) => setKey(e.target.value)} onBlur={saveKey} />
-            </label>
-            <button className="btn ghost" disabled={testing} onClick={runTest}>{testing ? T("يفحص...", "Testing...") : T("افحص الاتصال", "Test connection")}</button>
-          </div>
-        )}
-        {needsAi && test && <p className={`small ${test.ok ? "up" : "down"}`}>{test.text}</p>}
-        {needsAi && <p className="small muted">{T("المفتاح ينحفظ على جهازك بس، ويروح للمصدر اللي اخترته فقط.", "The key is stored only on this computer and sent only to the source you chose.")}</p>}
-        {config && (
-          <>
-            <h3 className="sub">{T("شنو يشوف المدرب من بياناتك", "What the coach can see")}</h3>
-            <p className="muted small">{T("كل شي تطفيه ما يوصل للمدرب. الأرقام بس، بدون تسجيلات الحركة.", "Anything switched off never reaches the coach. Numbers only, never the movement recordings.")}</p>
-            <div className="toggle-grid">
-              {DATA_TOGGLES.map(([k, ar, en]) => <Toggle key={k} checked={Boolean(config[k])} set={(v) => { setSaved(false); setConfig({ ...config, [k]: v }); }} label={T(ar, en)} />)}
+      <div className="settings-layout">
+        <nav className="settings-nav" aria-label={T("أقسام الإعدادات", "Settings sections")}>
+          {sections.map(([id, name]) => <a key={id} href={`#${id}`}>{name}</a>)}
+          <span className={`save-state ${saved ? "ok" : ""}`}>{saved ? T("✓ محفوظ", "✓ Saved") : T("يحفظ تلقائياً", "Saves automatically")}</span>
+        </nav>
+        <div className="settings-body">
+          <section className="card settings-card" id="set-mouse">
+            <h2>{T("الماوس", "Mouse")}</h2>
+            <SettingRow title="DPI" help={T("نفس رقم الماوس باللعبة.", "The same number as in your game.")}>
+              <input type="number" dir="ltr" className="num" value={s.dpi} step={50} min={50} onChange={(e) => { const v = e.target.valueAsNumber; if (Number.isFinite(v) && v >= 50) set({ dpi: v }); }} />
+            </SettingRow>
+            <SettingRow title={T("الحساسية", "Sensitivity")} help={T("حساسية VALORANT بالضبط.", "Your exact VALORANT sensitivity.")}>
+              <input type="number" dir="ltr" className="num" value={s.sens} step={0.01} min={0.01} onChange={(e) => { const v = e.target.valueAsNumber; if (Number.isFinite(v) && v >= 0.01) set({ sens: v }); }} />
+            </SettingRow>
+            <SettingRow title={T("لفة كاملة", "Full turn")} help={T("غيرها بس إذا غيرتها باللعبة، لأن المقارنات تعتمد عليها.", "Change it only when you change it in the game; comparisons depend on it.")}>
+              <b dir="ltr" className="readout">{view.cm360.toFixed(1)} cm/360</b>
+            </SettingRow>
+          </section>
+
+          <section className="card settings-card" id="set-game">
+            <h2>{T("داخل اللعبة", "In the game")}</h2>
+            <SettingRow title={T("صوت الإصابة والخطأ", "Hit and miss sound")} help={T("صفر يطفي الصوت.", "Zero turns it off.")}>
+              <div className="inline-slider">
+                <input type="range" min={0} max={100} step={5} value={s.sound_volume} onChange={(e) => set({ sound_volume: e.target.valueAsNumber })} aria-label={T("الصوت", "Volume")} />
+                <b dir="ltr">{s.sound_volume}%</b>
+              </div>
+            </SettingRow>
+            <SettingRow title={T("شغّل اللعبة بنافذة", "Run the game in a window")} help={T("ملء الشاشة أدق بالتوقيت. النافذة أسهل إذا تبدل بين البرامج.", "Full screen has steadier timing; a window is easier when switching apps.")}>
+              <Switch checked={s.windowed} set={(windowed) => set({ windowed })} label={T("شغّل اللعبة بنافذة", "Run the game in a window")} />
+            </SettingRow>
+            <div className="setting-block">
+              <CrosshairEditor ctx={ctx} value={s.crosshair} set={(crosshair) => set({ crosshair })} />
             </div>
-            <h3 className="sub">{T("تعليمات إضافية للمدرب", "Extra instructions for the coach")}</h3>
-            <p className="muted small">{T("اكتب شي يخص أسلوبك أو هدفك، والمدرب ياخذه بعين الاعتبار بكل تقرير. أمثلة:", "Write anything about your style or goal; the coach considers it in every report. Examples:")}</p>
-            <ul className="examples">
-              <li>{T("ألعب Duelist وأعتمد على الفليك، ركز على سرعتي.", "I play Duelist and rely on flicks; focus on my speed.")}</li>
-              <li>{T("عندي 30 دقيقة باليوم بس.", "I only have 30 minutes a day.")}</li>
-              <li>{T("خلي التقرير قصير ومباشر.", "Keep reports short and direct.")}</li>
-            </ul>
-            <label className="field">
-              <textarea rows={3} placeholder={T("مثلاً: ألعب Sentinel وأريد أحسن ثبات مستوى الرأس.", "For example: I play Sentinel and want steadier head level.")} value={config.extra_instructions} onChange={(e) => { setSaved(false); setConfig({ ...config, extra_instructions: e.target.value }); }} />
-            </label>
-            <p className="small muted">{T("نفس الإعدادات بملف JSON وتكدر تعدله:", "The same settings live in a JSON file you can edit:")} <code dir="ltr">{view.coach_config_path}</code></p>
-          </>
-        )}
-      </section>
-      <p className="small muted savebar">{saved ? T("✓ كل التغييرات محفوظة", "✓ All changes saved") : T("التغييرات تنحفظ تلقائياً.", "Changes save automatically.")}</p>
+          </section>
+
+          <section className="card settings-card" id="set-app">
+            <h2>{T("التطبيق", "App")}</h2>
+            <SettingRow title={T("اللغة", "Language")} help={T("تكدر تغيرها كمان من أعلى القائمة الجانبية.", "You can also switch it at the top of the side menu.")}>
+              <div className="seg">
+                <button className={s.locale !== "en" ? "on" : ""} onClick={() => set({ locale: "ar" })}>العربية</button>
+                <button className={s.locale === "en" ? "on" : ""} onClick={() => set({ locale: "en" })}>English</button>
+              </div>
+            </SettingRow>
+            <SettingRow title={T("وضع التجربة", "Test mode")} help={T("تمارين 20 ثانية وبدون انتظار يوم الراحة. للتجربة بس، لأن النتائج ما تعتبر قياس حقيقي.", "20-second drills and no rest-day wait. For trying things only; results are not a real measurement.")}>
+              <Switch checked={s.test_mode} set={(test_mode) => set({ test_mode })} label={T("وضع التجربة", "Test mode")} />
+            </SettingRow>
+          </section>
+
+          <section className="card settings-card" id="set-coach">
+            <h2>{T("المدرب", "Coach")}</h2>
+            <p className="muted small">{T("التقارير تنكتب بالتحليل المدمج بدون إنترنت، أو بذكاء اصطناعي تختاره انت.", "Reports are written by the built-in analysis offline, or by an AI you choose.")}</p>
+            <SettingRow title={T("مصدر التقارير", "Report source")} help={needsAi ? T("المفتاح ينحفظ على جهازك بس، ويروح للمصدر اللي اخترته فقط.", "The key stays on this computer and is sent only to the source you chose.") : T("بدون إنترنت وبدون مفتاح.", "Offline, no key needed.")}>
+              <select value={s.ai_provider} onChange={(e) => { const a = AI_SOURCES.find((x) => x.id === e.target.value)!; set({ ai_provider: a.id, ai_model: a.model, ai_base_url: a.id === "custom" ? s.ai_base_url : "" }); setKey(""); }}>
+                <option value="template">{T("التحليل المدمج (بدون AI)", "Built-in analysis (no AI)")}</option>
+                <option value="claude">Claude</option>
+                <option value="openai">OpenAI</option>
+                <option value="gemini">Gemini</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="custom">{T("مخصص (Custom)", "Custom")}</option>
+              </select>
+            </SettingRow>
+            {needsAi && (
+              <SettingRow title={T("اسم الموديل", "Model name")}>
+                <input dir="ltr" value={s.ai_model} onChange={(e) => set({ ai_model: e.target.value })} />
+              </SettingRow>
+            )}
+            {s.ai_provider === "custom" && (
+              <SettingRow title={T("رابط الخادم", "Server URL")} help="Base URL">
+                <input dir="ltr" placeholder="http://localhost:11434/v1" value={s.ai_base_url} onChange={(e) => set({ ai_base_url: e.target.value })} />
+              </SettingRow>
+            )}
+            {needsAi && (
+              <SettingRow title={`API key${source.needsKey ? "" : T(" (اختياري)", " (optional)")}`} help={test ? undefined : hasKey ? T("محفوظ. اكتب مفتاح جديد لتغييره.", "Saved. Type a new key to replace it.") : undefined}>
+                <div className="key-row">
+                  <input dir="ltr" type="password" autoComplete="off" placeholder={hasKey ? "••••••••" : ""} value={key} onChange={(e) => setKey(e.target.value)} onBlur={saveKey} aria-label="API key" />
+                  <button className="btn ghost" disabled={testing} onClick={runTest}>{testing ? T("يفحص...", "Testing...") : T("افحص الاتصال", "Test connection")}</button>
+                </div>
+                {test && <small className={test.ok ? "up" : "down"}>{test.text}</small>}
+              </SettingRow>
+            )}
+            {config && (
+              <>
+                <h3 className="sub">{T("شنو يشوف المدرب من بياناتك", "What the coach can see")}</h3>
+                <p className="muted small">{T("كل شي تطفيه ما يوصل للمدرب. الأرقام بس، بدون تسجيلات الحركة.", "Anything switched off never reaches the coach. Numbers only, never the movement recordings.")}</p>
+                <div className="toggle-grid">
+                  {DATA_TOGGLES.map(([k, ar, en]) => <Toggle key={k} checked={Boolean(config[k])} set={(v) => { setSaved(false); setConfig({ ...config, [k]: v }); }} label={T(ar, en)} />)}
+                </div>
+                <h3 className="sub">{T("تعليمات إضافية للمدرب", "Extra instructions for the coach")}</h3>
+                <p className="muted small">{T("اكتب شي يخص أسلوبك أو هدفك، والمدرب ياخذه بعين الاعتبار بكل تقرير. أمثلة:", "Write anything about your style or goal; the coach considers it in every report. Examples:")}</p>
+                <ul className="examples">
+                  <li>{T("ألعب Duelist وأعتمد على الفليك، ركز على سرعتي.", "I play Duelist and rely on flicks; focus on my speed.")}</li>
+                  <li>{T("عندي 30 دقيقة باليوم بس.", "I only have 30 minutes a day.")}</li>
+                  <li>{T("خلي التقرير قصير ومباشر.", "Keep reports short and direct.")}</li>
+                </ul>
+                <textarea rows={3} aria-label={T("تعليمات إضافية للمدرب", "Extra instructions for the coach")} placeholder={T("مثلاً: ألعب Sentinel وأريد أحسن ثبات مستوى الرأس.", "For example: I play Sentinel and want steadier head level.")} value={config.extra_instructions} onChange={(e) => { setSaved(false); setConfig({ ...config, extra_instructions: e.target.value }); }} />
+                <p className="small muted">{T("نفس الإعدادات بملف JSON وتكدر تعدله:", "The same settings live in a JSON file you can edit:")} <code dir="ltr">{view.coach_config_path}</code></p>
+              </>
+            )}
+          </section>
+        </div>
+      </div>
     </>
+  );
+}
+
+/** One setting: what it is on one side, its control on the other. */
+function SettingRow({ title, help, children }: { title: string; help?: string; children: ReactNode }) {
+  return (
+    <div className="setting-row">
+      <div className="setting-text"><b>{title}</b>{help && <small>{help}</small>}</div>
+      <div className="setting-control">{children}</div>
+    </div>
+  );
+}
+
+/** An on/off switch whose label is read out but shown by the row beside it. */
+function Switch({ checked, set, label }: { checked: boolean; set: (v: boolean) => void; label: string }) {
+  return (
+    <label className="toggle bare">
+      <input type="checkbox" checked={checked} onChange={(e) => set(e.target.checked)} aria-label={label} />
+      <i />
+    </label>
   );
 }
 

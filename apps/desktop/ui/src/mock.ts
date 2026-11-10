@@ -139,6 +139,9 @@ export async function mockCall<T>(command: string, args?: Record<string, unknown
   if (command === "get_coach_config") return config as T;
   if (command === "save_coach_config") { config = args!.config as CoachConfig; return undefined as T; }
   if (command === "test_ai") return "ok" as T;
+  if (command === "save_share_card") return `C:\\Users\\you\\Pictures\\AimForge\\${args!.name}.png` as T;
+  if (command === "delete_sessions") view = { ...view, sessions: view.sessions.filter((c) => !(args!.paths as string[]).includes(c.path)) };
+  if (command === "delete_reports") view = { ...view, reports: view.reports.filter((r) => !(args!.atMs as number[]).includes(r.at_ms)) };
   if (command === "save_settings") view = { ...view, settings: args!.settings as Settings };
   if (command === "generate_report") {
     const report: CoachReport = {

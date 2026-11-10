@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Flick, Skill, TrackBin } from "./api";
 
 export const COLORS = { hit: "#3ddc97", miss: "#ff6b6b", ink: "#e8edf3", muted: "#8a97a8", grid: "#232b36", line: "#5aa9ff", warn: "#e5ad45" };
@@ -293,38 +293,59 @@ export function Spark({ values }: { values: number[] }) {
   );
 }
 
-type TrendPoint = { label: string; value: number; tip?: string; tick?: boolean };
+export type TrendPoint = { label: string; value: number; tip?: string; tick?: boolean; /** 0..1 along the axis, for calendar axes with empty days. */ pos?: number };
+export type AxisTick = { pos: number; label: string };
 
 /** Axis labels: the points marked as ticks, or about eight evenly spaced ones. */
-const showTick = (points: TrendPoint[], i: number) => {
+const showTick = (points: TrendPoint[], i: number, most = 8) => {
   if (points.some((p) => p.tick !== undefined)) return !!points[i].tick;
-  const every = Math.ceil(points.length / 8);
+  const every = Math.ceil(points.length / most);
   return i % every === 0 || i === points.length - 1;
 };
 
-export function ValueBars({ rows, max, unit }: { rows: TrendPoint[]; max?: number; unit: string }) {
+/** The chart's real width, so text is drawn at its true size instead of being scaled down with the SVG. */
+function useWidth(fallback: number) {
+  const [width, setWidth] = useState(fallback);
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => setWidth(Math.max(Math.round(el.clientWidth), 280));
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return { ref, width };
+}
+
+const FONT = 12;
+
+export function ValueBars({ rows, max, unit, height = 220 }: { rows: TrendPoint[]; max?: number; unit: string; height?: number }) {
   const tip = useTip();
-  const W = 920, H = 200, L = 40, B = 24, T = 14;
+  const { ref, width: W } = useWidth(920);
+  const H = height, L = 44, B = 28, T = 14, R = 12;
   const top = max ?? niceMax(Math.max(...rows.map((r) => r.value), 1));
   const y = (v: number) => H - B - (v / top) * (H - B - T);
-  const slot = (W - L - 10) / Math.max(rows.length, 1);
-  const bar = Math.min(slot * 0.6, 54);
+  const slot = (W - L - R) / Math.max(rows.length, 1);
+  const bar = Math.max(Math.min(slot * 0.62, 44), 3);
+  const most = Math.max(2, Math.floor((W - L) / 64));
   return (
-    <div className="chart">
-      <svg viewBox={`0 0 ${W} ${H}`} className="plot" direction="ltr" role="img" aria-label={unit}>
+    <div className="chart" ref={ref}>
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="plot" direction="ltr" role="img" aria-label={unit}>
         {[0, 0.5, 1].map((f) => (
           <g key={f}>
-            <line x1={L} x2={W - 10} y1={y(top * f)} y2={y(top * f)} stroke={COLORS.grid} />
-            <text x={L - 6} y={y(top * f) + 4} textAnchor="end" fill={COLORS.muted} fontSize={11}>{Math.round(top * f)}</text>
+            <line x1={L} x2={W - R} y1={y(top * f)} y2={y(top * f)} stroke={COLORS.grid} />
+            <text x={L - 8} y={y(top * f) + 4} textAnchor="end" fill={COLORS.muted} fontSize={FONT}>{Math.round(top * f)}</text>
           </g>
         ))}
         {rows.map((r, i) => {
           const cx = L + slot * (i + 0.5);
           return (
             <g key={`${r.label}-${i}`}>
-              <rect x={cx - bar / 2} y={y(r.value)} width={bar} height={Math.max(H - B - y(r.value), 2)} rx={Math.min(4, bar / 3)} fill={COLORS.hit} opacity={0.85}
-                onMouseMove={(e) => tip.show(e, r.tip ?? `${r.value} ${unit}`)} onMouseLeave={tip.hide} />
-              {showTick(rows, i) && <text x={cx} y={H - 7} textAnchor="middle" fill={COLORS.muted} fontSize={11}>{r.label}</text>}
+              {r.value > 0 && <rect x={cx - bar / 2} y={y(r.value)} width={bar} height={Math.max(H - B - y(r.value), 2)} rx={Math.min(4, bar / 3)} fill={COLORS.hit} opacity={0.85}
+                onMouseMove={(e) => tip.show(e, r.tip ?? `${r.value} ${unit}`)} onMouseLeave={tip.hide} />}
+              {showTick(rows, i, most) && <text x={cx} y={H - 8} textAnchor="middle" fill={COLORS.muted} fontSize={FONT}>{r.label}</text>}
             </g>
           );
         })}
@@ -334,34 +355,39 @@ export function ValueBars({ rows, max, unit }: { rows: TrendPoint[]; max?: numbe
   );
 }
 
-export function TrendLine({ points, unit, better }: { points: TrendPoint[]; unit: string; better: "up" | "down" }) {
+export function TrendLine({ points, unit, better, axis, height = 240 }: { points: TrendPoint[]; unit: string; better: "up" | "down"; axis?: AxisTick[]; height?: number }) {
   const tip = useTip();
-  const W = 920, H = 240, L = 46, B = 26, T = 16;
-  if (points.length === 0) return null;
+  const { ref, width: W } = useWidth(920);
+  const H = height, L = 48, B = 28, T = 16, R = 24;
+  if (points.length === 0) return <div ref={ref} />;
   const values = points.map((p) => p.value);
   const pad = Math.max((Math.max(...values) - Math.min(...values)) * 0.2, unit === "%" ? 5 : 15);
   const lo = Math.max(0, Math.min(...values) - pad);
   const hi = (unit === "%" ? Math.min(100, Math.max(...values) + pad) : Math.max(...values) + pad);
-  const x = (i: number) => (points.length === 1 ? (L + W) / 2 : L + (i / (points.length - 1)) * (W - L - 20));
+  const span = W - L - R;
+  const posOf = (i: number) => points[i].pos ?? (points.length === 1 ? 0.5 : i / (points.length - 1));
+  const x = (i: number) => L + posOf(i) * span;
   const y = (v: number) => H - B - ((v - lo) / Math.max(hi - lo, 1e-6)) * (H - B - T);
   const improved = points.length > 1 && (better === "up" ? values[values.length - 1] >= values[0] : values[values.length - 1] <= values[0]);
   const color = points.length > 1 && !improved ? COLORS.warn : COLORS.hit;
+  const most = Math.max(2, Math.floor(span / 70));
+  const ticks = axis
+    ? axis.filter((_, i) => i % Math.ceil(axis.length / most) === 0 || i === axis.length - 1)
+    : points.map((p, i) => ({ pos: posOf(i), label: p.label })).filter((_, i) => showTick(points, i, most));
   return (
-    <div className="chart">
-      <svg viewBox={`0 0 ${W} ${H}`} className="plot" direction="ltr" role="img" aria-label={unit}>
+    <div className="chart" ref={ref}>
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="plot" direction="ltr" role="img" aria-label={unit}>
         {[lo, (lo + hi) / 2, hi].map((v) => (
           <g key={v}>
-            <line x1={L} x2={W - 10} y1={y(v)} y2={y(v)} stroke={COLORS.grid} />
-            <text x={L - 6} y={y(v) + 4} textAnchor="end" fill={COLORS.muted} fontSize={11}>{Math.round(v)}</text>
+            <line x1={L} x2={W - R / 2} y1={y(v)} y2={y(v)} stroke={COLORS.grid} />
+            <text x={L - 8} y={y(v) + 4} textAnchor="end" fill={COLORS.muted} fontSize={FONT}>{Math.round(v)}</text>
           </g>
         ))}
+        {ticks.map((t, i) => <text key={i} x={L + t.pos * span} y={H - 8} textAnchor="middle" fill={COLORS.muted} fontSize={FONT}>{t.label}</text>)}
         <polyline points={points.map((p, i) => `${x(i)},${y(p.value)}`).join(" ")} fill="none" stroke={color} strokeWidth={2} strokeLinejoin="round" />
         {points.map((p, i) => (
-          <g key={i}>
-            <circle cx={x(i)} cy={y(p.value)} r={points.length > 40 ? 3 : 5} fill={color} stroke="#12161b" strokeWidth={2}
-              onMouseMove={(e) => tip.show(e, p.tip ?? `${p.label}: ${Math.round(p.value)} ${unit}`)} onMouseLeave={tip.hide} />
-            {showTick(points, i) && <text x={x(i)} y={H - 8} textAnchor="middle" fill={COLORS.muted} fontSize={11}>{p.label}</text>}
-          </g>
+          <circle key={i} cx={x(i)} cy={y(p.value)} r={points.length > 40 ? 3 : 5} fill={color} stroke="#12161b" strokeWidth={2}
+            onMouseMove={(e) => tip.show(e, p.tip ?? `${p.label}: ${Math.round(p.value)} ${unit}`)} onMouseLeave={tip.hide} />
         ))}
       </svg>
       {tip.node}
