@@ -293,7 +293,16 @@ export function Spark({ values }: { values: number[] }) {
   );
 }
 
-export function ValueBars({ rows, max, unit }: { rows: { label: string; value: number; tip?: string }[]; max?: number; unit: string }) {
+type TrendPoint = { label: string; value: number; tip?: string; tick?: boolean };
+
+/** Axis labels: the points marked as ticks, or about eight evenly spaced ones. */
+const showTick = (points: TrendPoint[], i: number) => {
+  if (points.some((p) => p.tick !== undefined)) return !!points[i].tick;
+  const every = Math.ceil(points.length / 8);
+  return i % every === 0 || i === points.length - 1;
+};
+
+export function ValueBars({ rows, max, unit }: { rows: TrendPoint[]; max?: number; unit: string }) {
   const tip = useTip();
   const W = 920, H = 200, L = 40, B = 24, T = 14;
   const top = max ?? niceMax(Math.max(...rows.map((r) => r.value), 1));
@@ -312,10 +321,10 @@ export function ValueBars({ rows, max, unit }: { rows: { label: string; value: n
         {rows.map((r, i) => {
           const cx = L + slot * (i + 0.5);
           return (
-            <g key={r.label}>
-              <rect x={cx - bar / 2} y={y(r.value)} width={bar} height={Math.max(H - B - y(r.value), 2)} rx={4} fill={COLORS.hit}
+            <g key={`${r.label}-${i}`}>
+              <rect x={cx - bar / 2} y={y(r.value)} width={bar} height={Math.max(H - B - y(r.value), 2)} rx={Math.min(4, bar / 3)} fill={COLORS.hit} opacity={0.85}
                 onMouseMove={(e) => tip.show(e, r.tip ?? `${r.value} ${unit}`)} onMouseLeave={tip.hide} />
-              <text x={cx} y={H - 7} textAnchor="middle" fill={COLORS.muted} fontSize={11}>{r.label}</text>
+              {showTick(rows, i) && <text x={cx} y={H - 7} textAnchor="middle" fill={COLORS.muted} fontSize={11}>{r.label}</text>}
             </g>
           );
         })}
@@ -324,15 +333,6 @@ export function ValueBars({ rows, max, unit }: { rows: { label: string; value: n
     </div>
   );
 }
-
-type TrendPoint = { label: string; value: number; tip?: string; tick?: boolean };
-
-/** Axis labels: the points marked as ticks, or about eight evenly spaced ones. */
-const showTick = (points: TrendPoint[], i: number) => {
-  if (points.some((p) => p.tick !== undefined)) return !!points[i].tick;
-  const every = Math.ceil(points.length / 8);
-  return i % every === 0 || i === points.length - 1;
-};
 
 export function TrendLine({ points, unit, better }: { points: TrendPoint[]; unit: string; better: "up" | "down" }) {
   const tip = useTip();

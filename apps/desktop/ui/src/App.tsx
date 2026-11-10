@@ -768,28 +768,79 @@ function Replay({ detail, ctx }: { detail: Detail; ctx: Ctx }) {
   );
 }
 
+type Range = "today" | "week" | "month" | "year" | "all";
+type Kind = "all" | "assessment" | "plan" | "free";
+type Bucket = { label: string; tick: boolean; cards: SessionCard[] };
+
+const kindOf = (c: SessionCard): Kind => (c.assessment ? "assessment" : c.scenario.startsWith("custom.") ? "free" : "plan");
+
+/** Groups sessions for a chart: sessions in a day, days in a week or month, months in a year. */
+function bucketize(cards: SessionCard[], range: Range, lang: Lang): Bucket[] {
+  const locale = lang === "ar" ? "ar-IQ" : "en-GB";
+  const sorted = [...cards].sort((a, b) => a.at_ms - b.at_ms);
+  if (sorted.length === 0) return [];
+  const span = (sorted[sorted.length - 1].at_ms - sorted[0].at_ms) / 86400000;
+  const unit = range === "today" ? "session" : range === "year" || (range === "all" && span > 62) ? "month" : "day";
+  if (unit === "session") {
+    const every = Math.ceil(sorted.length / 8);
+    return sorted.map((c, i) => ({ label: new Date(c.at_ms).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }), tick: i % every === 0 || i === sorted.length - 1, cards: [c] }));
+  }
+  const keyOf = (ms: number) => (unit === "month" ? dayKey(ms).slice(0, 7) : dayKey(ms));
+  const groups = new Map<string, SessionCard[]>();
+  for (const c of sorted) groups.set(keyOf(c.at_ms), [...(groups.get(keyOf(c.at_ms)) ?? []), c]);
+  const weekStart = lang === "ar" ? 6 : 1;
+  let lastWeek = "";
+  return [...groups.entries()].map(([k, cs], i) => {
+    if (unit === "month") {
+      return { label: new Date(`${k}-15T12:00`).toLocaleDateString(locale, { month: "short", year: "2-digit" }), tick: true, cards: cs };
+    }
+    const d = new Date(`${k}T12:00`);
+    const label = range === "week"
+      ? d.toLocaleDateString(locale, { weekday: "short", day: "numeric" })
+      : d.toLocaleDateString(locale, { day: "numeric", month: "short" });
+    // Over a month, label the first day played in each week so the axis reads in weeks.
+    const back = (d.getDay() - weekStart + 7) % 7;
+    const week = dayKey(d.getTime() - back * 86400000);
+    const tick = range === "week" || groups.size <= 10 || i === 0 || week !== lastWeek;
+    lastWeek = week;
+    return { label, tick, cards: cs };
+  });
+}
+
+const accuracyOf = (c: SessionCard) => { const v = sessionScore(c); return v === null ? null : v * 100; };
+
 function Progress({ ctx }: { ctx: Ctx }) {
   const { view, T, lang } = ctx;
   const ids = view.latest?.profile.skills.map((s) => s.skill) ?? [];
   const [picked, setPicked] = useState<string[]>(() => ids.slice(0, 2));
-  const [kind, setKind] = useState("all");
+  const [kind, setKind] = useState<Kind>("all");
+  const [scenario, setScenario] = useState("all");
+  const [range, setRange] = useState<Range>("month");
+  const [compare, setCompare] = useState<string[]>([]);
   if (view.sessions.length === 0) {
     return (<><PageHead title={T("التقدم", "Progress")} /><Empty text={T("تقدمك يطلع هنا بعد أول جلسة.", "Your progress appears here after your first session.")} /></>);
   }
-  const kinds = [...new Set(view.sessions.map((s) => s.scenario))];
-  const list = view.sessions.filter((s) => kind === "all" || s.scenario === kind);
-  const byDay = new Map<string, SessionCard[]>();
-  for (const s of [...list].reverse()) byDay.set(dayKey(s.at_ms), [...(byDay.get(dayKey(s.at_ms)) ?? []), s]);
-  const dayLabel = (d: string) => new Date(`${d}T12:00`).toLocaleDateString(lang === "ar" ? "ar-IQ" : "en-GB", { day: "numeric", month: "numeric" });
-  const seriesOf = (f: (c: SessionCard) => number | null) => [...byDay.entries()].flatMap(([d, cards]) => {
-    const v = avg(cards.map(f).filter((x): x is number => x !== null));
-    return v === null ? [] : [{ label: dayLabel(d), value: v }];
+  const locale = lang === "ar" ? "ar-IQ" : "en-GB";
+  const now = Date.now();
+  const since = { today: new Date(new Date().setHours(0, 0, 0, 0)).getTime(), week: now - 7 * 86400000, month: now - 30 * 86400000, year: now - 365 * 86400000, all: 0 }[range];
+  const ofKind = view.sessions.filter((s) => kind === "all" || kindOf(s) === kind);
+  const scenarios = [...new Set(ofKind.map((s) => s.scenario))];
+  const list = ofKind.filter((s) => (scenario === "all" || s.scenario === scenario) && s.at_ms >= since);
+  const days = new Set(view.sessions.map((s) => dayKey(s.at_ms)));
+  const buckets = bucketize(list, range, lang);
+  const seriesOf = (f: (c: SessionCard) => number | null, unit: string) => buckets.flatMap((b) => {
+    const v = avg(b.cards.map(f).filter((x): x is number => x !== null));
+    return v === null ? [] : [{ label: b.label, tick: b.tick, value: v, tip: `${b.label}: ${Math.round(v)} ${unit} · ${b.cards.length} ${T("جلسة", "sessions")}` }];
   });
-  const accuracy = seriesOf((c) => { const v = sessionScore(c); return v === null ? null : v * 100; });
-  const reaction = seriesOf((c) => c.median_reaction_ms);
-  const volume = [...byDay.entries()].map(([d, cards]) => ({ label: dayLabel(d), value: Math.round(cards.reduce((a, c) => a + c.duration_s, 0) / 60), tip: `${cards.length} ${T("جلسة", "sessions")}` }));
+  const accuracy = seriesOf(accuracyOf, "%");
+  const reaction = seriesOf((c) => c.median_reaction_ms, "ms");
+  const volume = buckets.map((b) => ({ label: b.label, tick: b.tick, value: Math.round(b.cards.reduce((a, c) => a + c.duration_s, 0) / 60), tip: `${b.label}: ${Math.round(b.cards.reduce((a, c) => a + c.duration_s, 0) / 60)} ${T("دقيقة", "min")} · ${b.cards.length} ${T("جلسة", "sessions")}` }));
   const first = accuracy[0]?.value;
   const last = accuracy[accuracy.length - 1]?.value;
+  const reactFirst = reaction[0]?.value;
+  const reactLast = reaction[reaction.length - 1]?.value;
+  const spanDays = list.length ? (Math.max(...list.map((c) => c.at_ms)) - Math.min(...list.map((c) => c.at_ms))) / 86400000 : 0;
+  const unitWord = range === "today" ? T("جلسة", "session") : range === "year" || (range === "all" && spanDays > 62) ? T("شهر", "month") : T("يوم", "day");
   const toggle = (id: string) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : p.length >= 4 ? p : [...p, id]));
   const series: Series[] = picked.map((id) => ({
     id,
@@ -799,35 +850,116 @@ function Progress({ ctx }: { ctx: Ctx }) {
       return { label: `#${i + 1}`, v: s?.score ?? 0, lo: s?.ci95[0] ?? 0, hi: s?.ci95[1] ?? 0 };
     }),
   }));
+  const ranges: [Range, string][] = [["today", T("اليوم", "Today")], ["week", T("7 أيام", "7 days")], ["month", T("30 يوم", "30 days")], ["year", T("سنة", "Year")], ["all", T("الكل", "All")]];
+  const kinds: [Kind, string][] = [["all", T("كل الجلسات", "All sessions")], ["assessment", T("التقييمات", "Assessments")], ["plan", T("تمارين الخطة", "Plan drills")], ["free", T("التدريب الحر", "Free practice")]];
+  const compareRows = compare.map((d) => {
+    const cs = view.sessions.filter((s) => dayKey(s.at_ms) === d && (kind === "all" || kindOf(s) === kind) && (scenario === "all" || s.scenario === scenario));
+    return {
+      d,
+      label: new Date(`${d}T12:00`).toLocaleDateString(locale, { weekday: "short", day: "numeric", month: "short" }),
+      n: cs.length,
+      acc: avg(cs.map(accuracyOf).filter((x): x is number => x !== null)),
+      react: avg(cs.map((c) => c.median_reaction_ms).filter((x): x is number => x !== null)),
+      hit: avg(cs.map((c) => c.median_time_to_hit_ms).filter((x): x is number => x !== null)),
+      min: Math.round(cs.reduce((a, c) => a + c.duration_s, 0) / 60),
+    };
+  });
+  const bestOf = (k: "acc" | "react" | "hit", up: boolean) => {
+    const vals = compareRows.map((r) => r[k]).filter((v): v is number => v !== null);
+    return vals.length < 2 ? null : up ? Math.max(...vals) : Math.min(...vals);
+  };
+  const best = { acc: bestOf("acc", true), react: bestOf("react", false), hit: bestOf("hit", false) };
+
   return (
     <>
-      <PageHead title={T("التقدم", "Progress")} sub={T("كل جلسة لعبتها محسوبة هنا.", "Every session you played counts here.")}>
-        <select aria-label={T("النوع", "Type")} value={kind} onChange={(e) => setKind(e.target.value)}>
-          <option value="all">{T("كل الجلسات", "All sessions")}</option>
-          {kinds.map((k) => <option key={k} value={k}>{scenarioTitle(k, lang)}</option>)}
-        </select>
-      </PageHead>
-      <div className="stats">
-        <Stat value={String(list.length)} label={T("جلسات", "Sessions")} />
-        <Stat value={String(list.reduce((a, c) => a + c.hits, 0))} label={T("أهداف أصبتها", "Targets hit")} />
-        <Stat value={`${Math.round(list.reduce((a, c) => a + c.duration_s, 0) / 60)}`} label={T("دقايق تدريب", "Minutes trained")} />
-        <Stat value={last === undefined ? "—" : `${Math.round(last)}%`} label={T("دقة آخر يوم", "Latest day accuracy")} hint={first !== undefined && accuracy.length > 1 ? `${last! >= first ? "+" : ""}${Math.round(last! - first)} ${T("عن أول يوم", "vs first day")}` : undefined} />
+      <PageHead title={T("التقدم", "Progress")} sub={T("كل جلسة لعبتها محسوبة هنا. اختار الفترة ونوع الجلسات.", "Every session you played counts here. Pick a period and the kind of sessions.")} />
+      <div className="filters card">
+        <div className="filter-row">
+          <span className="label">{T("الفترة", "Period")}</span>
+          <div className="segmented">
+            {ranges.map(([r, name]) => <button key={r} className={r === range ? "on" : ""} onClick={() => setRange(r)}>{name}</button>)}
+          </div>
+          <DayPicker multi available={days} selected={compare} onChange={setCompare} lang={lang} label={compare.length ? T(`قارن ${compare.length} أيام`, `Compare ${compare.length} days`) : T("قارن أيام", "Compare days")} />
+        </div>
+        <div className="filter-row">
+          <span className="label">{T("النوع", "Kind")}</span>
+          <div className="segmented">
+            {kinds.map(([k, name]) => <button key={k} className={k === kind ? "on" : ""} onClick={() => { setKind(k); setScenario("all"); }}>{name}</button>)}
+          </div>
+        </div>
+        {kind !== "all" && scenarios.length > 1 && (
+          <div className="chips">
+            <button className={scenario === "all" ? "on" : ""} onClick={() => setScenario("all")}>{T("الكل", "All")}</button>
+            {scenarios.map((k) => <button key={k} className={k === scenario ? "on" : ""} onClick={() => setScenario(k)}>{scenarioTitle(k, lang)}</button>)}
+          </div>
+        )}
       </div>
-      <section className="card">
-        <h2>{T("الدقة يوم بعد يوم", "Accuracy day by day")}</h2>
-        {accuracy.length < 2 && <p className="muted small">{T("العب بيوم ثاني حتى يطلع الخط. لحد هسه عندك يوم واحد.", "Play on another day to see a line. So far you have one day.")}</p>}
-        <TrendLine points={accuracy} unit="%" better="up" />
-      </section>
-      <div className="split-2">
+
+      {compare.length > 0 && (
         <section className="card">
-          <h2>{T("رد الفعل", "Reaction")}</h2>
-          {reaction.length === 0 ? <p className="muted small">{T("ماكو أوقات موثوقة بعد. العب جلسة جديدة.", "No reliable timing yet. Play a new session.")}</p> : <TrendLine points={reaction} unit="ms" better="down" />}
+          <div className="row between">
+            <h2>{T("مقارنة الأيام", "Day comparison")}</h2>
+            <button className="btn ghost small" onClick={() => setCompare([])}>{T("امسح", "Clear")}</button>
+          </div>
+          {compare.length === 1 && <p className="muted small">{T("اختار يوم ثاني من التقويم حتى تقارن.", "Pick another day in the calendar to compare.")}</p>}
+          <div className="table-wrap">
+            <table className="compare">
+              <thead><tr><th>{T("اليوم", "Day")}</th><th>{T("جلسات", "Sessions")}</th><th>{T("الدقة", "Accuracy")}</th><th>{T("رد الفعل", "Reaction")}</th><th>{T("وقت الإصابة", "Time to hit")}</th><th>{T("دقايق", "Minutes")}</th></tr></thead>
+              <tbody>
+                {compareRows.map((r) => (
+                  <tr key={r.d}>
+                    <td>{r.label}</td>
+                    <td>{r.n}</td>
+                    <td className={r.acc !== null && r.acc === best.acc ? "best" : ""}>{r.acc === null ? "—" : `${Math.round(r.acc)}%`}</td>
+                    <td className={r.react !== null && r.react === best.react ? "best" : ""} dir="ltr">{ms(r.react)}</td>
+                    <td className={r.hit !== null && r.hit === best.hit ? "best" : ""} dir="ltr">{ms(r.hit)}</td>
+                    <td>{r.min}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {compare.length > 1 && <p className="muted small">{T("الأخضر هو الأحسن بكل عمود.", "Green marks the best in each column.")}</p>}
         </section>
-        <section className="card">
-          <h2>{T("دقايق التدريب", "Minutes trained")}</h2>
-          <ValueBars rows={volume} unit={T("د", "min")} />
-        </section>
-      </div>
+      )}
+
+      {list.length === 0 ? (
+        <Empty text={range === "today" ? T("ما لعبت اليوم بعد. اختار فترة أطول.", "No sessions today yet. Pick a longer period.") : T("ماكو جلسات بهذي الفترة وهذا النوع.", "No sessions in this period and kind.")} />
+      ) : (
+        <>
+          <div className="stats">
+            <Stat value={String(list.length)} label={T("جلسات", "Sessions")} />
+            <Stat value={String(list.reduce((a, c) => a + c.hits, 0))} label={T("أهداف أصبتها", "Targets hit")} />
+            <Stat value={`${Math.round(list.reduce((a, c) => a + c.duration_s, 0) / 60)}`} label={T("دقايق تدريب", "Minutes trained")} />
+            <Stat value={last === undefined ? "—" : `${Math.round(last)}%`} label={T("الدقة بآخر الفترة", "Accuracy at the end")} hint={first !== undefined && accuracy.length > 1 ? `${last! >= first ? "+" : ""}${Math.round(last! - first)} ${T("عن بدايتها", "vs the start")}` : undefined} />
+          </div>
+          <section className="card">
+            <h2>{T("الدقة", "Accuracy")} <small className="muted">· {T(`كل نقطة ${unitWord}`, `each point is a ${unitWord}`)}</small></h2>
+            {accuracy.length < 2 && <p className="muted small">{T("تحتاج نقطتين على الأقل حتى يطلع خط. اختار فترة أطول أو العب أكثر.", "At least two points are needed for a line. Pick a longer period or play more.")}</p>}
+            <TrendLine points={accuracy} unit="%" better="up" />
+          </section>
+          <div className="split-2">
+            <section className="card">
+              <h2>{T("رد الفعل", "Reaction")}</h2>
+              {reaction.length === 0 ? <p className="muted small">{T("ماكو أوقات موثوقة بهذي الفترة. التتبع ما بيه رد فعل.", "No reliable timing in this period. Tracking has no reaction time.")}</p> : (
+                <>
+                  <p className="muted small">{reaction.length > 1 && reactFirst !== undefined && reactLast !== undefined
+                    ? reactLast <= reactFirst
+                      ? T(`صرت أسرع بـ ${Math.round(reactFirst - reactLast)} ms. أقل أحسن.`, `${Math.round(reactFirst - reactLast)} ms faster. Lower is better.`)
+                      : T(`صرت أبطأ بـ ${Math.round(reactLast - reactFirst)} ms. يمكن تعب أو قلة نوم.`, `${Math.round(reactLast - reactFirst)} ms slower. Fatigue or sleep can do this.`)
+                    : T("أقل أحسن.", "Lower is better.")}</p>
+                  <TrendLine points={reaction} unit="ms" better="down" />
+                </>
+              )}
+            </section>
+            <section className="card">
+              <h2>{T("دقايق التدريب", "Minutes trained")}</h2>
+              <p className="muted small">{T(`المعدل ${Math.round(avg(volume.map((v) => v.value)) ?? 0)} دقيقة لكل ${unitWord}. التدريب القصير المنتظم أحسن من الطويل المتقطع.`, `Average ${Math.round(avg(volume.map((v) => v.value)) ?? 0)} minutes per ${unitWord}. Short regular practice beats long irregular sessions.`)}</p>
+              <ValueBars rows={volume} unit={T("د", "min")} />
+            </section>
+          </div>
+        </>
+      )}
       {view.latest && (
         <section className="card">
           <h2>{T("درجات مهاراتك الآن", "Your skill scores now")}</h2>
