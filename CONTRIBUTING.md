@@ -99,6 +99,19 @@ one of these:
 
 A newer push cancels the older run, so you only wait for the latest one.
 
+## Releasing
+
+Maintainers only.
+
+1. Raise `version` in `apps/desktop/src-tauri/tauri.conf.json` (and the matching `Cargo.toml` and
+   `package.json`), update `docs/release-notes.md`, and merge that through a PR.
+2. Tag the merge commit on `main` and push the tag: `git tag v0.2.0` then `git push origin v0.2.0`.
+3. The **Release** workflow builds the installer, the portable zip and `SHA256SUMS.txt` and attaches
+   them to a draft release. It stops if the tag and the app version differ.
+4. Install the draft's files on a clean Windows user, check they start, then publish the draft.
+
+To build the same files locally, run `scripts\package-release.ps1`; they land in `dist\`.
+
 ## Rules that protect the data
 
 - **The `.aft` v1 format is frozen.** Never reorder, rename or remove fields or enum variants in
