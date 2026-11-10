@@ -164,7 +164,11 @@ function Onboarding({ ctx }: { ctx: Ctx }) {
       <div className="card grid2">
         <Num label="DPI" value={s.dpi} step={50} min={50} set={(dpi) => setS({ ...s, dpi })} />
         <Num label={T("الحساسية", "Sensitivity")} value={s.sens} step={0.01} min={0.01} set={(sens) => setS({ ...s, sens })} />
-        <LangSelect ctx={ctx} value={s.locale} set={(locale) => setS({ ...s, locale })} />
+        <LangSelect ctx={ctx} value={s.locale} set={(locale) => {
+          // Switch the page language right away, not only after Continue.
+          setS({ ...s, locale });
+          act("save_settings", { settings: { ...view.settings, locale } });
+        }} />
       </div>
       <p className="small muted">{T("تلكاهم بـ VALORANT: Settings ← General ← Mouse Sensitivity، والـ DPI من برنامج ماوسك.", "Find these in VALORANT under Settings, General, Mouse Sensitivity; DPI is in your mouse software.")}</p>
       <button className="btn wide" onClick={() => act("save_settings", { settings: { ...s, onboarded: true } })}>{T("كمل", "Continue")}</button>

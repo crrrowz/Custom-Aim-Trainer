@@ -89,6 +89,10 @@ if (typeof location !== "undefined" && new URLSearchParams(location.search).get(
   est.profile.skills = est.profile.skills.slice(0, 3);
   view = { ...view, latest: null, history: [], plan: null, estimate: est, resume: { done: 3, total: 8 } };
 }
+// `?state=new` shows the first-run screen.
+if (typeof location !== "undefined" && new URLSearchParams(location.search).get("state") === "new") {
+  view = { ...view, settings: { ...view.settings, onboarded: false } };
+}
 
 function mockFlick(i: number): Flick {
   const d = [8, 20, 40][i % 3];
