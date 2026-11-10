@@ -108,10 +108,8 @@ comparable.
 
 ## Other folders
 
-These predate the Rust rewrite and are kept for reference; they are not part of the desktop app:
+These are not part of the desktop app:
 
-- `legacy-web/`: the original browser trainer and analyser that the Rust analysis was ported from.
-- `how-to-aim-like-a-demon/`: a small React guide site.
 - `valorant-mcp-server/`: a Python MCP server for VALORANT match data (see its own README).
 - `docs/roadmap/`: earlier planning notes, superseded by `docs/platform/`.
 
