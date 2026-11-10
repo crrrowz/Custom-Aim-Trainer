@@ -3,7 +3,7 @@ import { DayPicker, dayKey } from "./DayPicker";
 import { call, type CoachConfig, type CustomTargets, type Detail, type Flick, type Plan, type SessionCard, type Settings, type View } from "./api";
 import { AimPath, ReactionTimeline, SERIES, ShotScatter, SkillLines, SkillRadar, Spark, SpeedChart, TrackingChart, TrendLine, ValueBars, type Series } from "./charts";
 import { drillInfo, drillNames, evidenceNames, groupNames, scenarioNames, skillNames, type DrillInfo, type Lang } from "./i18n";
-import { TargetPreview } from "./Preview";
+import { ON_SCREEN_H_DEG, ON_SCREEN_V_DEG, TargetPreview, onScreen } from "./Preview";
 
 type Tab = "home" | "analysis" | "progress" | "plan" | "practice" | "coach" | "settings";
 const RUNS_TRAINER = new Set(["run_assessment", "run_next_item", "run_retest", "run_custom", "run_scenario"]);
@@ -112,7 +112,7 @@ export function App() {
           {tab === "analysis" && <Analysis ctx={ctx} initial={recording} />}
           {tab === "progress" && <Progress ctx={ctx} />}
           {tab === "plan" && <PlanPage ctx={ctx} />}
-          {tab === "practice" && <Practice ctx={ctx} />}
+          {tab === "practice" && <Practice ctx={ctx} initial={recording} />}
           {tab === "coach" && <Coach ctx={ctx} />}
           {tab === "settings" && <SettingsPage ctx={ctx} />}
         </ScreenGuard>
@@ -1187,10 +1187,35 @@ function writePresets(presets: Preset[]) {
   try { localStorage.setItem(PRESETS_KEY, JSON.stringify(presets)); } catch { /* presets stay for this visit */ }
 }
 
-function Practice({ ctx }: { ctx: Ctx }) {
+/** A drill from the library expressed as builder settings, at middle difficulty. The drill itself also
+ * has rules (for example, no overshooting) that only the original keeps. */
+const BASE: CustomTargets = { mode: "flick", concurrent: 3, duration_s: 60, area_h_deg: 35, area_v_deg: 12, reversal_s: 0.55, ...TIERS[1].p };
+const DRILL_SETUPS: Record<string, Partial<CustomTargets>> = {
+  warmup: { radius_deg: 1, min_distance_deg: 10, max_distance_deg: 20, time_limit_s: 3.5 },
+  deceleration_ladder: { radius_deg: 0.8, min_distance_deg: 18, max_distance_deg: 30, time_limit_s: 1.2 },
+  commit_flick: { radius_deg: 1.1, min_distance_deg: 18, max_distance_deg: 30, time_limit_s: 0.9 },
+  consistency_grid: { radius_deg: 0.75, min_distance_deg: 15, max_distance_deg: 25, time_limit_s: 2 },
+  directional_flick: { radius_deg: 0.75, min_distance_deg: 18, max_distance_deg: 30, time_limit_s: 2 },
+  speed_push: { radius_deg: 0.8, min_distance_deg: 18, max_distance_deg: 30, time_limit_s: 0.7 },
+  micro_hold: { radius_deg: 0.45, min_distance_deg: 3, max_distance_deg: 6, time_limit_s: 3 },
+  precision_first: { radius_deg: 0.45, min_distance_deg: 3, max_distance_deg: 6, time_limit_s: 3 },
+  confirm_click: { radius_deg: 0.75, min_distance_deg: 18, max_distance_deg: 30, time_limit_s: 2.5 },
+  timed_kill: { radius_deg: 0.8, min_distance_deg: 18, max_distance_deg: 30, time_limit_s: 0.7 },
+  reflex_dot: { radius_deg: 0.8, min_distance_deg: 4, max_distance_deg: 4, time_limit_s: 0.65 },
+  cs_drill: { radius_deg: 0.9, min_distance_deg: 8, max_distance_deg: 20, time_limit_s: 2.2 },
+  head_level_hold: { mode: "peek", radius_deg: 0.55, time_limit_s: 1.8 },
+  peek_line: { mode: "peek", radius_deg: 0.55, time_limit_s: 1.8 },
+  smooth_track: { mode: "track", radius_deg: 0.7, speed_deg_s: 18, area_h_deg: 35, area_v_deg: 6 },
+  strafe_track_reactive: { mode: "strafe", radius_deg: 0.7, speed_deg_s: 21, reversal_s: 0.6, area_h_deg: 35 },
+};
+const setupOf = (drill: string): CustomTargets => onScreen({ ...BASE, ...DRILL_SETUPS[drill] });
+
+function Practice({ ctx, initial }: { ctx: Ctx; initial?: string }) {
   const { view, T, act, lang, go } = ctx;
-  const [c, setC] = useState<CustomTargets>({ mode: "flick", concurrent: 3, duration_s: 60, area_h_deg: 35, area_v_deg: 12, reversal_s: 0.55, ...TIERS[1].p });
-  const [tier, setTier] = useState<Tier | null>("medium");
+  const fromPlan = initial?.startsWith("drill:") ? initial.slice(6) : null;
+  const [c, setC] = useState<CustomTargets>(() => (fromPlan && DRILL_SETUPS[fromPlan] ? setupOf(fromPlan) : BASE));
+  const [tier, setTier] = useState<Tier | null>(fromPlan ? null : "medium");
+  const [source, setSource] = useState<string | null>(fromPlan);
   const [section, setSection] = useState<"build" | "library">("build");
   const [presets, setPresets] = useState<Preset[]>(readPresets);
   const [presetName, setPresetName] = useState("");
@@ -1207,13 +1232,18 @@ function Practice({ ctx }: { ctx: Ctx }) {
     setPresets(next);
     writePresets(next);
   };
-  const set = (patch: Partial<CustomTargets>) => { setTier(null); setC({ ...c, ...patch }); };
+  const set = (patch: Partial<CustomTargets>) => { setTier(null); setC(onScreen({ ...c, ...patch })); };
+  const loadDrill = (d: string) => { setC(setupOf(d)); setTier(null); setSource(d); setSection("build"); };
   const usesDistance = c.mode === "flick" || c.mode === "multi";
   const usesSpeed = c.mode === "track" || c.mode === "strafe";
   const usesLimit = c.mode === "flick" || c.mode === "peek";
   const usesArea = c.mode === "multi" || c.mode === "track" || c.mode === "strafe";
   const history = view.practice.filter((p) => p.mode === c.mode);
   const best = history.length ? Math.max(...history.map((p) => p.hit_rate)) : null;
+  const modeAvg = avg(history.map((p) => p.hit_rate));
+  const modeTrend = history.map((p, i) => ({ label: p.at_ms ? new Date(p.at_ms).toLocaleDateString(lang === "ar" ? "ar-IQ" : "en-GB", { day: "numeric", month: "short" }) : `#${i + 1}`, value: p.hit_rate * 100 }));
+  const reach = c.mode === "flick" ? ON_SCREEN_V_DEG : ON_SCREEN_H_DEG;
+  const distMax = Math.floor(reach - c.radius_deg);
   const groups = (Object.keys(groupNames) as DrillInfo["group"][]).map((g) => ({ g, drills: Object.keys(drillInfo).filter((d) => drillInfo[d].group === g) }));
 
   return (
@@ -1228,12 +1258,18 @@ function Practice({ ctx }: { ctx: Ctx }) {
         <>
           <div className="modes">
             {MODES.map((m) => (
-              <button key={m.id} className={c.mode === m.id ? "on" : ""} onClick={() => setC({ ...c, mode: m.id })}>
+              <button key={m.id} className={c.mode === m.id ? "on" : ""} onClick={() => { setSource(null); setC(onScreen({ ...c, mode: m.id })); }}>
                 <b>{pick(m.name, lang, m.id)}</b>
                 <small>{pick(m.desc, lang, "")}</small>
               </button>
             ))}
           </div>
+          {source && (
+            <div className="banner row between">
+              <span>{T(`محمّلة من تمرين «${pick(drillNames[source], lang, source)}». غيّر اللي تريده، أو العب التمرين الأصلي بقواعده.`, `Loaded from the “${pick(drillNames[source], lang, source)}” drill. Change what you like, or play the original with its rules.`)}</span>
+              <button className="btn ghost small" disabled={!view.trainer_found} onClick={() => act("run_scenario", { scenario: source })}>{T("العب الأصلي", "Play original")}</button>
+            </div>
+          )}
           <div className="builder">
             <section className="card">
               <span className="label">{T("المعاينة بنفس قياسات اللعبة", "Preview at true game scale")}</span>
@@ -1250,13 +1286,14 @@ function Practice({ ctx }: { ctx: Ctx }) {
             <section className="card">
               <span className="label">{T("الصعوبة", "Difficulty")}</span>
               <div className="seg full">
-                {TIERS.map((t) => <button key={t.id} className={tier === t.id ? "on" : ""} onClick={() => { setTier(t.id); setC({ ...c, ...t.p }); }}>{pick(t.name, lang, t.id)}</button>)}
+                {TIERS.map((t) => <button key={t.id} className={tier === t.id ? "on" : ""} onClick={() => { setTier(t.id); setC(onScreen({ ...c, ...t.p })); }}>{pick(t.name, lang, t.id)}</button>)}
               </div>
               <Slider label={T("حجم الهدف", "Target size")} value={c.radius_deg} min={0.2} max={2} step={0.05} unit="°" set={(radius_deg) => set({ radius_deg })} />
-              {usesDistance && <Slider label={T("أقرب هدف من المركز", "Nearest to centre")} value={c.min_distance_deg} min={2} max={60} step={1} unit="°" set={(v) => set({ min_distance_deg: v, max_distance_deg: Math.max(v, c.max_distance_deg) })} />}
-              {usesDistance && <Slider label={T("أبعد هدف من المركز", "Farthest from centre")} value={c.max_distance_deg} min={2} max={60} step={1} unit="°" set={(v) => set({ max_distance_deg: v, min_distance_deg: Math.min(v, c.min_distance_deg) })} />}
-              {usesArea && <Slider label={T("مساحة الحركة يمين ويسار", "Area left and right")} value={c.area_h_deg} min={5} max={60} step={1} unit="°" set={(area_h_deg) => set({ area_h_deg })} />}
-              {usesArea && c.mode !== "strafe" && <Slider label={T("مساحة الحركة فوق وجوه", "Area up and down")} value={c.area_v_deg} min={2} max={35} step={1} unit="°" set={(area_v_deg) => set({ area_v_deg })} />}
+              {usesDistance && <Slider label={T("أقرب هدف من المركز", "Nearest to centre")} value={c.min_distance_deg} min={2} max={distMax} step={1} unit="°" set={(v) => set({ min_distance_deg: v, max_distance_deg: Math.max(v, c.max_distance_deg) })} />}
+              {usesDistance && <Slider label={T("أبعد هدف من المركز", "Farthest from centre")} value={c.max_distance_deg} min={2} max={distMax} step={1} unit="°" set={(v) => set({ max_distance_deg: v, min_distance_deg: Math.min(v, c.min_distance_deg) })} />}
+              {usesDistance && <small className="muted hint">{T(`أبعد مسافة ${distMax}° حتى يبقى الهدف داخل الشاشة${c.mode === "flick" ? " حتى لو طلع فوق أو جوه" : ""}.`, `At most ${distMax}° so the target stays on screen${c.mode === "flick" ? ", even straight up or down" : ""}.`)}</small>}
+              {usesArea && <Slider label={T("مساحة الحركة يمين ويسار", "Area left and right")} value={c.area_h_deg} min={5} max={Math.floor(ON_SCREEN_H_DEG - c.radius_deg)} step={1} unit="°" set={(area_h_deg) => set({ area_h_deg })} />}
+              {usesArea && c.mode !== "strafe" && <Slider label={T("مساحة الحركة فوق وجوه", "Area up and down")} value={c.area_v_deg} min={2} max={Math.floor(ON_SCREEN_V_DEG - c.radius_deg)} step={1} unit="°" set={(area_v_deg) => set({ area_v_deg })} />}
               {c.mode === "strafe" && <Slider label={T("كل كم يغير اتجاهه", "Changes direction every")} value={c.reversal_s} min={0.25} max={1.5} step={0.05} unit="s" set={(reversal_s) => set({ reversal_s })} />}
               {usesSpeed && <Slider label={T("سرعة الهدف", "Target speed")} value={c.speed_deg_s} min={5} max={40} step={1} unit="°/s" set={(speed_deg_s) => set({ speed_deg_s })} />}
               {usesLimit && <Slider label={T("وقت كل هدف", "Time per target")} value={c.time_limit_s} min={0.3} max={5} step={0.1} unit="s" set={(time_limit_s) => set({ time_limit_s })} />}
@@ -1281,6 +1318,19 @@ function Practice({ ctx }: { ctx: Ctx }) {
           </section>
           {history.length > 0 && (
             <section className="card">
+              <h2>{T(`تقدمك بـ ${pick(MODES.find((m) => m.id === c.mode)?.name, lang, c.mode)}`, `Your progress in ${pick(MODES.find((m) => m.id === c.mode)?.name, lang, c.mode)}`)}</h2>
+              <div className="stats">
+                <Stat value={String(history.length)} label={T("جلسات", "Sessions")} />
+                <Stat value={pct(modeAvg)} label={T("المعدل", "Average")} />
+                <Stat value={pct(best)} label={T("أحسن نتيجة", "Best")} />
+                <Stat value={pct(history[history.length - 1].hit_rate)} label={T("آخر جلسة", "Last session")} hint={history.length > 1 ? `${history[history.length - 1].hit_rate >= history[0].hit_rate ? "+" : "−"}${Math.abs(Math.round((history[history.length - 1].hit_rate - history[0].hit_rate) * 100))} ${T("عن أول جلسة", "vs first")}` : undefined} />
+              </div>
+              {modeTrend.length > 1 ? <TrendLine points={modeTrend} unit="%" better="up" /> : <p className="muted small">{T("العب جلسة ثانية بهذا النوع حتى يطلع الخط.", "Play another session in this mode to see a line.")}</p>}
+              <p className="muted small">{T("النتيجة نسبة الإصابة. غيّر الإعدادات بحذر، لأن الأرقام بين إعدادات مختلفة ما تنقارن تماماً.", "The score is the hit rate. Settings changes make sessions less comparable.")}</p>
+            </section>
+          )}
+          {history.length > 0 && (
+            <section className="card">
               <span className="label">{T("آخر جلساتك بهذا النوع", "Your recent sessions in this mode")}</span>
               {history.slice(-5).reverse().map((p, i) => (
                 <button className="line" key={i} onClick={() => p.file && go("analysis", p.file)}>
@@ -1292,19 +1342,35 @@ function Practice({ ctx }: { ctx: Ctx }) {
           )}
         </>
       )}
+      {section === "library" && (
+        <p className="muted">{T("اضغط على أي تمرين حتى تنفتح إعداداته بـ «ابني جلستك» وتعدّلها، أو العبه مباشرة بقواعده الأصلية.", "Click a drill to open its settings in “Build a session” and adjust them, or play it straight away with its own rules.")}</p>
+      )}
       {section === "library" && groups.map(({ g, drills }) => (
         <section key={g}>
           <h2 className="group">{pick(groupNames[g], lang, g)}</h2>
-          <div className="drills">
+          <div className="library">
             {drills.map((d) => {
               const level = view.plan?.levels[d];
               const runs = view.practice.filter((p) => p.name === d).length;
+              const inPlan = view.plan?.focus.some((f) => f.drills.includes(d));
               return (
-                <button key={d} disabled={!view.trainer_found} onClick={() => act("run_scenario", { scenario: d })}>
-                  <b>{pick(drillNames[d], lang, d)}</b>
-                  <small>{pick(drillInfo[d].purpose, lang, "")}</small>
-                  <span className="muted small">{level !== undefined ? `${T("المستوى", "Level")} ${(level * 100).toFixed(0)}` : T("ما انلعب بالخطة", "Not in your plan yet")}{runs > 0 ? ` · ${runs}×` : ""}</span>
-                </button>
+                <article key={d} className="drill-card">
+                  <button className="drill-open" onClick={() => loadDrill(d)} aria-label={T(`افتح ${pick(drillNames[d], lang, d)} بالمُنشئ`, `Open ${pick(drillNames[d], lang, d)} in the builder`)}>
+                    <TargetPreview c={setupOf(d)} still />
+                    <span className="drill-body">
+                      <span className="row between">
+                        <b>{pick(drillNames[d], lang, d)}</b>
+                        {inPlan && <span className="tag good">{T("بخطتك", "In your plan")}</span>}
+                      </span>
+                      <small>{pick(drillInfo[d].purpose, lang, "")}</small>
+                      <span className="muted small">{level !== undefined ? `${T("مستواك", "Your level")} ${(level * 100).toFixed(0)}` : T("ما لعبته بالخطة بعد", "Not played in your plan yet")}{runs > 0 ? ` · ${T("لعبته", "played")} ${runs}×` : ""}</span>
+                    </span>
+                  </button>
+                  <div className="drill-actions">
+                    <button className="btn ghost small" onClick={() => loadDrill(d)}>{T("عدّل الإعدادات", "Adjust settings")}</button>
+                    <button className="btn small" disabled={!view.trainer_found} onClick={() => act("run_scenario", { scenario: d })}>{T("العب", "Play")}</button>
+                  </div>
+                </article>
               );
             })}
           </div>

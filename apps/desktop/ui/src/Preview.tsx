@@ -2,11 +2,23 @@ import { useEffect, useRef } from "react";
 import type { CustomTargets } from "./api";
 
 const HALF_HFOV = (103 / 2) * (Math.PI / 180);
+/** Same limits as the drill builder: how far from the centre a target can be and stay on screen. */
+export const ON_SCREEN_H_DEG = 48;
+export const ON_SCREEN_V_DEG = 33;
+
+/** The settings limited so every target is on screen and the nearest distance never passes the farthest. */
+export function onScreen(c: CustomTargets): CustomTargets {
+  const edge = (limit: number) => Math.max(limit - c.radius_deg, 1);
+  const reach = edge(c.mode === "flick" ? ON_SCREEN_V_DEG : ON_SCREEN_H_DEG);
+  const hi = Math.min(Math.max(c.min_distance_deg, c.max_distance_deg), reach);
+  const lo = Math.min(c.min_distance_deg, c.max_distance_deg, hi);
+  return { ...c, min_distance_deg: lo, max_distance_deg: hi, area_h_deg: Math.min(c.area_h_deg, edge(ON_SCREEN_H_DEG)), area_v_deg: Math.min(c.area_v_deg, edge(ON_SCREEN_V_DEG)) };
+}
 /** Screen position of an angle, using the same perspective projection as the game. */
 const project = (deg: number, halfWidth: number) => (Math.tan((deg * Math.PI) / 180) / Math.tan(HALF_HFOV)) * halfWidth;
 
 /** A small live picture of what the chosen settings will look like in the game. */
-export function TargetPreview({ c }: { c: CustomTargets }) {
+export function TargetPreview({ c, still }: { c: CustomTargets; still?: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const settings = useRef(c);
   settings.current = c;
@@ -89,11 +101,11 @@ export function TargetPreview({ c }: { c: CustomTargets }) {
       for (const [a, b, c1, d] of [[-9, 0, -3, 0], [3, 0, 9, 0], [0, -9, 0, -3], [0, 3, 0, 9]]) {
         g.beginPath(); g.moveTo(cx + a, cy + b); g.lineTo(cx + c1, cy + d); g.stroke();
       }
-      raf = requestAnimationFrame(draw);
+      if (!still) raf = requestAnimationFrame(draw);
     };
-    raf = requestAnimationFrame(draw);
+    raf = requestAnimationFrame(still ? () => draw(start + 1700) : draw);
     return () => cancelAnimationFrame(raf);
-  }, []);
+  }, [still]);
 
-  return <canvas ref={ref} className="preview" aria-label="target preview" />;
+  return <canvas ref={ref} className={still ? "preview mini" : "preview"} aria-label="target preview" />;
 }
