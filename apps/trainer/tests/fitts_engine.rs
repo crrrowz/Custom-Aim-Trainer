@@ -134,3 +134,28 @@ fn after_a_miss_the_cycle_goes_home_then_to_the_next_target() {
         Some(FittsSpawnAction::SpawnTrial { .. })
     ));
 }
+
+#[test]
+fn a_slow_return_to_the_centre_does_not_skip_the_next_target() {
+    use trainer::layout_engine::{FittsSpawnAction, FittsTimeoutOutcome, LayoutEngineState};
+    let scenario = aim_scenarios::schema::Scenario::from_ron_str(
+        &std::fs::read_to_string("../../content/scenarios/assess.v1.flick_static.ron").unwrap(),
+    )
+    .unwrap();
+    let mut engine = LayoutEngineState::new(&scenario, 7, 0);
+    let mut id = 1;
+    engine.handle_fitts_spawn(&mut id, 0, 15.0);
+    engine.handle_fitts_hit(true, 100_000);
+    engine.handle_fitts_spawn(&mut id, 100_000, 15.0);
+    engine.handle_fitts_miss();
+    // The player takes 10 s to click the centre dot; the trial timeout is 3 s.
+    engine.handle_fitts_hit(true, 10_100_000);
+    assert_eq!(
+        engine.handle_fitts_timeout(10_101_000),
+        FittsTimeoutOutcome::NoTimeout
+    );
+    assert!(matches!(
+        engine.handle_fitts_spawn(&mut id, 10_101_000, 15.0),
+        Some(FittsSpawnAction::SpawnTrial { .. })
+    ));
+}

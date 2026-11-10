@@ -300,6 +300,10 @@ impl LayoutEngineState {
         {
             if is_home_target {
                 *phase = FittsPhase::AwaitingTrialTarget;
+                // The next trial's clock starts now. Left stale, the timeout check that runs before the
+                // trial spawns saw the whole wait on the centre dot and skipped the trial, so a slow
+                // player got the centre dot again and again.
+                *trial_start_t_us = t_us;
                 Some(FittsHitOutcome::HomeHit)
             } else {
                 let trial_elapsed_s = (t_us.saturating_sub(*trial_start_t_us) as f64) / 1_000_000.0;
@@ -432,6 +436,7 @@ impl LayoutEngineState {
         {
             if is_neutral_target {
                 *awaiting_neutral = false;
+                *trial_start_t_us = t_us;
                 Some(PeeksHitOutcome::NeutralHit)
             } else {
                 let trial_elapsed_s = (t_us.saturating_sub(*trial_start_t_us) as f64) / 1_000_000.0;
