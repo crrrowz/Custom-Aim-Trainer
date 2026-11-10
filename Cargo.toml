@@ -49,3 +49,13 @@ inherits = "release"
 lto = "off"
 codegen-units = 16
 incremental = true
+
+# Used only by CI: no optimisation and no debug info, so a cold build is much faster.
+# Local builds keep the dev profile above, and the game is built with the play profile.
+[profile.ci]
+inherits = "dev"
+opt-level = 0
+debug = false
+
+[profile.ci.package."*"]
+opt-level = 0
