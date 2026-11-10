@@ -588,6 +588,12 @@ impl BatterySequencer {
         }
     }
 
+    /// Skips the stages an interrupted run already recorded, so the battery picks up where it stopped.
+    pub fn start_at(mut self, stage: usize) -> Self {
+        self.current_idx = stage.min(self.stages.len().saturating_sub(1));
+        self
+    }
+
     pub fn total_stages(&self) -> usize {
         self.stages.len()
     }

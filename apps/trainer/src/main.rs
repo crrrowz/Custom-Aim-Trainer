@@ -66,6 +66,8 @@ pub struct TrainerConfig {
     pub max_frame_latency: u32,
     pub output_path: Option<PathBuf>,
     pub output_dir: Option<PathBuf>,
+    /// `--battery-start`: first battery stage to run, after an interrupted run.
+    pub battery_start: usize,
 }
 
 /// Seed used to generate this session's trials, derived alongside the scenario
@@ -128,6 +130,7 @@ fn parse_cli_args() -> (TrainerConfig, Option<f64>) {
     let mut max_frame_latency = 1u32;
     let mut output_path = None;
     let mut output_dir = None;
+    let mut battery_start = 0usize;
     let mut rest_s = DEFAULT_REST_S;
     let mut crosshair = CrosshairStyle::default();
 
@@ -157,6 +160,10 @@ fn parse_cli_args() -> (TrainerConfig, Option<f64>) {
             }
             "--battery" if i + 1 < args.len() => {
                 battery = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--battery-start" if i + 1 < args.len() => {
+                battery_start = args[i + 1].parse().unwrap_or(0);
                 i += 2;
             }
             "--output-dir" if i + 1 < args.len() => {
@@ -259,6 +266,7 @@ fn parse_cli_args() -> (TrainerConfig, Option<f64>) {
             max_frame_latency,
             output_path,
             output_dir,
+            battery_start,
         },
         duration_override,
     )
@@ -369,7 +377,7 @@ fn setup_trainer(
                 .output_dir
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("sessions"));
-            Some(BatterySequencer::new(bat.clone(), stages, out_dir))
+            Some(BatterySequencer::new(bat.clone(), stages, out_dir).start_at(config.battery_start))
         } else {
             None
         },
@@ -2110,12 +2118,13 @@ fn main() {
             eprintln!("ERROR: {}", e);
             std::process::exit(1);
         });
-        if let Some(first) = stages.first() {
+        let start = config.battery_start.min(stages.len().saturating_sub(1));
+        if let Some(first) = stages.get(start) {
             config.scenario = first.clone();
         }
         if let Some(ref dir) = config.output_dir {
             let _ = std::fs::create_dir_all(dir);
-            config.output_path = Some(dir.join(format!("0_{}.aft", config.scenario)));
+            config.output_path = Some(dir.join(format!("{start}_{}.aft", config.scenario)));
         }
     }
     let (scenario_def, scenario_seed) = load_scenario(&config.scenario, config.form, config.seed);

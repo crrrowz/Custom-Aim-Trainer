@@ -85,3 +85,14 @@ fn test_battery_sequencer_stop_mid_battery_keeps_saved_scenarios() {
         output_dir.join("1_assess.v1.flick_static.aft")
     );
 }
+
+#[test]
+fn an_interrupted_battery_resumes_at_the_first_unfinished_stage() {
+    let stages: Vec<String> = ["w", "a", "b"].iter().map(|s| s.to_string()).collect();
+    let dir = PathBuf::from("out");
+    let seq = BatterySequencer::new("b", stages.clone(), dir.clone()).start_at(2);
+    assert_eq!(seq.current_scenario_id(), Some("b"));
+    assert_eq!(seq.current_output_path(), dir.join("2_b.aft"));
+    let past_end = BatterySequencer::new("b", stages, dir).start_at(9);
+    assert_eq!(past_end.current_index(), 2);
+}

@@ -40,6 +40,10 @@ const ASSESSMENT_MEASURED_TESTS: usize = 7;
 const STOPPED_EARLY: &str = "stopped-early";
 const FORMS: u32 = 5;
 const BATTERY: &str = "battery.v1";
+/// Tests in the battery, warm-up included.
+const BATTERY_STAGES: usize = 8;
+/// An interrupted assessment can be resumed for this many days; after that it starts over.
+const RESUME_DAYS: u32 = 2;
 /// Provisional minimum detectable change in score points, until test-retest data exists.
 const PROVISIONAL_MDC: f64 = 8.0;
 const GOAL_SCORE: f64 = 60.0;
@@ -242,6 +246,16 @@ pub struct View {
     pub coach_config_path: String,
     /// One-off message about the last action, such as a test that was stopped.
     pub notice: Option<String>,
+    /// Tests already done in an interrupted assessment that the next start continues.
+    pub resume: Option<ResumeView>,
+    /// The latest assessment when it stopped part-way: its skills are a first estimate.
+    pub estimate: Option<AssessmentRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ResumeView {
+    pub done: usize,
+    pub total: usize,
 }
 
 /// One recording as a card on the analysis page. Built from the recording file itself.
@@ -451,6 +465,31 @@ fn recordings_in(dir: &Path) -> Res<Vec<PathBuf>> {
     Ok(files)
 }
 
+/// The stage number a battery recording was saved under: `3_name.aft` is stage 3.
+fn stage_index(path: &Path) -> Option<usize> {
+    path.file_name()?.to_str()?.split('_').next()?.parse().ok()
+}
+
+/// Stages finished in a row from the start, ignoring a stage the player left part-way.
+fn finished_stages(dir: &Path) -> usize {
+    let done: Vec<usize> = recordings_in(dir)
+        .unwrap_or_default()
+        .iter()
+        .filter(|p| {
+            read_session(p).is_ok_and(|s| s.header.quality_flags & quality_flags::ABORTED == 0)
+        })
+        .filter_map(|p| stage_index(p))
+        .collect();
+    (0..).take_while(|i| done.contains(i)).count()
+}
+
+/// Where an interrupted assessment picks up: its folder, its test form and the first stage left to do.
+struct ResumePoint {
+    dir: PathBuf,
+    form: u32,
+    stage: usize,
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -576,11 +615,35 @@ impl<R: TrainerRunner> Engine<R> {
         }
     }
 
+    /// The latest assessment, if it stopped part-way recently enough to continue instead of restarting.
+    fn resume_point(&self) -> Res<Option<ResumePoint>> {
+        let Some(last) = self.assessments()?.pop() else {
+            return Ok(None);
+        };
+        if last.complete || today().saturating_sub(last.day) > RESUME_DAYS {
+            return Ok(None);
+        }
+        let Some(dir) = last.files.first().and_then(|f| Path::new(f).parent()) else {
+            return Ok(None);
+        };
+        let stage = finished_stages(dir);
+        Ok((stage > 0 && stage < BATTERY_STAGES).then(|| ResumePoint {
+            dir: dir.to_path_buf(),
+            form: last.form,
+            stage,
+        }))
+    }
+
     fn record_assessment(&mut self) -> Res<AssessmentRecord> {
         let s = self.settings()?;
-        let done = self.assessments()?.len() as u32;
-        let form = done % FORMS;
-        let dir = self.new_run_dir("assessment")?;
+        let (dir, form, start) = match self.resume_point()? {
+            Some(r) => (r.dir, r.form, r.stage),
+            None => {
+                let done = self.assessments()?.len() as u32;
+                (self.new_run_dir("assessment")?, done % FORMS, 0)
+            }
+        };
+        let before = recordings_in(&dir)?.len();
         let mut args = self.base_args(&s);
         args.extend([
             "--battery".to_string(),
@@ -590,12 +653,18 @@ impl<R: TrainerRunner> Engine<R> {
             "--form".to_string(),
             form.to_string(),
         ]);
+        if start > 0 {
+            args.extend(["--battery-start".to_string(), start.to_string()]);
+        }
         if s.test_mode {
             args.extend(["--rest".to_string(), "3".to_string()]);
         }
         self.runner.run(&args)?;
 
         let files = recordings_in(&dir)?;
+        if start > 0 && files.len() == before && finished_stages(&dir) == start {
+            return Err(STOPPED_EARLY.to_string());
+        }
         let sessions = files
             .iter()
             .map(|p| read_session(p))
@@ -1320,11 +1389,13 @@ impl<R: TrainerRunner> Engine<R> {
     pub fn view(&self) -> Res<View> {
         let settings = self.settings()?;
         let locale = settings.lang();
-        let history: Vec<AssessmentRecord> = self
-            .assessments()?
-            .into_iter()
-            .filter(|a| a.complete)
-            .collect();
+        let all = self.assessments()?;
+        // An unfinished assessment newer than the last full one still says something: shown as an estimate.
+        let estimate = all
+            .last()
+            .filter(|a| !a.complete && !a.profile.skills.is_empty())
+            .cloned();
+        let history: Vec<AssessmentRecord> = all.into_iter().filter(|a| a.complete).collect();
         let latest = history.last().cloned();
         let describe = |f: &Finding| {
             let (headline, why) = finding_text(&f.id, locale);
@@ -1339,6 +1410,8 @@ impl<R: TrainerRunner> Engine<R> {
         };
         let findings = latest
             .iter()
+            .chain(estimate.iter())
+            .take(1)
             .flat_map(|a| a.findings.iter())
             .map(describe)
             .collect();
@@ -1378,6 +1451,11 @@ impl<R: TrainerRunner> Engine<R> {
                 .collect(),
             coach_config_path: self.coach_config_path().to_string_lossy().into_owned(),
             notice: self.notice.borrow_mut().take(),
+            estimate,
+            resume: self.resume_point()?.map(|r| ResumeView {
+                done: r.stage,
+                total: BATTERY_STAGES,
+            }),
             settings,
         })
     }
@@ -1534,12 +1612,23 @@ mod tests {
                 if !self.write_files.get() {
                     return Ok(());
                 }
-                write(
-                    &flick_session("assess.v1.flick_static", gain),
-                    &Path::new(&dir).join("1_flick.aft"),
-                )?;
+                let start: usize =
+                    value_after(args, "--battery-start").map_or(0, |v| v.parse().unwrap());
+                if start == 0 {
+                    write(
+                        &flick_session("assess.v1.warmup", gain),
+                        &Path::new(&dir).join("0_warmup.aft"),
+                    )?;
+                    write(
+                        &flick_session("assess.v1.flick_static", gain),
+                        &Path::new(&dir).join("1_flick.aft"),
+                    )?;
+                }
                 if self.full_battery.get() {
                     for (i, name) in ["a", "b", "c", "d", "e", "f"].iter().enumerate() {
+                        if i + 2 < start {
+                            continue;
+                        }
                         let mut extra = flick_session(&format!("assess.v1.other_{name}"), gain);
                         extra.streams.targets.records.truncate(1);
                         extra.streams.shots.records.truncate(1);
@@ -1733,7 +1822,7 @@ mod tests {
         let (mut e, dir) = engine("cards", 1.0);
         e.run_assessment().unwrap();
         let cards = e.view().unwrap().sessions;
-        assert_eq!(cards.len(), 7);
+        assert_eq!(cards.len(), 8);
         assert!(cards.iter().all(|c| c.assessment));
         assert!(cards.iter().any(|c| c.scenario == "assess.v1.flick_static"));
         let _ = std::fs::remove_dir_all(dir);
@@ -1899,6 +1988,51 @@ mod tests {
         let view = e.view().unwrap();
         assert_eq!(view.notice.as_deref(), Some("stopped"));
         assert!(view.plan.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_interrupted_assessment_continues_from_where_it_stopped() {
+        let (mut e, dir) = engine("resume", 1.0);
+        e.runner.full_battery.set(false);
+        e.run_assessment().unwrap();
+        let partial = e.view().unwrap();
+        let resume = partial.resume.unwrap();
+        assert_eq!((resume.done, resume.total), (2, 8));
+        assert!(partial.latest.is_none());
+        assert!(
+            partial.estimate.is_some(),
+            "the tests done so far give a first estimate"
+        );
+        assert!(!partial.findings.is_empty() || partial.estimate.unwrap().findings.is_empty());
+
+        e.runner.full_battery.set(true);
+        e.run_assessment().unwrap();
+        let last = e.runner.calls.borrow().last().unwrap().clone();
+        assert_eq!(value_after(&last, "--battery-start").as_deref(), Some("2"));
+        let view = e.view().unwrap();
+        assert!(
+            view.plan.is_some(),
+            "the finished stages and the rest make a full assessment"
+        );
+        assert!(view.resume.is_none());
+        assert!(
+            view.estimate.is_none(),
+            "a full assessment replaces the estimate"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn leaving_a_resumed_assessment_at_once_is_not_counted() {
+        let (mut e, dir) = engine("resume-stop", 1.0);
+        e.runner.full_battery.set(false);
+        e.run_assessment().unwrap();
+        e.runner.write_files.set(false);
+        e.run_assessment().unwrap();
+        let view = e.view().unwrap();
+        assert_eq!(view.notice.as_deref(), Some("stopped"));
+        assert_eq!(view.resume.map(|r| r.done), Some(2));
         let _ = std::fs::remove_dir_all(dir);
     }
 
