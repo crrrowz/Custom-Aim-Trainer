@@ -1002,6 +1002,7 @@ function PlanPage({ ctx }: { ctx: Ctx }) {
       <PageHead title={T("خطة التدريب", "Training plan")} />
       {!plan && <Empty text={T("الخطة تتبنى من نتائج تقييمك.", "Your plan is built from your assessment.")} action={<button className="btn" onClick={() => go("home")}>{T("ابدأ التقييم", "Start assessment")}</button>} />}
       {plan && <PlanBody ctx={ctx} plan={plan} />}
+      {plan && plan.state !== "Completed" && <HowToImprove ctx={ctx} plan={plan} />}
       {plan && plan.focus.length > 0 && (
         <section className="card">
           <h2>{T("ليش هذي الخطة", "Why this plan")}</h2>
@@ -1049,6 +1050,46 @@ function PlanPage({ ctx }: { ctx: Ctx }) {
   );
 }
 
+/** What the player does to improve: the rhythm of the plan and what to practise for each problem. */
+function HowToImprove({ ctx, plan }: { ctx: Ctx; plan: Plan }) {
+  const { T, lang, go } = ctx;
+  const steps: [string, string][] = [
+    [T("جلسة وحدة باليوم", "One session a day"), T("حوالي 16 دقيقة، ويفضل بنفس الوقت. ابدأ بالإحماء وبعدين التمارين بالترتيب.", "About 16 minutes, ideally at the same time. Warm up first, then the drills in order.")],
+    [T("الجودة قبل السرعة", "Quality before speed"), T("كل تمرين بيه قاعدة (مثلاً لا تتجاوز الهدف). الإصابة اللي تكسر القاعدة ما تنحسب، فركز على الحركة الصحيحة.", "Each drill has a rule (for example, do not pass the target). Hits that break it do not count, so focus on the right movement.")],
+    [T("الراحة جزء من التدريب", "Rest is part of training"), T("المخ يثبت الحركة وانت نايم. جلستين بنفس اليوم ما تسرّع التحسن.", "Your brain locks in movement while you sleep. Two plan sessions in one day do not speed it up.")],
+    [T("إعادة الاختبار تقيس الحقيقة", "The retest tells the truth"), T(`بعد ${plan.block_days} أيام تسوي نفس الاختبارات بنموذج جديد، ونقارن بالتقييم الأول حتى نشوف هل تحسنت فعلاً.`, `After ${plan.block_days} days you take the same tests in a new form, compared with your first assessment to see real improvement.`)],
+  ];
+  return (
+    <section className="card">
+      <h2>{T("شلون تتحسن", "How to improve")}</h2>
+      <ol className="how">
+        {steps.map(([title, body], i) => <li key={i}><b>{title}</b><span className="muted">{body}</span></li>)}
+      </ol>
+      {plan.focus.length > 0 && (
+        <>
+          <h3 className="sub">{T("شنو تركز عليه", "What to focus on")}</h3>
+          <div className="focus-list">
+            {plan.focus.map((f) => {
+              const d = f.drills[0];
+              return (
+                <div className="focus-item" key={f.id}>
+                  <div className="grow">
+                    <b>{f.headline}</b>
+                    <small className="muted">{f.why}</small>
+                    {d && <small>{T("التمرين: ", "Drill: ")}<b>{pick(drillNames[d], lang, d)}</b> · {pick(drillInfo[d]?.purpose, lang, "")}</small>}
+                  </div>
+                  {d && <button className="btn ghost small" onClick={() => go("practice", `drill:${d}`)}>{T("تدرب عليه حر", "Practise freely")}</button>}
+                </div>
+              );
+            })}
+          </div>
+          <p className="muted small">{T("التدريب الحر ما يأثر على الخطة، بس يزيد التكرار. لا تبالغ بيه بأيام الراحة.", "Free practice does not change the plan; it only adds repetitions. Do not overdo it on rest days.")}</p>
+        </>
+      )}
+    </section>
+  );
+}
+
 function PlanBody({ ctx, plan }: { ctx: Ctx; plan: Plan }) {
   const { T, act, lang, view } = ctx;
   const state = plan.state;
@@ -1072,6 +1113,8 @@ function PlanBody({ ctx, plan }: { ctx: Ctx; plan: Plan }) {
     return (
       <section className="card hero">
         <h2>{T("وقت إعادة الاختبار", "Time to retest")}</h2>
+        <div className="days">{Array.from({ length: plan.block_days }, (_, i) => <i key={i} className="on" />)}</div>
+        <p>{T(`خلصت ${plan.block_days} أيام تدريب. هسه نقيس هل تحسنت المهارات اللي ركزنا عليها، ونقارنها بالمهارات الثانية حتى نعرف إن التحسن من التدريب مو صدفة.`, `You finished ${plan.block_days} training days. Now we measure whether the skills we focused on improved, against the others, so we know the change came from training and not chance.`)}</p>
         <p className="muted">{plan.retest_ready ? T("نفس الاختبارات بنموذج جديد، حتى نقيس التحسن الحقيقي.", "The same tests in a new form, to measure real improvement.") : T("يفتح بعد يوم راحة. الراحة جزء من التعلم.", "Opens after a rest day. Rest is part of learning.")}</p>
         <button className="btn" disabled={!plan.retest_ready || !view.trainer_found} onClick={() => act("run_retest")}>{view.resume ? T(`كمل (${view.resume.done} من ${view.resume.total})`, `Continue (${view.resume.done} of ${view.resume.total})`) : T("ابدأ", "Start")}</button>
       </section>

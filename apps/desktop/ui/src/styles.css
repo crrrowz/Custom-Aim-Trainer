@@ -375,3 +375,12 @@ table.compare th, table.compare td { padding: 9px 10px; text-align: start; borde
 table.compare th { color: var(--muted); font-weight: 500; font-size: 12.5px; }
 table.compare td.best { color: var(--good); font-weight: 600; }
 .btn.small { padding: 5px 10px; font-size: 12.5px; }
+
+/* Plan guidance */
+ol.how { margin: 8px 0 0; padding-inline-start: 20px; display: grid; gap: 10px; }
+ol.how li b { display: block; }
+ol.how li span { font-size: 13.5px; line-height: 1.6; }
+h3.sub { font-size: 14.5px; margin: 18px 0 8px; }
+.focus-list { display: grid; gap: 8px; }
+.focus-item { display: flex; gap: 12px; align-items: center; background: var(--raised); border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; }
+.focus-item .grow { display: grid; gap: 3px; flex: 1; }
