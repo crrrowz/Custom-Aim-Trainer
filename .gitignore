@@ -48,3 +48,6 @@ Thumbs.db
 
 # Tauri generated schemas
 apps/desktop/src-tauri/gen/
+
+# Release packaging (scripts/package-release.ps1)
+apps/desktop/src-tauri/stage/
