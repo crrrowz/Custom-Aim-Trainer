@@ -1,0 +1,638 @@
+use crate::fonts::UiFonts;
+use crate::ui_tokens::*;
+use bevy::prelude::*;
+use bevy::text::FontSource;
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseCause {
+    Manual,
+    FocusLost,
+}
+
+#[derive(Resource, Debug, Clone, Default)]
+pub struct PauseManager {
+    pub is_paused: bool,
+    pub pause_start_us: Option<u64>,
+    pub total_paused_us: u64,
+    pub was_paused: bool,
+    pub resume_qpc_us: u64,
+    pub pause_cause: Option<PauseCause>,
+}
+
+impl PauseManager {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the effective unpaused session time in microseconds.
+    #[inline]
+    pub fn active_time_us(&self, clock_now_us: u64) -> u64 {
+        if let Some(start) = self.pause_start_us {
+            start.saturating_sub(self.total_paused_us)
+        } else {
+            clock_now_us.saturating_sub(self.total_paused_us)
+        }
+    }
+
+    pub fn toggle_pause(&mut self, now_us: u64) {
+        if self.is_paused {
+            self.resume(now_us);
+        } else {
+            self.pause_with_cause(now_us, PauseCause::Manual);
+        }
+    }
+
+    pub fn pause(&mut self, now_us: u64) {
+        self.pause_with_cause(now_us, PauseCause::Manual);
+    }
+
+    pub fn pause_with_cause(&mut self, now_us: u64, cause: PauseCause) {
+        if !self.is_paused {
+            self.is_paused = true;
+            self.pause_start_us = Some(now_us);
+            self.was_paused = true;
+            self.pause_cause = Some(cause);
+        }
+    }
+
+    pub fn resume(&mut self, now_us: u64) {
+        if self.is_paused {
+            if let Some(start) = self.pause_start_us.take() {
+                self.total_paused_us += now_us.saturating_sub(start);
+            }
+            self.is_paused = false;
+            self.resume_qpc_us = now_us;
+            self.pause_cause = None;
+        }
+    }
+}
+
+/// Pure rule governing auto-pause on focus loss:
+/// Auto-pause only when startup is done, session is not completed, and not already paused.
+#[inline]
+pub fn should_auto_pause_on_focus_loss(
+    initial_startup_done: bool,
+    is_completed: bool,
+    is_paused: bool,
+) -> bool {
+    initial_startup_done && !is_completed && !is_paused
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusOutcome {
+    Paused,
+    NoChange,
+}
+
+/// Pure helper for pause transition (recording key + setting flags + setting cause).
+pub fn apply_pause(
+    pm: &mut PauseManager,
+    recorder: &mut crate::recorder::SessionRecorder,
+    now_us: u64,
+    cause: PauseCause,
+) -> bool {
+    if pm.is_paused {
+        return false;
+    }
+    pm.pause_with_cause(now_us, cause);
+    recorder.flag_paused();
+    recorder.record_key(now_us, aim_telemetry::format::KeyCode::Unknown(0x1B), true);
+    true
+}
+
+/// Pure per-event decision for window focus changes.
+/// Manages pause transitions and recorder quality flags without depending on Bevy UI/world entities.
+pub fn apply_focus_change(
+    pm: &mut PauseManager,
+    recorder: &mut crate::recorder::SessionRecorder,
+    focused: bool,
+    startup_done: bool,
+    completed: bool,
+    now_us: u64,
+) -> FocusOutcome {
+    if focused {
+        FocusOutcome::NoChange
+    } else {
+        if startup_done {
+            recorder.flag_focus_lost();
+        }
+        if should_auto_pause_on_focus_loss(startup_done, completed, pm.is_paused) {
+            apply_pause(pm, recorder, now_us, PauseCause::FocusLost);
+            FocusOutcome::Paused
+        } else {
+            FocusOutcome::NoChange
+        }
+    }
+}
+
+#[derive(Component)]
+pub struct PauseOverlayRoot;
+
+#[derive(Component)]
+pub struct PauseCardRoot;
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseButtonAction {
+    Resume,
+    QuitAndSave,
+    QuitWithoutSaving,
+    ConfirmCancel,
+    ConfirmDiscard,
+}
+
+#[derive(Resource, Debug, Clone)]
+pub struct PauseMenuNavigation {
+    /// Latest session numbers, shown on the card.
+    pub live: LiveStats,
+    pub focused_index: usize,
+    /// Seconds during which clicks on the menu are ignored after the window regains focus.
+    pub click_guard_s: f32,
+    pub is_confirming_discard: bool,
+    pub saving_timer: Option<f32>,
+    pub session_duration_s: f64,
+    pub scenario_name: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct LiveStats {
+    pub hits: u32,
+    pub misses: u32,
+    pub total: u32,
+    pub on_target_pct: Option<u32>,
+}
+
+/// The click that brings the game back to the front must not also press a menu button.
+pub const CLICK_GUARD_S: f32 = 0.35;
+
+impl PauseMenuNavigation {
+    pub fn on_focus_regained(&mut self) {
+        self.click_guard_s = CLICK_GUARD_S;
+    }
+
+    /// Advances the guard; returns whether clicks count this frame.
+    pub fn tick_click_guard(&mut self, dt_s: f32) -> bool {
+        self.click_guard_s = (self.click_guard_s - dt_s).max(0.0);
+        self.click_guard_s <= 0.0
+    }
+}
+
+impl Default for PauseMenuNavigation {
+    fn default() -> Self {
+        Self {
+            live: LiveStats::default(),
+            focused_index: 0,
+            click_guard_s: 0.0,
+            is_confirming_discard: false,
+            saving_timer: None,
+            session_duration_s: 288.0,
+            scenario_name: "Scenario".to_string(),
+        }
+    }
+}
+
+#[derive(Component)]
+pub struct FocusableButton {
+    pub index: usize,
+}
+
+/// Helper to reset pause navigation state and spawn the pause menu UI overlay.
+pub fn show_pause_menu(
+    commands: &mut Commands,
+    ui_fonts: &UiFonts,
+    scenario_name: &str,
+    elapsed_s: f64,
+    duration_s: f64,
+    nav: &mut PauseMenuNavigation,
+    cause: Option<PauseCause>,
+) {
+    nav.focused_index = 0;
+    nav.is_confirming_discard = false;
+    nav.saving_timer = None;
+    spawn_pause_menu(
+        commands,
+        ui_fonts,
+        scenario_name,
+        elapsed_s,
+        duration_s,
+        nav,
+        cause,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_pause(
+    commands: &mut Commands,
+    pause_manager: &mut PauseManager,
+    nav: &mut PauseMenuNavigation,
+    recorder: &mut crate::recorder::SessionRecorder,
+    q_cursor: &mut Query<&mut CursorOptions, With<PrimaryWindow>>,
+    ui_fonts: &UiFonts,
+    scenario_name: &str,
+    duration_s: f64,
+    now_us: u64,
+    cause: PauseCause,
+) {
+    if !apply_pause(pause_manager, recorder, now_us, cause) {
+        return;
+    }
+    set_cursor_lock(q_cursor, false);
+    let elapsed_s = crate::clock::SessionClock::us_to_s(pause_manager.active_time_us(now_us));
+    show_pause_menu(
+        commands,
+        ui_fonts,
+        scenario_name,
+        elapsed_s,
+        duration_s,
+        nav,
+        Some(cause),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_resume(
+    commands: &mut Commands,
+    pause_manager: &mut PauseManager,
+    recorder: &mut crate::recorder::SessionRecorder,
+    layout_engine: &mut crate::layout_engine::LayoutEngineState,
+    q_cursor: &mut Query<&mut CursorOptions, With<PrimaryWindow>>,
+    q_overlay: &Query<Entity, With<PauseOverlayRoot>>,
+    now_us: u64,
+) {
+    if !pause_manager.is_paused {
+        return;
+    }
+    pause_manager.resume(now_us);
+    recorder.record_key(now_us, aim_telemetry::format::KeyCode::Unknown(0x1B), false);
+    let resume_active_us = pause_manager.active_time_us(now_us);
+    layout_engine.void_in_flight_trial_on_resume(resume_active_us);
+    set_cursor_lock(q_cursor, true);
+    despawn_pause_menu(commands, q_overlay);
+}
+
+pub fn spawn_pause_menu(
+    commands: &mut Commands,
+    ui_fonts: &UiFonts,
+    scenario_name: &str,
+    elapsed_s: f64,
+    total_duration_s: f64,
+    nav: &PauseMenuNavigation,
+    cause: Option<PauseCause>,
+) {
+    let clock = |t: f64| format!("{:02}:{:02}", (t as u32) / 60, (t as u32) % 60);
+    let subtitle = crate::session_flow::scenario_title(scenario_name);
+    let left = clock((total_duration_s - elapsed_s).max(0.0));
+    let done_share = if total_duration_s > 0.0 {
+        (elapsed_s / total_duration_s).clamp(0.0, 1.0) as f32
+    } else {
+        0.0
+    };
+    let live = nav.live;
+
+    commands
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                position_type: PositionType::Absolute,
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(COLOR_DIM_BACKGROUND),
+            PauseOverlayRoot,
+        ))
+        .with_children(|backdrop| {
+            backdrop
+                .spawn((
+                    Node {
+                        width: CARD_WIDTH,
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        padding: UiRect::all(Val::Px(32.0)),
+                        row_gap: SPACE_LG,
+                        border: UiRect::all(Val::Px(1.0)),
+                        border_radius: BorderRadius::all(RADIUS_CARD),
+                        ..default()
+                    },
+                    BackgroundColor(COLOR_CARD_BACKGROUND),
+                    BorderColor::all(COLOR_CARD_BORDER),
+                    PauseCardRoot,
+                ))
+                .with_children(|card| {
+                    if let Some(saving_t) = nav.saving_timer {
+                        let msg = if saving_t > 0.3 {
+                            strings::saved()
+                        } else {
+                            strings::saving()
+                        };
+                        card.spawn((
+                            Text::new(msg),
+                            TextFont {
+                                font: FontSource::Handle(ui_fonts.semibold.clone()),
+                                font_size: FontSize::Px(FONT_SIZE_TITLE),
+                                ..default()
+                            },
+                            TextColor(COLOR_ACCENT),
+                        ));
+                        return;
+                    }
+
+                    if nav.is_confirming_discard {
+                        card.spawn((
+                            Text::new(strings::confirm_discard_prompt()),
+                            TextFont {
+                                font: FontSource::Handle(ui_fonts.semibold.clone()),
+                                font_size: FontSize::Px(FONT_SIZE_BUTTON),
+                                ..default()
+                            },
+                            TextColor(COLOR_TEXT_PRIMARY),
+                        ));
+
+                        spawn_card_button(
+                            card,
+                            strings::btn_cancel(),
+                            PauseButtonAction::ConfirmCancel,
+                            0,
+                            nav.focused_index == 0,
+                            false,
+                            ui_fonts,
+                        );
+
+                        spawn_card_button(
+                            card,
+                            strings::btn_discard(),
+                            PauseButtonAction::ConfirmDiscard,
+                            1,
+                            nav.focused_index == 1,
+                            true,
+                            ui_fonts,
+                        );
+                    } else {
+                        // Notice on focus loss
+                        if cause == Some(PauseCause::FocusLost) {
+                            card.spawn((
+                                Text::new(strings::notice_focus_lost()),
+                                TextFont {
+                                    font: FontSource::Handle(ui_fonts.regular.clone()),
+                                    font_size: FontSize::Px(FONT_SIZE_SUBTITLE),
+                                    ..default()
+                                },
+                                TextColor(COLOR_ACCENT),
+                            ));
+                        }
+
+                        // Title
+                        card.spawn((
+                            Text::new(strings::title_paused()),
+                            TextFont {
+                                font: FontSource::Handle(ui_fonts.semibold.clone()),
+                                font_size: FontSize::Px(FONT_SIZE_TITLE),
+                                ..default()
+                            },
+                            TextColor(COLOR_TEXT_PRIMARY),
+                        ));
+
+                        // Subtitle
+                        card.spawn((
+                            Text::new(subtitle),
+                            TextFont {
+                                font: FontSource::Handle(ui_fonts.regular.clone()),
+                                font_size: FontSize::Px(FONT_SIZE_SUBTITLE),
+                                ..default()
+                            },
+                            TextColor(COLOR_TEXT_MUTED),
+                        ));
+
+                        // Session progress
+                        card.spawn((
+                            Node {
+                                width: Val::Percent(100.0),
+                                height: Val::Px(6.0),
+                                border_radius: BorderRadius::all(Val::Px(3.0)),
+                                ..default()
+                            },
+                            BackgroundColor(COLOR_BTN_IDLE),
+                        ))
+                        .with_child((
+                            Node {
+                                width: Val::Percent(done_share * 100.0),
+                                height: Val::Percent(100.0),
+                                border_radius: BorderRadius::all(Val::Px(3.0)),
+                                ..default()
+                            },
+                            BackgroundColor(COLOR_ACCENT),
+                        ));
+
+                        card.spawn(Node {
+                            width: Val::Percent(100.0),
+                            column_gap: SPACE_SM,
+                            ..default()
+                        })
+                        .with_children(|row| {
+                            crate::session_flow::spawn_stat(
+                                row,
+                                ui_fonts,
+                                &left,
+                                strings::stat_time_left(),
+                            );
+                            if let Some(on_target) = live.on_target_pct {
+                                crate::session_flow::spawn_stat(
+                                    row,
+                                    ui_fonts,
+                                    &format!("{on_target}%"),
+                                    strings::stat_on_target(),
+                                );
+                            } else {
+                                let shots = live.hits + live.misses;
+                                crate::session_flow::spawn_stat(
+                                    row,
+                                    ui_fonts,
+                                    &format!("{shots} / {}", live.total),
+                                    strings::stat_targets(),
+                                );
+                                let accuracy = (live.hits * 100)
+                                    .checked_div(shots)
+                                    .map_or("—".to_string(), |a| format!("{a}%"));
+                                crate::session_flow::spawn_stat(
+                                    row,
+                                    ui_fonts,
+                                    &accuracy,
+                                    strings::stat_accuracy(),
+                                );
+                            }
+                        });
+
+                        // Buttons
+                        card.spawn((Node {
+                            width: Val::Percent(100.0),
+                            flex_direction: FlexDirection::Column,
+                            row_gap: SPACE_SM,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },))
+                            .with_children(|button_col| {
+                                spawn_card_button(
+                                    button_col,
+                                    strings::btn_resume(),
+                                    PauseButtonAction::Resume,
+                                    0,
+                                    nav.focused_index == 0,
+                                    false,
+                                    ui_fonts,
+                                );
+
+                                spawn_card_button(
+                                    button_col,
+                                    strings::btn_quit_and_save(),
+                                    PauseButtonAction::QuitAndSave,
+                                    1,
+                                    nav.focused_index == 1,
+                                    false,
+                                    ui_fonts,
+                                );
+
+                                spawn_card_button(
+                                    button_col,
+                                    strings::btn_quit_without_saving(),
+                                    PauseButtonAction::QuitWithoutSaving,
+                                    2,
+                                    nav.focused_index == 2,
+                                    true,
+                                    ui_fonts,
+                                );
+                            });
+
+                        // Footer hint
+                        card.spawn((
+                            Text::new(strings::footer_hint()),
+                            TextFont {
+                                font: FontSource::Handle(ui_fonts.regular.clone()),
+                                font_size: FontSize::Px(FONT_SIZE_FOOTER),
+                                ..default()
+                            },
+                            TextColor(COLOR_TEXT_MUTED),
+                        ));
+                    }
+                });
+        });
+}
+
+/// A button's fill. Resume stays the filled primary action, whatever the pointer does.
+pub fn button_background(action: PauseButtonAction, hovered: bool) -> Color {
+    match (action, hovered) {
+        (PauseButtonAction::Resume, false) => COLOR_ACCENT,
+        (PauseButtonAction::Resume, true) => COLOR_ACCENT_HOVER,
+        (PauseButtonAction::QuitWithoutSaving | PauseButtonAction::ConfirmDiscard, false) => {
+            Color::NONE
+        }
+        (_, false) => COLOR_BTN_IDLE,
+        (_, true) => COLOR_BTN_HOVER,
+    }
+}
+
+#[allow(deprecated)]
+fn spawn_card_button(
+    parent: &mut ChildSpawnerCommands,
+    label: &str,
+    action: PauseButtonAction,
+    index: usize,
+    is_focused: bool,
+    is_danger: bool,
+    ui_fonts: &UiFonts,
+) {
+    let (bg_color, border_color, text_color) = if action == PauseButtonAction::Resume {
+        (
+            COLOR_ACCENT,
+            if is_focused {
+                COLOR_TEXT_PRIMARY
+            } else {
+                COLOR_ACCENT
+            },
+            COLOR_ON_ACCENT,
+        )
+    } else if is_focused {
+        (
+            COLOR_BTN_HOVER,
+            if is_danger {
+                COLOR_DANGER
+            } else {
+                COLOR_TEXT_PRIMARY
+            },
+            if is_danger {
+                COLOR_DANGER
+            } else {
+                COLOR_TEXT_PRIMARY
+            },
+        )
+    } else if is_danger {
+        (Color::NONE, COLOR_CARD_BORDER, COLOR_DANGER)
+    } else {
+        (
+            COLOR_BTN_IDLE,
+            Color::srgba(1.0, 1.0, 1.0, 0.05),
+            COLOR_TEXT_PRIMARY,
+        )
+    };
+
+    parent
+        .spawn((
+            Node {
+                width: BUTTON_WIDTH,
+                height: BUTTON_HEIGHT,
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                border: UiRect::all(Val::Px(
+                    if is_focused || is_danger || action == PauseButtonAction::Resume {
+                        1.5
+                    } else {
+                        1.0
+                    },
+                )),
+                border_radius: BorderRadius::all(RADIUS_BUTTON),
+                ..default()
+            },
+            BackgroundColor(bg_color),
+            BorderColor::all(border_color),
+            Interaction::default(),
+            FocusableButton { index },
+            action,
+        ))
+        .with_child((
+            Text::new(label),
+            TextFont {
+                font: FontSource::Handle(if is_focused {
+                    ui_fonts.semibold.clone()
+                } else {
+                    ui_fonts.regular.clone()
+                }),
+                font_size: FontSize::Px(FONT_SIZE_BUTTON),
+                ..default()
+            },
+            TextColor(text_color),
+        ));
+}
+
+pub fn despawn_pause_menu(
+    commands: &mut Commands,
+    q_overlay: &Query<Entity, With<PauseOverlayRoot>>,
+) {
+    for entity in q_overlay {
+        commands.entity(entity).despawn();
+    }
+}
+
+pub fn set_cursor_lock(
+    q_cursor: &mut Query<&mut CursorOptions, With<PrimaryWindow>>,
+    locked: bool,
+) {
+    if let Some(mut cursor) = q_cursor.iter_mut().next() {
+        if locked {
+            cursor.grab_mode = CursorGrabMode::Confined;
+            cursor.visible = false;
+        } else {
+            cursor.grab_mode = CursorGrabMode::None;
+            cursor.visible = true;
+        }
+    }
+}

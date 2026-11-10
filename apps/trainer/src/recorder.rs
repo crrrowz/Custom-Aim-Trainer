@@ -2,8 +2,8 @@
 
 use aim_core::sensitivity::VALORANT_YAW_DEG_PER_COUNT;
 use aim_telemetry::format::{
-    quality_flags, AftHeader, AftSession, AftStreams, DisplayConfig, HitZone, InputConfig,
-    MouseConfig, ShotRecord, TargetKind, TargetParams, TargetRecord,
+    quality_flags, AftHeader, AftSession, AftStreams, DisplayConfig, HitZone, InputConfig, KeyCode,
+    KeyRecord, MouseConfig, ShotRecord, TargetKind, TargetParams, TargetRecord,
 };
 use aim_telemetry::write_aft;
 use std::path::PathBuf;
@@ -49,6 +49,23 @@ impl SessionRecorder {
 
     pub fn flag_focus_lost(&mut self) {
         self.quality_flags |= quality_flags::FOCUS_LOST;
+    }
+
+    pub fn flag_paused(&mut self) {
+        self.quality_flags |= quality_flags::PAUSED;
+    }
+
+    pub fn record_key(&mut self, t_us: u64, key: KeyCode, down: bool) {
+        self.streams
+            .keys
+            .records
+            .push(KeyRecord { t_us, key, down });
+    }
+
+    pub fn record_player(&mut self, t_us: u64, velocity: f64) {
+        self.streams.player.t_us.push(t_us);
+        self.streams.player.vel_x.push(velocity);
+        self.streams.player.vel_z.push(0.0);
     }
 
     pub fn record_input(&mut self, t_us: u64, dx: i32, dy: i32) {
@@ -97,6 +114,52 @@ impl SessionRecorder {
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_peek_target_spawn(
+        &mut self,
+        id: u32,
+        spawn_t_us: u64,
+        despawn_t_us: u64,
+        radius_deg: f64,
+        yaw_deg: f64,
+        noisy_pitch_deg: f64,
+        nominal_head_pitch: f64,
+    ) {
+        self.record_target_spawn_full(TargetSpawn {
+            id,
+            spawn_t_us,
+            despawn_t_us,
+            kind: TargetKind::WallPeek,
+            radius_deg,
+            yaw_deg,
+            pitch_deg: noisy_pitch_deg,
+            path_spline: Some(format!("nominal_head_pitch:{}", nominal_head_pitch)),
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_tracking_target_spawn(
+        &mut self,
+        id: u32,
+        spawn_t_us: u64,
+        despawn_t_us: u64,
+        radius_deg: f64,
+        initial_yaw_deg: f64,
+        initial_pitch_deg: f64,
+        path_spline: String,
+    ) {
+        self.record_target_spawn_full(TargetSpawn {
+            id,
+            spawn_t_us,
+            despawn_t_us,
+            kind: TargetKind::Sphere,
+            radius_deg,
+            yaw_deg: initial_yaw_deg,
+            pitch_deg: initial_pitch_deg,
+            path_spline: Some(path_spline),
+        });
+    }
+
     pub fn record_target_spawn_full(&mut self, spawn: TargetSpawn) {
         self.streams.targets.records.push(TargetRecord {
             id: spawn.id,
@@ -140,7 +203,7 @@ impl SessionRecorder {
                     vfov,
                 },
                 input: InputConfig {
-                    est_polling_hz: 1000,
+                    est_polling_hz: estimate_polling_hz(&self.streams.input.t_us),
                 },
                 thresholds_version: "thresholds.v1".to_string(),
                 quality_flags: self.quality_flags,
@@ -158,4 +221,69 @@ impl SessionRecorder {
         std::fs::write(path, &bytes).map_err(aim_telemetry::WriteError::Io)?;
         Ok(bytes.len())
     }
+}
+
+/// Minimum number of valid inter-event intervals required to estimate polling rate.
+/// If fewer intervals are present, fallback to 1000 Hz.
+pub const MIN_POLLING_SAMPLES: usize = 10;
+
+/// Fallback polling rate in Hz when too few events are recorded.
+pub const DEFAULT_POLLING_HZ: u32 = 1000;
+
+/// Known standard mouse polling rates in Hz.
+pub const STANDARD_POLLING_RATES: [u32; 7] = [125, 250, 500, 1000, 2000, 4000, 8000];
+
+/// Estimates the mouse polling rate in Hz from a sequence of motion event timestamps (in microseconds).
+///
+/// Algorithm:
+/// 1. Computes consecutive inter-event intervals (dt = t[i] - t[i-1]).
+/// 2. Ignores non-positive intervals and idle gaps where dt > 50,000 us (50 ms).
+/// 3. If valid intervals < MIN_POLLING_SAMPLES (10), returns DEFAULT_POLLING_HZ (1000 Hz).
+/// 4. Computes the median interval.
+/// 5. Derives raw Hz = 1_000_000.0 / median_interval_us.
+/// 6. If raw Hz is within 10% of a standard rate (125, 250, 500, 1000, 2000, 4000, 8000),
+///    snaps to that standard rate.
+/// 7. Otherwise, returns raw Hz rounded to the nearest integer.
+pub fn estimate_polling_hz(timestamps: &[u64]) -> u32 {
+    if timestamps.len() < 2 {
+        return DEFAULT_POLLING_HZ;
+    }
+
+    let mut intervals = Vec::with_capacity(timestamps.len() - 1);
+    for window in timestamps.windows(2) {
+        if window[1] > window[0] {
+            let dt = window[1] - window[0];
+            // Ignore idle gaps > 50 ms (50,000 us)
+            if dt <= 50_000 {
+                intervals.push(dt);
+            }
+        }
+    }
+
+    if intervals.len() < MIN_POLLING_SAMPLES {
+        return DEFAULT_POLLING_HZ;
+    }
+
+    intervals.sort_unstable();
+    let n = intervals.len();
+    let median_us = if n % 2 == 1 {
+        intervals[n / 2] as f64
+    } else {
+        (intervals[n / 2 - 1] as f64 + intervals[n / 2] as f64) / 2.0
+    };
+
+    if median_us <= 0.0 {
+        return DEFAULT_POLLING_HZ;
+    }
+
+    let raw_hz = 1_000_000.0 / median_us;
+
+    for &std_hz in &STANDARD_POLLING_RATES {
+        let diff = (raw_hz - std_hz as f64).abs();
+        if diff <= std_hz as f64 * 0.10 {
+            return std_hz;
+        }
+    }
+
+    raw_hz.round().max(1.0) as u32
 }

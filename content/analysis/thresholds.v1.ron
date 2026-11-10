@@ -1,0 +1,9 @@
+AnalysisThresholds(
+    onset_speed_threshold_deg_s: 30.0,
+    onset_min_duration_ms: 20.0,
+    anticipation_threshold_ms: 100.0,
+    primary_end_ratio_to_peak: 0.2,
+    submovement_min_peak_deg_s: 15.0,
+    stable_max_speed_deg_s: 10.0,
+    stable_min_duration_ms: 30.0,
+)

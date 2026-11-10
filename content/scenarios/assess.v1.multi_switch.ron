@@ -1,6 +1,6 @@
 Scenario(
     id: "assess.v1.multi_switch",
-    version: 1,
+    version: 2,
     kind: Assessment,
     timeout_s: 45.0,
     spawn_distance_m: 15.0,
@@ -9,11 +9,11 @@ Scenario(
         concurrent_count: 3,
         total_targets: 48, // Balanced multiple of 24 (3 distances x 8 octants x 2 reps)
         target_radius_deg: 0.55,
-        distance_bins_deg: [10.0, 20.0, 35.0],
+        distance_bins_deg: [10.0, 20.0, 30.0], // v2: 35 left targets past the screen edge
         octants: 8,
         min_separation_deg: 8.0,
         max_yaw_deg: 45.0,
-        max_pitch_deg: 12.0,
+        max_pitch_deg: 32.0, // Inside the screen (about 35 degrees up and down) with room for the target
         duration_s: 45.0,
     ),
     hit_rule: SingleShotKill,

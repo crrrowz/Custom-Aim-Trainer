@@ -8,7 +8,9 @@ rust-version.workspace = true
 [dependencies]
 aim-core = { path = "../aim-core" }
 aim-analysis = { path = "../aim-analysis" }
+aim-scenarios = { path = "../aim-scenarios" }
 serde = { workspace = true }
 
 [dev-dependencies]
+ron = "0.8"
 proptest = { workspace = true }

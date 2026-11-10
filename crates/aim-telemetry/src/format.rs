@@ -70,6 +70,8 @@ pub mod quality_flags {
     pub const SECONDARY_DEVICE_MOTION: u32 = 1 << 4;
     /// Bit 5 (32): Primary device rate exceeded 1.1x configured polling rate during active motion.
     pub const POLLING_RATE_ANOMALY: u32 = 1 << 5;
+    /// Bit 6 (64): Session was paused at least once during execution.
+    pub const PAUSED: u32 = 1 << 6;
 }
 
 /// Header containing session metadata and environment setup.

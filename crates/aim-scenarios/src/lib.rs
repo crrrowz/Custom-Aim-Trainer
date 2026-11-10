@@ -13,7 +13,7 @@ pub use generator::{
 };
 pub use rng::{create_seeded_rng, sample_range_f64, sample_range_u32, sample_unit_f64};
 pub use schema::{
-    DistanceAnchor, FittsGrid, HitRule, Scenario, ScenarioKind, TargetLayout, TargetShape,
-    TrackingTrajectory,
+    load_scenario, DistanceAnchor, FittsGrid, HitRule, Scenario, ScenarioKind, TargetLayout,
+    TargetShape, TrackingTrajectory,
 };
-pub use trajectory::{generate_strafe_reversals, target_angles_at};
+pub use trajectory::{generate_strafe_reversals, target_angles_at, TrajectoryIntegrator};

@@ -27,6 +27,13 @@ pub enum HitRule {
     ContinuousTracking,
 }
 
+impl HitRule {
+    /// Tracking is scored on staying on the target, so clicking does nothing there.
+    pub fn accepts_shots(self) -> bool {
+        self == Self::SingleShotKill
+    }
+}
+
 /// Starting point for angular distance measurement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DistanceAnchor {
@@ -120,6 +127,38 @@ pub enum TargetLayout {
     },
 }
 
+/// Speed at or below which a shot is accurate (m/s). Provisional, calibrated against VALORANT later.
+pub const ACCURATE_SPEED_MPS: f64 = 0.7;
+
+/// Half the visible screen in degrees from the centre, with a small margin. The game uses a 103 degree
+/// horizontal field of view on a 16:9 screen, which shows about 51 degrees left and right and 35 up and
+/// down. A target farther out than this cannot be seen without turning.
+pub const ON_SCREEN_H_DEG: f64 = 48.0;
+pub const ON_SCREEN_V_DEG: f64 = 33.0;
+
+/// Extra rules that make a drill train one specific habit. All off by default.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct DrillRules {
+    /// A hit does not count if the flick went past this share of the distance.
+    #[serde(default)]
+    pub overshoot_fail_ratio: Option<f64>,
+    /// A hit counts only if the crosshair was at rest for this long before the click.
+    #[serde(default)]
+    pub settle_ms: Option<f64>,
+    /// Most targets appear in this direction (0..8, counter-clockwise from right).
+    #[serde(default)]
+    pub weak_octant: Option<u32>,
+    /// Show how far the first movement went after every flick.
+    #[serde(default)]
+    pub show_gain: bool,
+    /// A/D movement is active and a hit does not count while moving.
+    #[serde(default)]
+    pub counter_strafe: bool,
+    /// Directions outside the allowed area are skipped instead of rejecting the scenario.
+    #[serde(default)]
+    pub clip_to_area: bool,
+}
+
 /// Complete scenario specification.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scenario {
@@ -131,31 +170,85 @@ pub struct Scenario {
     pub target_shape: TargetShape,
     pub layout: TargetLayout,
     pub hit_rule: HitRule,
+    #[serde(default)]
+    pub rules: DrillRules,
 }
 
 impl Scenario {
-    /// Validates that layout and hit_rule are mutually compatible.
+    /// Validates that layout and hit_rule are mutually compatible and layout geometry is valid.
     pub fn validate(&self) -> Result<(), String> {
         match (&self.layout, self.hit_rule) {
             (TargetLayout::Tracking { .. }, HitRule::SingleShotKill) => {
-                Err(format!(
+                return Err(format!(
                     "Invalid scenario '{}': Tracking layout requires ContinuousTracking, cannot use SingleShotKill",
                     self.id
-                ))
+                ));
             }
             (TargetLayout::Fitts { .. }, HitRule::ContinuousTracking) => {
-                Err(format!(
+                return Err(format!(
                     "Invalid scenario '{}': Fitts layout requires SingleShotKill, cannot use ContinuousTracking",
                     self.id
-                ))
+                ));
             }
             (TargetLayout::HeadLevelPeeks { .. }, HitRule::ContinuousTracking) => {
-                Err(format!(
+                return Err(format!(
                     "Invalid scenario '{}': HeadLevelPeeks layout requires SingleShotKill, cannot use ContinuousTracking",
                     self.id
-                ))
+                ));
             }
-            _ => Ok(()),
+            _ => {}
         }
+
+        if let (
+            false,
+            TargetLayout::ConcurrentCluster {
+                distance_bins_deg,
+                octants,
+                max_yaw_deg,
+                max_pitch_deg,
+                ..
+            },
+        ) = (self.rules.clip_to_area, &self.layout)
+        {
+            for &dist in distance_bins_deg {
+                for oct in 0..*octants {
+                    let bearing_deg = oct as f64 * (360.0 / *octants as f64);
+                    let (yaw, pitch) =
+                        crate::generator::target_angles_from_bearing(dist, bearing_deg);
+                    let signed_yaw = if yaw > 180.0 { yaw - 360.0 } else { yaw };
+                    if signed_yaw.abs() > *max_yaw_deg + 1e-6 || pitch.abs() > *max_pitch_deg + 1e-6
+                    {
+                        return Err(format!(
+                            "Invalid scenario '{}': declared distance bin {}° at octant {} (yaw {:.2}°, pitch {:.2}°) cannot fit within max_yaw {}° / max_pitch {}°",
+                            self.id, dist, oct, signed_yaw, pitch, max_yaw_deg, max_pitch_deg
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Parses and validates a scenario from a RON string.
+    ///
+    /// Fails immediately if the RON syntax is invalid or if scenario validation rules fail.
+    pub fn from_ron_str(s: &str) -> Result<Self, String> {
+        let sc: Self = ron::from_str(s).map_err(|e| format!("Failed parsing scenario RON: {e}"))?;
+        sc.validate()?;
+        Ok(sc)
+    }
+}
+
+/// Convenience loader function for aim-scenarios that parses and validates a scenario.
+pub fn load_scenario(s: &str) -> Result<Scenario, String> {
+    Scenario::from_ron_str(s)
+}
+
+impl std::str::FromStr for Scenario {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_ron_str(s)
     }
 }

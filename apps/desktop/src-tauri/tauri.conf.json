@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AimForge",
+  "version": "0.1.0",
+  "identifier": "com.aimforge.desktop",
+  "build": {
+    "frontendDist": "../ui/dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm --prefix ui run dev",
+    "beforeBuildCommand": "npm --prefix ui run build"
+  },
+  "app": {
+    "windows": [{ "title": "AimForge", "width": 1180, "height": 780, "minWidth": 900, "minHeight": 620 }],
+    "security": { "csp": null }
+  },
+  "bundle": { "active": false, "icon": ["icons/icon.ico", "icons/icon.png"] }
+}

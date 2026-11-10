@@ -8,6 +8,7 @@ BatteryManifest(
         (scenario: "assess.v1.head_level_peeks", rest_after_s: 15.0),
         (scenario: "assess.v1.smooth_track", rest_after_s: 15.0),
         (scenario: "assess.v1.strafe_track", rest_after_s: 15.0),
-        (scenario: "assess.v1.multi_switch", rest_after_s: 0.0),
+        (scenario: "assess.v1.multi_switch", rest_after_s: 15.0),
+        (scenario: "assess.v1.counter_strafe", rest_after_s: 0.0),
     ],
 )

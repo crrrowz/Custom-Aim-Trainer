@@ -17,6 +17,15 @@ impl SessionClock {
         }
     }
 
+    /// Resets the baseline starting QPC counter to the current instant.
+    pub fn reset_start(&mut self) {
+        let mut qpc_now = 0i64;
+        unsafe {
+            QueryPerformanceCounter(&mut qpc_now);
+        }
+        self.qpc_start = qpc_now;
+    }
+
     /// Queries the current QPC counter and computes microseconds elapsed since session start.
     #[inline]
     pub fn now_us(&self) -> u64 {
@@ -26,6 +35,14 @@ impl SessionClock {
         }
         let qpc_diff = (qpc_now - self.qpc_start).max(0) as u128;
         ((qpc_diff * 1_000_000u128) / (self.qpc_freq as u128)) as u64
+    }
+
+    /// Moves a raw input timestamp onto this clock. The input thread keeps counting from its own start,
+    /// while `reset_start` moves this clock when a session begins.
+    #[inline]
+    pub fn from_input_us(&self, input_t_us: u64, input_qpc_start: i64) -> u64 {
+        let shift = (self.qpc_start - input_qpc_start).max(0) as u128;
+        input_t_us.saturating_sub(((shift * 1_000_000u128) / (self.qpc_freq as u128)) as u64)
     }
 
     /// Converts an elapsed microsecond timestamp to seconds as f64.

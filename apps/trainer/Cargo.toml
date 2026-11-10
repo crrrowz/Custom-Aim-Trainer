@@ -24,6 +24,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Performance",
     "Win32_System_Threading",
     "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
 ] }
 bevy = { version = "=0.20.0", default-features = false, features = [
     "default_app",
@@ -36,5 +37,7 @@ bevy = { version = "=0.20.0", default-features = false, features = [
     "tonemapping_luts",
     "zstd_rust",
     "png",
-    "multi_threaded"
+    "multi_threaded",
+    "default_font"
 ] }
+ttf-parser = "0.25"

@@ -1,0 +1,20 @@
+Scenario(
+    id: "assess.v1.counter_strafe",
+    version: 1,
+    kind: Assessment,
+    timeout_s: 120.0,
+    spawn_distance_m: 15.0,
+    target_shape: Sphere,
+    layout: Fitts(
+        grid: FittsGrid(
+            distances_deg: [8.0, 20.0],
+            radius_sizes_deg: [0.8],
+            octants: 8,
+            repetitions_per_cell: 2,
+            anchor: HomeTargetCenter,
+        ),
+        trial_timeout_s: 3.0,
+    ),
+    hit_rule: SingleShotKill,
+    rules: (counter_strafe: true),
+)

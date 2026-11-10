@@ -56,3 +56,45 @@ pub fn replay_input(
 
     actions
 }
+
+/// Computes the exact ViewAngles at timestamp `target_t_us` by replaying events up to that instant.
+pub fn angles_at_timestamp(
+    initial_angles: &ViewAngles,
+    events: &[RawInputEvent],
+    target_t_us: u64,
+    primary_id: Option<usize>,
+    deg_per_count: f64,
+) -> ViewAngles {
+    let mut angles = *initial_angles;
+    for event in events {
+        if primary_id.is_some() && Some(event.device_id) != primary_id {
+            continue;
+        }
+        if event.t_us > target_t_us {
+            break;
+        }
+        if let RawInputPayload::Motion { dx, dy } = event.payload {
+            angles.apply_counts(dx, dy, deg_per_count);
+        }
+    }
+    angles
+}
+
+/// Computes the crosshair pitch at an exact QPC timestamp by replaying raw input events
+/// up to that timestamp against an initial ViewAngles.
+pub fn crosshair_pitch_at_qpc_instant(
+    initial_angles: &ViewAngles,
+    events: &[RawInputEvent],
+    target_qpc_us: u64,
+    primary_id: Option<usize>,
+    deg_per_count: f64,
+) -> f64 {
+    let angles = angles_at_timestamp(
+        initial_angles,
+        events,
+        target_qpc_us,
+        primary_id,
+        deg_per_count,
+    );
+    angles.pitch
+}

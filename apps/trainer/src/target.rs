@@ -2,6 +2,7 @@
 
 use aim_core::geometry::SphericalTarget;
 use aim_core::ViewAngles;
+use aim_scenarios::generator::PeekTrial;
 use aim_scenarios::Trial;
 use bevy::prelude::*;
 
@@ -18,6 +19,9 @@ pub struct OpticFlowSphere;
 
 #[derive(Component)]
 pub struct OccluderWallMarker;
+
+#[derive(Component)]
+pub struct NeutralSlitMarker;
 
 #[derive(Resource)]
 pub struct TargetAssets {
@@ -93,6 +97,7 @@ pub fn setup_target_assets(
     scenario_res: Option<Res<crate::ScenarioResource>>,
 ) {
     let is_peeks = scenario_res
+        .as_ref()
         .map(|s| {
             matches!(
                 s.0.layout,
@@ -154,6 +159,31 @@ pub fn setup_target_assets(
         OpticFlowSphere,
     ));
 
+    if let Some(scenario) = scenario_res.as_ref() {
+        if let aim_scenarios::schema::TargetLayout::HeadLevelPeeks {
+            occluder_yaws_deg, ..
+        } = &scenario.0.layout
+        {
+            let dist_m = scenario.0.spawn_distance_m as f32;
+            for &wall_yaw in occluder_yaws_deg {
+                let wall_pos = angles_to_world_pos(ViewAngles::new(wall_yaw, 0.0), dist_m);
+                commands.spawn((
+                    Mesh3d(wall_mesh.clone()),
+                    MeshMaterial3d(occluder_material.clone()),
+                    Transform::from_translation(wall_pos).looking_at(Vec3::ZERO, Vec3::Y),
+                    OccluderWallMarker,
+                ));
+            }
+            let slit_pos = angles_to_world_pos(ViewAngles::new(0.0, 0.0), dist_m);
+            commands.spawn((
+                Mesh3d(slit_mesh.clone()),
+                MeshMaterial3d(slit_material.clone()),
+                Transform::from_translation(slit_pos).looking_at(Vec3::ZERO, Vec3::Y),
+                NeutralSlitMarker,
+            ));
+        }
+    }
+
     commands.insert_resource(TargetAssets {
         home_mesh: sphere_mesh.clone(),
         home_material,
@@ -170,15 +200,17 @@ pub fn setup_target_assets(
 }
 
 /// Convert spherical angular coordinates (yaw, pitch) and radial distance into a 3D Vec3 coordinate.
+/// Matches the camera coordinate frame: forward = (sin y·cos p, sin p, -cos y·cos p).
 pub fn angles_to_world_pos(angles: ViewAngles, distance_m: f32) -> Vec3 {
-    let yaw_rad = angles.yaw.to_radians() as f32;
-    let pitch_rad = angles.pitch.to_radians() as f32;
+    let yaw_rad = angles.yaw.to_radians();
+    let pitch_rad = angles.pitch.to_radians();
     let cos_pitch = pitch_rad.cos();
+    let dist_f64 = distance_m as f64;
 
     Vec3::new(
-        yaw_rad.sin() * cos_pitch * distance_m,
-        pitch_rad.sin() * distance_m,
-        yaw_rad.cos() * cos_pitch * distance_m,
+        (yaw_rad.sin() * cos_pitch * dist_f64) as f32,
+        (pitch_rad.sin() * dist_f64) as f32,
+        (-yaw_rad.cos() * cos_pitch * dist_f64) as f32,
     )
 }
 
@@ -230,6 +262,115 @@ pub fn spawn_trial_target(
             spherical: SphericalTarget::new(angles, trial.radius_deg).with_head_zone(false),
             is_home_target: false,
             spawn_time_s: now_s,
+        },
+    ));
+}
+
+/// Spawns an emerging peek target at its dynamic angle for A3.
+/// Starts emerging from the wall's inner edge (facing center).
+pub fn spawn_peek_target(
+    commands: &mut Commands,
+    assets: &TargetAssets,
+    trial: &PeekTrial,
+    distance_m: f32,
+    target_id: u32,
+    now_s: f64,
+    spawn_t_us: u64,
+) {
+    let half_wall_ang = ((0.5 / distance_m as f64).asin()).to_degrees();
+    // Start fully behind the occluder edge so the target emerges smoothly into the open
+    let initial_yaw = if trial.occluder_yaw_deg > 0.0 {
+        trial.occluder_yaw_deg - half_wall_ang + trial.target_radius_deg
+    } else {
+        trial.occluder_yaw_deg + half_wall_ang - trial.target_radius_deg
+    };
+    let initial_angles = ViewAngles::new(initial_yaw, trial.noisy_pitch_deg);
+    let target_distance_m = distance_m + 0.25;
+    let linear_radius = target_distance_m * (trial.target_radius_deg as f32).to_radians().sin();
+
+    commands.spawn((
+        Mesh3d(assets.trial_mesh.clone()),
+        MeshMaterial3d(assets.trial_material.clone()),
+        Transform::from_translation(angles_to_world_pos(initial_angles, target_distance_m))
+            .with_scale(Vec3::splat(linear_radius)),
+        ActiveTargetMarker {
+            target_id,
+            spherical: SphericalTarget::new(initial_angles, trial.target_radius_deg)
+                .with_head_zone(false),
+            is_home_target: false,
+            spawn_time_s: now_s,
+        },
+        crate::layout_engine::PeekTargetMarker {
+            trial_idx: trial.index,
+            target_id,
+            spherical: SphericalTarget::new(initial_angles, trial.target_radius_deg),
+            occluder_yaw: trial.occluder_yaw_deg,
+            target_yaw: initial_yaw,
+            pitch: trial.noisy_pitch_deg,
+            peek_speed_mps: trial.peek_speed_mps,
+            spawn_distance_m: distance_m,
+            spawn_t_us,
+            emergence_t_us: spawn_t_us,
+        },
+    ));
+}
+
+/// Spawns a tracking target for A4/A5 with TrackingTargetMarker component.
+pub fn spawn_tracking_target(
+    commands: &mut Commands,
+    assets: &TargetAssets,
+    angles: ViewAngles,
+    radius_deg: f64,
+    distance_m: f32,
+    target_id: u32,
+    now_s: f64,
+) {
+    let linear_radius = distance_m * (radius_deg as f32).to_radians().sin();
+
+    commands.spawn((
+        Mesh3d(assets.trial_mesh.clone()),
+        MeshMaterial3d(assets.trial_material.clone()),
+        Transform::from_translation(angles_to_world_pos(angles, distance_m))
+            .with_scale(Vec3::splat(linear_radius)),
+        ActiveTargetMarker {
+            target_id,
+            spherical: SphericalTarget::new(angles, radius_deg).with_head_zone(false),
+            is_home_target: false,
+            spawn_time_s: now_s,
+        },
+        crate::layout_engine::TrackingTargetMarker {
+            target_id,
+            spherical: SphericalTarget::new(angles, radius_deg),
+        },
+    ));
+}
+
+/// Spawns a cluster target for A6 with ClusterTargetMarker component.
+pub fn spawn_cluster_target(
+    commands: &mut Commands,
+    assets: &TargetAssets,
+    angles: ViewAngles,
+    radius_deg: f64,
+    distance_m: f32,
+    target_id: u32,
+    now_s: f64,
+) {
+    let linear_radius = distance_m * (radius_deg as f32).to_radians().sin();
+
+    commands.spawn((
+        Mesh3d(assets.trial_mesh.clone()),
+        MeshMaterial3d(assets.trial_material.clone()),
+        Transform::from_translation(angles_to_world_pos(angles, distance_m))
+            .with_scale(Vec3::splat(linear_radius)),
+        ActiveTargetMarker {
+            target_id,
+            spherical: SphericalTarget::new(angles, radius_deg).with_head_zone(false),
+            is_home_target: false,
+            spawn_time_s: now_s,
+        },
+        crate::layout_engine::ClusterTargetMarker {
+            target_id,
+            spherical: SphericalTarget::new(angles, radius_deg),
         },
     ));
 }

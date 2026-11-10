@@ -20,7 +20,7 @@
 │  quality_flags: u32 (bitmask: 1=FOCUS_LOST,│
 │    2=SETTINGS_CHANGED, 4=FRAME_DROPS,      │
 │    8=ABORTED, 16=SECONDARY_DEVICE_MOTION, │
-│    32=POLLING_RATE_ANOMALY)                │
+│    32=POLLING_RATE_ANOMALY, 64=PAUSED)     │
 ├────────────────────────────────────────────┤
 │ Streams (columnar, delta-encoded, zstd):   │
 │  input:   t_us[], dx[], dy[]               │  ← كل حدث raw
@@ -39,6 +39,21 @@
 - **الحجم المتوقّع:** جلسة 60 ثانية بماوس 1000Hz ≈ 60k حدث × ~4 بايت بعد الترميز التفاضلي والضغط ≈ **150–300KB**. بطارية كاملة ≈ 1–2MB.
 - **الترقية:** `aim-telemetry` يقرأ كل الإصدارات السابقة ويرقّيها في الذاكرة (`upgrade_v1_to_v2`). **لا نحذف دعم إصدار قديم أبداً.**
 - **مسار الأهداف:** يُخزَّن كـ spline/معادلة وليس كعيّنات، لأن السيناريو حتمي من الـ seed. الـ seed وحده يكفي نظرياً، لكن نخزّن المعاملات للأمان ضد تغيّر كود المولّد.
+
+### 1.1 فترات الإيقاف المؤقت (Pause Intervals) وإبطال المحاولات
+- **قاعدة التوقيت الموحدة:** جميع الأختام الزمنية في تدفقات `.aft` (`input`, `frames`, `view`, `targets`, `shots`, `keys`) تُسجَّل بميكروثواني الـ QPC الحقيقية المستمرة (Raw QPC Microseconds).
+- **تسجيل الإيقاف والاستئناف (اليدوي أو التلقائي عند فقدان التركيز Auto-pause on Focus Loss):**
+  - عند الإيقاف المؤقت (سواء يدوي عبر مفتاح Esc أو تلقائياً عند فقدان تركيز النافذة Alt-Tab/Win key)، يُسجَّل حدث في `keys`:
+    `KeyRecord { t_us: qpc_pause, key: KeyCode::Unknown(0x1B), down: true }`
+    وعند فقدان التركيز يُرفع كذلك علم `quality_flags::FOCUS_LOST` بالإضافة إلى `quality_flags::PAUSED`.
+  - عند الاستئناف، يُسجَّل حدث في `keys`:
+    `KeyRecord { t_us: qpc_resume, key: KeyCode::Unknown(0x1B), down: false }`
+  - في حال تكرار فقدان التركيز أثناء الإيقاف المؤقت القائم: لا يتم تسجيل حدث مفتاح إضافي أو فترة إيقاف مكررة.
+- **إبطال المحاولة أثناء الإيقاف (In-flight Trial Voiding):**
+  - في حال إيقاف الجلسة أثناء محاولة قيد الانتظار، يُعاد ضبط مؤقت المحاولة الداخلي في المحرك عند الاستئناف (`trial_start = resume_active_time`) لضمان قياس زمن استجابة (RT) صحيح داخل المحرك.
+  - في ملف الـ `.aft`، يبقى `spawn_t_us` للهدف هو زمن الـ QPC الأصلي عند ظهوره أول مرة دون تعديل.
+  - يقوم محرك التحليل (`aim-analysis`) بخصم فترات الإيقاف المؤقت (المحددة بدقة بين أحداث `KeyCode::Unknown(0x1B)` down و up في تدفق `keys`) من أي محاولة أو مقطع تتبع يتداخل معها.
+  - في سيناريوهات التتبع المستمر (A4/A5): يستمر الهدف من النقطة التي تجمّد عندها، ويقوم محرك التحليل بخصم فترات الإيقاف عبر تدفق `keys`.
 
 ---
 
@@ -62,7 +77,7 @@ CREATE TABLE sessions (
   telemetry_sha256 TEXT NOT NULL,
   plan_id         TEXT,
   block_no        INTEGER,
-  quality_flags   INTEGER NOT NULL DEFAULT 0,  -- bitmask: 1=FOCUS_LOST, 2=SETTINGS_CHANGED, 4=FRAME_DROPS, 8=ABORTED, 16=SECONDARY_DEVICE_MOTION, 32=POLLING_RATE_ANOMALY
+  quality_flags   INTEGER NOT NULL DEFAULT 0,  -- bitmask: 1=FOCUS_LOST, 2=SETTINGS_CHANGED, 4=FRAME_DROPS, 8=ABORTED, 16=SECONDARY_DEVICE_MOTION, 32=POLLING_RATE_ANOMALY, 64=PAUSED
   synced_at       TEXT
 );
 
