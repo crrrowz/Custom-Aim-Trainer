@@ -1062,7 +1062,7 @@ function Progress({ ctx }: { ctx: Ctx }) {
             <Stat value={last === undefined ? "—" : `${Math.round(last)}%`} label={T("الدقة بآخر الفترة", "Accuracy at the end")} hint={first !== undefined && accuracy.length > 1 ? `${last! >= first ? "+" : ""}${Math.round(last! - first)} ${T("عن بدايتها", "vs the start")}` : undefined} />
           </div>
           <section className="card">
-            <h2>{T("الدقة", "Accuracy")} <small className="muted">· {T(`كل نقطة ${unitWord}`, `each point is a ${unitWord}`)}</small></h2>
+            <h2>{T("الدقة", "Accuracy")} <small className="muted">{T(`كل نقطة ${unitWord}`, `each point is a ${unitWord}`)}</small></h2>
             {accuracy.length < 2 && <p className="muted small">{T("تحتاج نقطتين على الأقل حتى يطلع خط. اختار فترة أطول أو العب أكثر.", "At least two points are needed for a line. Pick a longer period or play more.")}</p>}
             <TrendLine points={accuracy} unit="%" better="up" axis={axis} />
           </section>
@@ -1082,7 +1082,7 @@ function Progress({ ctx }: { ctx: Ctx }) {
             </section>
             <section className="card">
               <h2>{T("دقايق التدريب", "Minutes trained")}</h2>
-              <p className="muted small">{T(`المعدل ${Math.round(avg(volume.map((v) => v.value)) ?? 0)} دقيقة لكل ${unitWord}. التدريب القصير المنتظم أحسن من الطويل المتقطع.`, `Average ${Math.round(avg(volume.map((v) => v.value)) ?? 0)} minutes per ${unitWord}. Short regular practice beats long irregular sessions.`)}</p>
+              <p className="muted small">{T(`المعدل ${Math.round(avg(volume.map((v) => v.value)) ?? 0)} دقيقة لكل ${unitWord}. التدريب القصير المنتظم أحسن من الطويل المتقطع.`, `On average ${Math.round(avg(volume.map((v) => v.value)) ?? 0)} min per ${unitWord}. Short regular practice beats long irregular sessions.`)}</p>
               <ValueBars rows={volume} unit={T("د", "min")} height={220} />
             </section>
           </div>

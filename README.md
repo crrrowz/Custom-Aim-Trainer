@@ -1,5 +1,9 @@
 # AimForge
 
+[![CI](https://github.com/crrrowz/Custom-Aim-Trainer/actions/workflows/ci.yml/badge.svg)](https://github.com/crrrowz/Custom-Aim-Trainer/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/crrrowz/Custom-Aim-Trainer?include_prereleases)](https://github.com/crrrowz/Custom-Aim-Trainer/releases)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
+
 AimForge is a desktop aim trainer for VALORANT players that tries to answer two questions honestly:
 **what exactly is wrong with my aim, and did practice actually fix it?**
 
@@ -8,6 +12,15 @@ move, the first movement toward the target, the correction after it, and the cli
 a short plan, then retests you with a fresh but equivalent test and compares the skills you trained
 against the ones you did not, so a better number from simply getting used to the test is not counted as
 progress.
+
+![AimForge dashboard](docs/images/dashboard.png)
+
+## Download
+
+Get the Windows installer or the portable zip from the
+[latest release](https://github.com/crrrowz/Custom-Aim-Trainer/releases), then follow the
+[user guide](docs/USER_GUIDE.md). The builds are not code-signed yet, so SmartScreen may ask you to
+confirm with **More info → Run anyway**.
 
 > **Status: early alpha.** It runs on Windows only. The skill scores use provisional norms that have not
 > yet been calibrated on real players, and the in-game movement values are not yet verified against
@@ -25,6 +38,17 @@ progress.
    difficulty adapts to your results.
 4. **Retest.** The same tests in a new form. The result compares trained and untrained skills and
    decides whether to continue, switch drills, or move on.
+
+<table>
+  <tr>
+    <td><img src="docs/images/session-replay.png" alt="Aim replay of a single target"></td>
+    <td><img src="docs/images/session-shots.png" alt="Where shots landed"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/progress.png" alt="Progress charts"></td>
+    <td><img src="docs/images/coach.png" alt="Coach report"></td>
+  </tr>
+</table>
 
 Alongside the plan there is free practice (build your own session or open any drill from the
 library), per-session analysis down to every flick, progress charts, and coach reports. Reports are
@@ -60,17 +84,18 @@ The desktop app starts the trainer as a separate process for each test and reads
 it writes. The analysis and coaching crates must not depend on Bevy, Tauri, windowing, networking or
 the database; `scripts/check-boundaries.ps1` enforces this.
 
-More detail, in Arabic, is in [`docs/platform/`](docs/platform/): architecture, the diagnosis engine,
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) explains how the pieces fit, with diagrams. More
+detail, in Arabic, is in [`docs/platform/`](docs/platform/): architecture, the diagnosis engine,
 the training loop, the data format, UI rules and session rules.
 
-## Requirements
+## Requirements for building
 
 - Windows 10 or 11 (the trainer reads raw input through Win32).
 - Rust stable with the `x86_64-pc-windows-msvc` target (pinned in `rust-toolchain.toml`) and the
   Visual Studio C++ build tools.
 - Node.js and npm for the desktop UI.
 
-## Run it
+## Run it from source
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\run-desktop.ps1
@@ -103,6 +128,9 @@ cargo test --workspace
 The desktop backend is a separate Cargo workspace: run `cargo clippy --all-targets -- -D warnings` and
 `cargo test --lib` inside `apps/desktop/src-tauri`, and `npm run build` inside `apps/desktop/ui`.
 
+To build the installer and the portable zip yourself, run
+`powershell -ExecutionPolicy Bypass -File scripts\package-release.ps1`; the files land in `dist\`.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the rules that keep recordings readable and measurements
 comparable.
 
@@ -119,7 +147,7 @@ These are not part of the desktop app:
 - Skill norms are provisional; scores are best read as change over time, not as a rank.
 - Movement values for counter-strafe drills are provisional.
 - API keys for AI providers are stored unencrypted in the app's local data folder.
-- There is no installer yet; the app is run from source.
+- The installer and the app are not code-signed yet.
 
 ## License
 

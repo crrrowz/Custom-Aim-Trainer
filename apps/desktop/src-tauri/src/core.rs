@@ -461,6 +461,14 @@ impl TrainerRunner for ProcessRunner {
             .ok_or("Trainer program not found. Build it with: cargo build --release -p trainer")?;
         let mut command = Command::new(trainer);
         command.args(args);
+        // The trainer is a console program so developers see its log; started from the app it must
+        // not open a console window beside the game.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
         if let Some(root) = &self.root {
             command.current_dir(root);
         }

@@ -25,6 +25,17 @@ const niceMax = (v: number) => {
   return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p;
 };
 
+/** Row for each label so labels that sit close together stack instead of overlapping. */
+function labelRows(points: { x: number; y: number }[], minDx: number, minDy: number): number[] {
+  const placed: { x: number; y: number; row: number }[] = [];
+  return points.map((p) => {
+    let row = 0;
+    while (placed.some((q) => q.row === row && Math.abs(q.x - p.x) < minDx && Math.abs(q.y - p.y) < minDy)) row += 1;
+    placed.push({ ...p, row });
+    return row;
+  });
+}
+
 export function AimPath({ flick, progressMs, labels }: {
   flick: Flick;
   progressMs: number;
@@ -53,6 +64,11 @@ export function AimPath({ flick, progressMs, labels }: {
     [flick.shot_ms, labels.shot, flick.hit ? COLORS.hit : COLORS.miss],
   ];
   const head = shown[shown.length - 1] ?? flick.path[0];
+  const visible = markers.flatMap(([ms, name, color]) => {
+    const p = at(ms);
+    return p && (ms ?? 0) <= progressMs ? [{ x: px(p.x), y: py(p.y), name, color }] : [];
+  });
+  const rows = labelRows(visible, 76, 16);
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="plot" direction="ltr" role="img" aria-label="aim path">
@@ -61,18 +77,14 @@ export function AimPath({ flick, progressMs, labels }: {
       <circle cx={px(0)} cy={py(0)} r={Math.max(flick.radius_deg * scale, 3)} fill={COLORS.hit} fillOpacity={0.14} stroke={COLORS.hit} strokeWidth={1.5} />
       <polyline points={line(flick.path)} fill="none" stroke={COLORS.grid} strokeWidth={2} strokeLinejoin="round" />
       <polyline points={line(shown)} fill="none" stroke={COLORS.ink} strokeWidth={2} strokeLinejoin="round" />
-      {markers.map(([ms, name, color]) => {
-        const p = at(ms);
-        if (!p || (ms ?? 0) > progressMs) return null;
-        return (
-          <g key={name}>
-            <circle cx={px(p.x)} cy={py(p.y)} r={5} fill={color} stroke="#12161b" strokeWidth={2} />
-            <text x={px(p.x)} y={py(p.y) - 11} textAnchor="middle" fill={COLORS.muted} fontSize={12}>
-              {name}
-            </text>
-          </g>
-        );
-      })}
+      {visible.map(({ x, y, name, color }, i) => (
+        <g key={name}>
+          <circle cx={x} cy={y} r={5} fill={color} stroke="#12161b" strokeWidth={2} />
+          <text x={x} y={rows[i] % 2 ? y + 22 + 15 * Math.floor(rows[i] / 2) : y - 11 - 15 * (rows[i] / 2)} textAnchor="middle" fill={COLORS.muted} fontSize={12}>
+            {name}
+          </text>
+        </g>
+      ))}
       <g transform={`translate(${px(head.x)},${py(head.y)})`} stroke={COLORS.ink} strokeWidth={1.5}>
         <line x1={-8} x2={-3} /><line x1={3} x2={8} /><line y1={-8} y2={-3} /><line y1={3} y2={8} />
       </g>
@@ -97,6 +109,7 @@ export function SpeedChart({ flick, progressMs, labels, onScrub }: {
     [flick.primary_end_ms, labels.primary, COLORS.warn],
     [flick.shot_ms, labels.shot, flick.hit ? COLORS.hit : COLORS.miss],
   ];
+  const markRows = labelRows(marks.map(([ms]) => ({ x: x(ms ?? -1e6), y: 0 })), 70, 1);
   const scrub = (e: React.MouseEvent<SVGSVGElement>) => {
     const box = e.currentTarget.getBoundingClientRect();
     const px = ((e.clientX - box.left) / box.width) * W;
@@ -113,11 +126,11 @@ export function SpeedChart({ flick, progressMs, labels, onScrub }: {
       <text x={W - 8} y={H - 5} textAnchor="end" fill={COLORS.muted} fontSize={11}>{Math.round(maxT)} ms</text>
       <text x={L} y={11} fill={COLORS.muted} fontSize={11}>{labels.y}</text>
       <polyline points={d} fill="none" stroke={COLORS.line} strokeWidth={2} strokeLinejoin="round" />
-      {marks.map(([ms, name, color]) =>
+      {marks.map(([ms, name, color], i) =>
         ms === null ? null : (
           <g key={name}>
             <line x1={x(ms)} x2={x(ms)} y1={T} y2={H - B} stroke={color} strokeDasharray="3 3" />
-            <text x={x(ms) + 3} y={T + 9} fill={COLORS.muted} fontSize={11}>{name}</text>
+            <text x={x(ms) + 3} y={T + 9 + 13 * markRows[i]} fill={COLORS.muted} fontSize={11}>{name}</text>
           </g>
         ),
       )}
@@ -218,26 +231,43 @@ export function TrackingChart({ bins, radius, yLabel }: { bins: TrackBin[]; radi
 }
 
 export function SkillRadar({ skills, name }: { skills: Skill[]; name: (id: string) => string }) {
-  const S = 400, C = S / 2, R = C - 92;
+  // Drawn at the card's real width so labels stay at 12px; drawn left to right in both languages
+  // so the text anchors do not flip in Arabic.
+  const { ref, width: W } = useWidth(420);
+  // Long names go on two lines; the side room is sized from the longest line (about 6.6px a character).
+  const roomFor = (n: number) => n * 6.6 + 16;
+  const wrap = W / 2 - roomFor(Math.max(...skills.map((s) => name(s.skill).length))) < 100;
+  const lines = skills.map((s) => {
+    const words = name(s.skill).split(" ");
+    if (!wrap || words.length < 2 || name(s.skill).length <= 10) return [name(s.skill)];
+    const half = Math.ceil(words.length / 2);
+    return [words.slice(0, half).join(" "), words.slice(half).join(" ")];
+  });
+  const LABEL = roomFor(Math.max(...lines.flat().map((l) => l.length))), H = Math.round(Math.min(Math.max(W * 0.78, 280), 420));
+  const C = W / 2, M = H / 2, R = Math.max(60, Math.min(C - LABEL, M - 34));
   if (skills.length < 3) return null;
   const pt = (i: number, r: number) => {
     const a = -Math.PI / 2 + (i * 2 * Math.PI) / skills.length;
-    return [C + r * Math.cos(a), C + r * Math.sin(a)];
+    return [C + r * Math.cos(a), M + r * Math.sin(a)];
   };
   const ring = (f: number) => skills.map((_, i) => pt(i, R * f).map((n) => n.toFixed(1)).join(",")).join(" ");
   return (
-    <svg viewBox={`0 0 ${S} ${S}`} className="plot square" role="img" aria-label="skills">
-      {[0.33, 0.66, 1].map((f) => <polygon key={f} points={ring(f)} fill="none" stroke={COLORS.grid} />)}
-      <polygon points={skills.map((s, i) => pt(i, (R * s.score) / 100).map((n) => n.toFixed(1)).join(",")).join(" ")} fill={COLORS.hit} fillOpacity={0.18} stroke={COLORS.hit} strokeWidth={2} strokeLinejoin="round" />
-      {skills.map((s, i) => {
-        const [x, y] = pt(i, R + 16);
-        return (
-          <text key={s.skill} x={x} y={y + 4} textAnchor={Math.abs(x - C) < 12 ? "middle" : x > C ? "start" : "end"} fill={COLORS.muted} fontSize={13}>
-            {name(s.skill)}
-          </text>
-        );
-      })}
-    </svg>
+    <div className="chart" ref={ref}>
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="plot" direction="ltr" role="img" aria-label="skills">
+        {[0.33, 0.66, 1].map((f) => <polygon key={f} points={ring(f)} fill="none" stroke={COLORS.grid} />)}
+        <polygon points={skills.map((s, i) => pt(i, (R * s.score) / 100).map((n) => n.toFixed(1)).join(",")).join(" ")} fill={COLORS.hit} fillOpacity={0.18} stroke={COLORS.hit} strokeWidth={2} strokeLinejoin="round" />
+        {skills.map((s, i) => {
+          const [x, y] = pt(i, R + 12);
+          const rows = lines[i];
+          const top = y + 4 - (rows.length - 1) * (y < M - 4 ? 14 : y > M + 4 ? 0 : 7);
+          return (
+            <text key={s.skill} x={x} y={top} textAnchor={Math.abs(x - C) < 12 ? "middle" : x > C ? "start" : "end"} fill={COLORS.muted} fontSize={12}>
+              {rows.map((l, k) => <tspan key={k} x={x} dy={k ? 14 : 0}>{l}</tspan>)}
+            </text>
+          );
+        })}
+      </svg>
+    </div>
   );
 }
 
@@ -373,6 +403,8 @@ export function TrendLine({ points, unit, better, axis, height = 240 }: { points
   const most = Math.max(2, Math.floor(span / 70));
   const ticks = axis
     ? axis.filter((_, i) => i % Math.ceil(axis.length / most) === 0 || i === axis.length - 1)
+        // The last tick is always kept, so drop the one before it when the two would overlap.
+        .filter((t, i, all) => i !== all.length - 2 || (all[i + 1].pos - t.pos) * span >= 60)
     : points.map((p, i) => ({ pos: posOf(i), label: p.label })).filter((_, i) => showTick(points, i, most));
   return (
     <div className="chart" ref={ref}>
