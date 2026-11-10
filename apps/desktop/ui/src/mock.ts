@@ -61,12 +61,20 @@ let view: View = {
   ai_keys_set: [],
   coach_config_path: "C:\\Users\\you\\AppData\\Roaming\\com.aimforge.desktop\\coach_config.json",
   notice: null,
+  resume: null,
+  estimate: null,
   practice: [
     { day: 20400, name: "warmup", hit_rate: 0.88, difficulty: 0.32, at_ms: now - 7200e3, file: "a.aft", mode: null },
     { day: 20400, name: "custom", hit_rate: 0.64, difficulty: null, at_ms: now - 5400e3, file: "b.aft", mode: "flick" },
     { day: 20400, name: "custom", hit_rate: 0.71, difficulty: null, at_ms: now - 1800e3, file: "c.aft", mode: "flick" },
   ],
 };
+// `?state=partial` shows a player whose only assessment stopped part-way.
+if (typeof location !== "undefined" && new URLSearchParams(location.search).get("state") === "partial") {
+  const est = assessment(0, now - 600e3);
+  est.profile.skills = est.profile.skills.slice(0, 3);
+  view = { ...view, latest: null, history: [], plan: null, estimate: est, resume: { done: 3, total: 8 } };
+}
 
 function mockFlick(i: number): Flick {
   const d = [8, 20, 40][i % 3];

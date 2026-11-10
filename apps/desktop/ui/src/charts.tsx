@@ -325,7 +325,16 @@ export function ValueBars({ rows, max, unit }: { rows: { label: string; value: n
   );
 }
 
-export function TrendLine({ points, unit, better }: { points: { label: string; value: number }[]; unit: string; better: "up" | "down" }) {
+type TrendPoint = { label: string; value: number; tip?: string; tick?: boolean };
+
+/** Axis labels: the points marked as ticks, or about eight evenly spaced ones. */
+const showTick = (points: TrendPoint[], i: number) => {
+  if (points.some((p) => p.tick !== undefined)) return !!points[i].tick;
+  const every = Math.ceil(points.length / 8);
+  return i % every === 0 || i === points.length - 1;
+};
+
+export function TrendLine({ points, unit, better }: { points: TrendPoint[]; unit: string; better: "up" | "down" }) {
   const tip = useTip();
   const W = 920, H = 240, L = 46, B = 26, T = 16;
   if (points.length === 0) return null;
@@ -349,9 +358,9 @@ export function TrendLine({ points, unit, better }: { points: { label: string; v
         <polyline points={points.map((p, i) => `${x(i)},${y(p.value)}`).join(" ")} fill="none" stroke={color} strokeWidth={2} strokeLinejoin="round" />
         {points.map((p, i) => (
           <g key={i}>
-            <circle cx={x(i)} cy={y(p.value)} r={5} fill={color} stroke="#12161b" strokeWidth={2}
-              onMouseMove={(e) => tip.show(e, `${p.label}: ${Math.round(p.value)} ${unit}`)} onMouseLeave={tip.hide} />
-            <text x={x(i)} y={H - 8} textAnchor="middle" fill={COLORS.muted} fontSize={11}>{p.label}</text>
+            <circle cx={x(i)} cy={y(p.value)} r={points.length > 40 ? 3 : 5} fill={color} stroke="#12161b" strokeWidth={2}
+              onMouseMove={(e) => tip.show(e, p.tip ?? `${p.label}: ${Math.round(p.value)} ${unit}`)} onMouseLeave={tip.hide} />
+            {showTick(points, i) && <text x={x(i)} y={H - 8} textAnchor="middle" fill={COLORS.muted} fontSize={11}>{p.label}</text>}
           </g>
         ))}
       </svg>

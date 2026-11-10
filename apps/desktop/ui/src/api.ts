@@ -104,6 +104,10 @@ export interface View {
   ai_keys_set: string[];
   coach_config_path: string;
   notice: string | null;
+  /** Tests already done in an interrupted assessment; the next start continues from there. */
+  resume: { done: number; total: number } | null;
+  /** The latest assessment when it stopped part-way: a first estimate of the skills. */
+  estimate: Assessment | null;
 }
 export interface CustomTargets {
   mode: "flick" | "track" | "strafe" | "peek" | "multi";

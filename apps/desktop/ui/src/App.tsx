@@ -1,4 +1,5 @@
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { DayPicker, dayKey } from "./DayPicker";
 import { call, type CoachConfig, type CustomTargets, type Detail, type Flick, type Plan, type SessionCard, type Settings, type View } from "./api";
 import { AimPath, ReactionTimeline, SERIES, ShotScatter, SkillLines, SkillRadar, Spark, SpeedChart, TrackingChart, TrendLine, ValueBars, type Series } from "./charts";
 import { drillInfo, drillNames, evidenceNames, groupNames, scenarioNames, skillNames, type DrillInfo, type Lang } from "./i18n";
@@ -105,7 +106,7 @@ export function App() {
         {view.notice === "stopped" && <div className="banner">{T("طلعت قبل ما ينسجل شي، فما انحسبت هذي المرة.", "You left before anything was recorded, so this one did not count.")}</div>}
         {view.notice === "new_best" && <div className="banner good">{T("رقم قياسي جديد لهذا التمرين!", "New personal best for this drill!")}</div>}
         {view.notice === "done_today" && <div className="banner">{T("خلصت جلسة اليوم. الجلسة الجاية تفتح باجر.", "Today's session is done. The next one opens tomorrow.")}</div>}
-        {view.notice === "incomplete" && <div className="banner">{T("التقييم وقف قبل ما تخلص الاختبارات الثمانية، فما انحسب. الجلسات اللي خلصتها موجودة بالتحليل. بين الاختبارات أكو استراحة قصيرة، والاختبار الجاي يبدي لحاله أو بـ Enter. زر Esc يوقف التقييم كله.", "The assessment stopped before all eight tests, so it did not count. The tests you finished are in Analysis. Between tests there is a short rest; the next test starts by itself or with Enter. Esc stops the whole assessment.")}</div>}
+        {view.notice === "incomplete" && <div className="banner">{T("التقييم وقف قبل ما يخلص. الاختبارات اللي خلصتها انحفظت، ولما تبدي مرة ثانية تكمل من الاختبار الجاي مو من الأول. بين الاختبارات أكو استراحة قصيرة، والجاي يبدي لحاله أو بـ Enter. زر Esc يوقف التقييم.", "The assessment stopped before the end. The tests you finished are saved; the next start continues from the next test, not from the beginning. Between tests there is a short rest; the next one starts by itself or with Enter. Esc stops the assessment.")}</div>}
         <ScreenGuard key={tab} message={T("هذي الصفحة واجهت خطأ. الصفحات الثانية تشتغل عادي.", "This page hit an error. The other pages still work.")} retry={T("أعد المحاولة", "Try again")}>
           {tab === "home" && <Home ctx={ctx} />}
           {tab === "analysis" && <Analysis ctx={ctx} initial={recording} />}
@@ -195,9 +196,19 @@ const overallOf = (a: View["latest"]) => {
   return a.profile.skills.reduce((s, k) => s + k.score, 0) / a.profile.skills.length;
 };
 
+/** Word for an overall score. The norms behind the scores are provisional, and the page says so. */
+const levelName = (score: number, T: Ctx["T"]) =>
+  score < 35 ? T("مبتدئ", "Beginner") : score < 55 ? T("متوسط", "Intermediate") : score < 75 ? T("متقدم", "Advanced") : T("عالي جداً", "Elite");
+
+/** Button text for starting an assessment, which continues an interrupted one instead of restarting. */
+const assessCta = (view: View, T: Ctx["T"]) =>
+  view.resume ? T(`كمل التقييم (${view.resume.done} من ${view.resume.total})`, `Continue assessment (${view.resume.done} of ${view.resume.total})`) : T("ابدأ التقييم", "Start assessment");
+
 function Home({ ctx }: { ctx: Ctx }) {
   const { view, T, act, go, lang } = ctx;
-  const overall = overallOf(view.latest);
+  const basis = view.latest ?? view.estimate;
+  const provisional = !view.latest && !!view.estimate;
+  const overall = overallOf(basis);
   const prev = view.history.length > 1 ? overallOf(view.history[view.history.length - 2]) : null;
   const recent = view.sessions.slice(0, 5);
   const plan = view.plan;
@@ -205,8 +216,11 @@ function Home({ ctx }: { ctx: Ctx }) {
   const retest = plan && typeof plan.state === "object" && "AwaitingRetest" in plan.state;
 
   let hero: { title: string; sub: string; cta: string; run: () => void };
-  if (!view.latest) {
-    hero = { title: T("ابدأ بالتقييم", "Start with an assessment"), sub: T("7 اختبارات بحوالي 9 دقايق، وبعدها تعرف وين مشكلتك بالضبط.", "7 tests in about 9 minutes, then you will know exactly what to fix."), cta: T("ابدأ التقييم", "Start assessment"), run: () => act("run_assessment") };
+  if (!view.latest && view.resume) {
+    const left = view.resume.total - view.resume.done;
+    hero = { title: T("كمل التقييم من وين وقفت", "Continue your assessment"), sub: T(`خلصت ${view.resume.done} من ${view.resume.total} اختبارات وانحفظت. باقي ${left}، وتبدي من الاختبار الجاي مو من الأول.`, `${view.resume.done} of ${view.resume.total} tests are done and saved. ${left} left, starting from the next one, not from the beginning.`), cta: assessCta(view, T), run: () => act("run_assessment") };
+  } else if (!view.latest) {
+    hero = { title: T("ابدأ بالتقييم", "Start with an assessment"), sub: T("إحماء و7 اختبارات بحوالي 9 دقايق، وبعدها تعرف وين مشكلتك بالضبط.", "A warm-up and 7 tests in about 9 minutes, then you will know exactly what to fix."), cta: assessCta(view, T), run: () => act("run_assessment") };
   } else if (active && plan!.today_done) {
     hero = { title: T("خلصت جلسة اليوم", "Today's session is done"), sub: T("الجلسة الجاية تفتح باجر. الراحة جزء من التحسن، وتكدر تلعب تدريب حر.", "The next one opens tomorrow. Rest is part of improving; free practice is still open."), cta: T("التدريب الحر", "Free practice"), run: () => go("practice") };
   } else if (active) {
@@ -229,12 +243,20 @@ function Home({ ctx }: { ctx: Ctx }) {
           <p className="muted">{hero.sub}</p>
           <div className="row">
             <button className="btn" onClick={hero.run}>{hero.cta}</button>
-            {view.latest && <button className="btn ghost" disabled={!view.trainer_found} onClick={() => act("run_assessment")}>{T("إعادة التقييم الكامل", "Retake full assessment")}</button>}
+            {view.latest && <button className="btn ghost" disabled={!view.trainer_found} onClick={() => act("run_assessment")}>{view.resume ? assessCta(view, T) : T("إعادة التقييم الكامل", "Retake full assessment")}</button>}
           </div>
         </section>
         <section className="card score">
-          <span className="label">{T("المستوى العام", "Overall")}</span>
-          <b className="huge">{overall === null ? "—" : overall.toFixed(0)}</b>
+          <span className="label">{T("المستوى العام", "Overall level")}{provisional && <i className="tag">{T("تقديري", "Estimate")}</i>}</span>
+          <b className="huge">{overall === null ? "—" : overall.toFixed(0)}<small className="of">/100</small></b>
+          {overall !== null && <b className="level-name">{levelName(overall, T)}</b>}
+          <small className="muted explain">
+            {overall === null
+              ? T("يطلع بعد أول اختبار بعد الإحماء. الإحماء وحده ما يقيس مهارة.", "Appears after the first test after the warm-up. The warm-up alone measures no skill.")
+              : provisional
+                ? T(`معدل ${basis!.profile.skills.length} مهارات من التقييم اللي ما كمل. يصير أدق لما تكمل كل الاختبارات.`, `Average of ${basis!.profile.skills.length} skills from the unfinished assessment. It firms up once all tests are done.`)
+                : T(`معدل درجات ${basis!.profile.skills.length} مهارات من 0 لـ 100. 50 يعني لاعب عادي، والمعايير مؤقتة لحد ما تنضبط على لاعبين حقيقيين.`, `Average of ${basis!.profile.skills.length} skill scores from 0 to 100. 50 is a typical player; the norms are provisional until calibrated on real players.`)}
+          </small>
           {overall !== null && prev !== null && (
             <span className={overall >= prev ? "up" : "down"}>{overall >= prev ? "▲" : "▼"} {Math.abs(overall - prev).toFixed(1)}</span>
           )}
@@ -242,11 +264,12 @@ function Home({ ctx }: { ctx: Ctx }) {
         </section>
         <section className="card radar">
           <span className="label">{T("ملف المهارات", "Skill profile")}</span>
-          {view.latest ? <SkillRadar skills={view.latest.profile.skills} name={(id) => pick(skillNames[id], lang, id)} /> : <Empty text={T("يطلع بعد أول تقييم.", "Appears after your first assessment.")} />}
+          {basis && basis.profile.skills.length > 0 ? <SkillRadar skills={basis.profile.skills} name={(id) => pick(skillNames[id], lang, id)} /> : <Empty text={view.resume ? T("كمل التقييم حتى تطلع مهاراتك. الإحماء ما يحسب مهارة.", "Continue the assessment to see your skills. The warm-up measures no skill.") : T("يطلع بعد أول تقييم.", "Appears after your first assessment.")} />}
+          {provisional && basis && basis.profile.skills.length > 0 && <small className="muted">{T("تقديري من الاختبارات اللي خلصتها بس.", "Estimated from the tests you finished only.")}</small>}
         </section>
         <section className="card problems">
           <span className="label">{T("أهم المشاكل", "Top problems")}</span>
-          {view.findings.length === 0 && <Empty text={view.latest ? T("ما لكينا مشكلة مؤكدة.", "No confirmed problem.") : T("نحتاج تقييم حتى نحدد المشاكل.", "An assessment finds your problems.")} />}
+          {view.findings.length === 0 && <Empty text={basis ? T("ما لكينا مشكلة مؤكدة لحد الآن.", "No confirmed problem so far.") : view.resume ? T("المشاكل تطلع من الاختبارات، مو من الإحماء. كمل التقييم.", "Problems come from the tests, not the warm-up. Continue the assessment.") : T("نحتاج تقييم حتى نحدد المشاكل.", "An assessment finds your problems.")} />}
           {view.findings.map((f, i) => (
             <button className="line" key={f.id} onClick={() => go("analysis")}>
               <i className="rank">{i + 1}</i>
@@ -290,10 +313,6 @@ function flickNote(f: Flick, T: Ctx["T"]): string {
   return T("الحركة الأولى وصلت قريب من الهدف.", "First movement landed close to the target.");
 }
 
-const dayKey = (ms: number) => {
-  const d = new Date(ms);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-};
 
 const T2 = (lang: Lang, ar: string, en: string) => (lang === "ar" ? ar : en);
 const MODE_NAMES: Record<string, [string, string]> = {
@@ -313,11 +332,43 @@ const pct = (v: number | null | undefined) => (v === null || v === undefined ? "
 const ms = (v: number | null | undefined) => (v === null || v === undefined ? "—" : `${Math.round(v)} ms`);
 const sessionScore = (c: SessionCard) => c.accuracy ?? c.time_on_target;
 
+type DayMetric = "accuracy" | "reaction" | "time_to_hit" | "hits";
+
+const DAY_METRICS: { id: DayMetric; ar: string; en: string; unit: string; better: "up" | "down"; of: (c: SessionCard) => number | null }[] = [
+  { id: "accuracy", ar: "الدقة", en: "Accuracy", unit: "%", better: "up", of: (c) => { const v = sessionScore(c); return v === null ? null : v * 100; } },
+  { id: "reaction", ar: "رد الفعل", en: "Reaction", unit: "ms", better: "down", of: (c) => c.median_reaction_ms },
+  { id: "time_to_hit", ar: "وقت الإصابة", en: "Time to hit", unit: "ms", better: "down", of: (c) => c.median_time_to_hit_ms },
+  { id: "hits", ar: "أهداف أصبتها", en: "Targets hit", unit: "", better: "up", of: (c) => (c.targets > 0 ? c.hits : null) },
+];
+
+const PAGE = 10;
+
+function MetricGuide({ T }: { T: Ctx["T"] }) {
+  const rows: [string, string][] = [
+    [T("الدقة", "Accuracy"), T("كم هدف أصبت من كل الأهداف اللي طلعت. بالتتبع تعني نسبة الوقت اللي كان مؤشرك على الهدف.", "Targets hit out of all targets shown. In tracking it is the share of time your crosshair stayed on the target.")],
+    [T("رد الفعل", "Reaction"), T("الوقت من ظهور الهدف لحد ما تبدي يدك تتحرك نحوه. أقل يعني أسرع. اللاعب العادي حوالي 250 ms.", "Time from the target appearing until your hand starts moving toward it. Lower is faster; a typical player is around 250 ms.")],
+    [T("وقت الإصابة", "Time to hit"), T("الوقت من ظهور الهدف لحد الرصاصة اللي أصابته: رد الفعل والحركة والتصحيح سوا.", "Time from the target appearing to the shot that hit it: reaction, movement and correction together.")],
+    [T("أهداف أصبتها", "Targets hit"), T("عدد الأهداف المصابة بالجلسة. يفيد للمقارنة بين جلسات بنفس الطول.", "Targets hit in the session. Useful for comparing sessions of the same length.")],
+    [T("الأرقام بالمعدل", "Averages"), T("كل رقم هو الوسيط بالجلسة، فرصاصة شاذة وحدة ما تخربه.", "Each number is the session median, so one odd shot does not skew it.")],
+  ];
+  return (
+    <details className="card guide">
+      <summary>{T("شنو تعني هاي الأرقام؟", "What do these numbers mean?")}</summary>
+      <dl>
+        {rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}
+      </dl>
+    </details>
+  );
+}
+
 function Analysis({ ctx, initial }: { ctx: Ctx; initial?: string }) {
   const { view, T, lang, go } = ctx;
-  const days = useMemo(() => [...new Set(view.sessions.map((s) => dayKey(s.at_ms)))], [view.sessions]);
+  const days = useMemo(() => new Set(view.sessions.map((s) => dayKey(s.at_ms))), [view.sessions]);
+  const latestDay = useMemo(() => [...days].sort().pop(), [days]);
   const [open, setOpen] = useState<SessionCard | null>(() => view.sessions.find((s) => s.path === initial) ?? null);
-  const [day, setDay] = useState(() => (open ? dayKey(open.at_ms) : days[0]));
+  const [day, setDay] = useState(() => (open ? dayKey(open.at_ms) : latestDay ?? dayKey(Date.now())));
+  const [metric, setMetric] = useState<DayMetric>("accuracy");
+  const [shown, setShown] = useState(PAGE);
 
   if (view.sessions.length === 0) {
     return (
@@ -329,59 +380,87 @@ function Analysis({ ctx, initial }: { ctx: Ctx; initial?: string }) {
   }
   if (open) return <SessionView key={open.path} card={open} ctx={ctx} back={() => setOpen(null)} />;
 
+  const locale = lang === "ar" ? "ar-IQ" : "en-GB";
   const today = dayKey(Date.now());
   const yesterday = dayKey(Date.now() - 86400000);
-  const dayName = (d: string) => (d === today ? T("اليوم", "Today") : d === yesterday ? T("أمس", "Yesterday") : new Date(`${d}T12:00`).toLocaleDateString(lang === "ar" ? "ar-IQ" : "en-GB", { day: "numeric", month: "short" }));
+  const choose = (d: string) => { setDay(d); setShown(PAGE); };
+  const longDate = new Date(`${day}T12:00`).toLocaleDateString(locale, { weekday: "long", day: "numeric", month: "long" });
   const cards = view.sessions.filter((s) => dayKey(s.at_ms) === day);
   const scored = cards.map(sessionScore).filter((v): v is number => v !== null);
   const reactions = cards.map((c) => c.median_reaction_ms).filter((v): v is number => v !== null);
+  const toHit = cards.map((c) => c.median_time_to_hit_ms).filter((v): v is number => v !== null);
   const hits = cards.reduce((a, c) => a + c.hits, 0);
   const seconds = cards.reduce((a, c) => a + c.duration_s, 0);
-  const hours = new Map<number, number[]>();
-  for (const c of cards) {
-    const v = sessionScore(c);
-    if (v === null) continue;
-    const h = new Date(c.at_ms).getHours();
-    hours.set(h, [...(hours.get(h) ?? []), v]);
+  const time = (c: SessionCard) => new Date(c.at_ms).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
+
+  const m = DAY_METRICS.find((x) => x.id === metric)!;
+  const ordered = [...cards].sort((a, b) => a.at_ms - b.at_ms).map((c) => ({ c, v: m.of(c) })).filter((r): r is { c: SessionCard; v: number } => r.v !== null);
+  const fmt = (v: number) => `${Math.round(v)}${m.unit ? ` ${m.unit}` : ""}`;
+  const points = ordered.map(({ c, v }, i) => {
+    const prev = ordered[i - 1]?.v;
+    const diff = prev === undefined ? "" : ` · ${v - prev >= 0 ? "+" : "−"}${Math.abs(Math.round(v - prev))} ${T("عن اللي قبلها", "vs previous")}`;
+    return { label: time(c), value: v, tip: `${scenarioTitle(c.scenario, lang)} · ${fmt(v)}${diff}` };
+  });
+  let dayNote = "";
+  if (ordered.length >= 2) {
+    const best = ordered.reduce((a, b) => ((m.better === "up" ? b.v > a.v : b.v < a.v) ? b : a));
+    const worst = ordered.reduce((a, b) => ((m.better === "up" ? b.v < a.v : b.v > a.v) ? b : a));
+    const half = Math.floor(ordered.length / 2);
+    const early = avg(ordered.slice(0, half).map((r) => r.v))!;
+    const late = avg(ordered.slice(half).map((r) => r.v))!;
+    const better = m.better === "up" ? late > early : late < early;
+    dayNote = T(
+      `أحسن جلسة: ${scenarioTitle(best.c.scenario, lang)} (${fmt(best.v)}) الساعة ${time(best.c)}. الأضعف: ${scenarioTitle(worst.c.scenario, lang)} (${fmt(worst.v)}). ${Math.round(early) === Math.round(late) ? "آخر اليوم نفس أوله." : better ? "آخر اليوم كنت أحسن من أوله." : "آخر اليوم نزلت عن أوله، يمكن تعبت."}`,
+      `Best: ${scenarioTitle(best.c.scenario, lang)} (${fmt(best.v)}) at ${time(best.c)}. Weakest: ${scenarioTitle(worst.c.scenario, lang)} (${fmt(worst.v)}). ${Math.round(early) === Math.round(late) ? "The end of the day matched the start." : better ? "You finished the day better than you started." : "You finished the day below your start; you may have been tired."}`,
+    );
   }
-  const hourly = [...hours.entries()].sort((a, b) => a[0] - b[0]).map(([h, v]) => ({ label: `${String(h).padStart(2, "0")}:00`, value: Math.round(avg(v)! * 100), n: v.length }));
-  let hourNote = "";
-  if (hourly.length >= 2) {
-    const [a, b] = [hourly[hourly.length - 2], hourly[hourly.length - 1]];
-    const d = b.value - a.value;
-    hourNote = d === 0
-      ? T(`مستواك بـ ${b.label} نفس ${a.label}.`, `${b.label} matched ${a.label}.`)
-      : T(`${d > 0 ? "تحسنت" : "نزلت"} ${Math.abs(d)} نقطة بين ${a.label} و ${b.label}.`, `${d > 0 ? "Up" : "Down"} ${Math.abs(d)} points from ${a.label} to ${b.label}.`);
-  }
+
+  const pickerLabel = day !== today && day !== yesterday ? new Date(`${day}T12:00`).toLocaleDateString(locale, { day: "numeric", month: "short" }) : T("يوم آخر", "Another day");
 
   return (
     <>
       <PageHead title={T("التحليل", "Analysis")} sub={T("اختار يوم، وافتح أي جلسة حتى تشوف تفاصيلها.", "Pick a day and open any session for its details.")} />
-      <div className="chips days-strip">
-        {days.slice(0, 10).map((d) => <button key={d} className={d === day ? "on" : ""} onClick={() => setDay(d)}>{dayName(d)}</button>)}
-        <input type="date" aria-label={T("اختار يوم", "Pick a day")} value={day} max={today} onChange={(e) => e.target.value && setDay(e.target.value)} />
+      <div className="day-bar">
+        <div className="segmented">
+          <button className={day === today ? "on" : ""} disabled={!days.has(today)} onClick={() => choose(today)}>{T("اليوم", "Today")}</button>
+          <button className={day === yesterday ? "on" : ""} disabled={!days.has(yesterday)} onClick={() => choose(yesterday)}>{T("أمس", "Yesterday")}</button>
+        </div>
+        <DayPicker available={days} selected={[day]} onChange={(d) => d[0] && choose(d[0])} lang={lang} label={pickerLabel} />
+        <span className="day-title">{longDate}</span>
       </div>
       <div className="stats">
-        <Stat value={String(cards.length)} label={T("جلسات", "Sessions")} />
-        <Stat value={pct(avg(scored))} label={T("معدل الدقة", "Average accuracy")} />
-        <Stat value={ms(avg(reactions))} label={T("معدل رد الفعل", "Average reaction")} />
-        <Stat value={String(hits)} label={T("أهداف أصبتها", "Targets hit")} hint={`${Math.round(seconds / 60)} ${T("دقيقة تدريب", "minutes trained")}`} />
+        <Stat value={String(cards.length)} label={T("جلسات", "Sessions")} hint={`${Math.round(seconds / 60)} ${T("دقيقة تدريب", "minutes trained")}`} />
+        <Stat value={pct(avg(scored))} label={T("معدل الدقة", "Average accuracy")} hint={T("أعلى أحسن", "Higher is better")} />
+        <Stat value={ms(avg(reactions))} label={T("معدل رد الفعل", "Average reaction")} hint={T("أقل أسرع", "Lower is faster")} />
+        <Stat value={ms(avg(toHit))} label={T("معدل وقت الإصابة", "Average time to hit")} hint={T("أقل أسرع", "Lower is faster")} />
+        <Stat value={String(hits)} label={T("أهداف أصبتها", "Targets hit")} />
       </div>
-      {hourly.length > 0 && (
+      <MetricGuide T={T} />
+      {cards.length > 0 && (
         <section className="card">
-          <h2>{T("مستواك خلال اليوم", "Your level through the day")}</h2>
-          {hourNote && <p className="muted small">{hourNote}</p>}
-          <ValueBars rows={hourly.map((h) => ({ label: h.label, value: h.value, tip: `${h.value}% · ${h.n} ${T("جلسة", "sessions")}` }))} max={100} unit="%" />
+          <div className="row between wrap">
+            <h2>{T("جلساتك خلال اليوم", "Your sessions through the day")}</h2>
+            <div className="segmented small">
+              {DAY_METRICS.map((x) => <button key={x.id} className={x.id === metric ? "on" : ""} onClick={() => setMetric(x.id)}>{lang === "ar" ? x.ar : x.en}</button>)}
+            </div>
+          </div>
+          {dayNote && <p className="muted small">{dayNote}</p>}
+          {points.length > 0
+            ? <TrendLine points={points} unit={m.unit} better={m.better} />
+            : <Empty text={T("هذا المقياس ما ينطبق على جلسات هذا اليوم (مثلاً التتبع ما بيه رد فعل).", "This measure does not apply to this day's sessions (tracking has no reaction time, for example).")} />}
+          <p className="muted small">{T("كل نقطة جلسة. مرر الماوس عليها حتى تشوف اسمها والفرق عن الجلسة اللي قبلها.", "Each point is a session. Hover to see its name and the change from the session before.")}</p>
         </section>
       )}
-      <h2 className="group">{T("جلسات هذا اليوم", "Sessions this day")}</h2>
+      <div className="row between">
+        <h2 className="group">{T("جلسات هذا اليوم", "Sessions this day")} <small className="muted">({cards.length})</small></h2>
+      </div>
       {cards.length === 0 && <Empty text={T("ما لعبت بهذا اليوم.", "No sessions on this day.")} />}
       <div className="session-grid">
-        {cards.map((c) => (
+        {cards.slice(0, shown).map((c) => (
           <button key={c.path} className="session-card" onClick={() => setOpen(c)}>
             <span className="row between">
               <b>{scenarioTitle(c.scenario, lang)}</b>
-              <small>{new Date(c.at_ms).toLocaleTimeString(lang === "ar" ? "ar-IQ" : "en-GB", { hour: "2-digit", minute: "2-digit" })}</small>
+              <small>{time(c)}</small>
             </span>
             <span className="big-num">{pct(sessionScore(c))}</span>
             <span className="meter wide"><i style={{ width: `${Math.round((sessionScore(c) ?? 0) * 100)}%`, background: "var(--accent)" }} /></span>
@@ -395,6 +474,11 @@ function Analysis({ ctx, initial }: { ctx: Ctx; initial?: string }) {
           </button>
         ))}
       </div>
+      {cards.length > shown && (
+        <div className="more">
+          <button className="btn ghost" onClick={() => setShown(shown + PAGE)}>{T(`عرض المزيد (باقي ${cards.length - shown})`, `Show more (${cards.length - shown} left)`)}</button>
+        </div>
+      )}
     </>
   );
 }
@@ -857,7 +941,7 @@ function PlanBody({ ctx, plan }: { ctx: Ctx; plan: Plan }) {
       <section className="card hero">
         <h2>{T("وقت إعادة الاختبار", "Time to retest")}</h2>
         <p className="muted">{plan.retest_ready ? T("نفس الاختبارات بنموذج جديد، حتى نقيس التحسن الحقيقي.", "The same tests in a new form, to measure real improvement.") : T("يفتح بعد يوم راحة. الراحة جزء من التعلم.", "Opens after a rest day. Rest is part of learning.")}</p>
-        <button className="btn" disabled={!plan.retest_ready || !view.trainer_found} onClick={() => act("run_retest")}>{T("ابدأ", "Start")}</button>
+        <button className="btn" disabled={!plan.retest_ready || !view.trainer_found} onClick={() => act("run_retest")}>{view.resume ? T(`كمل (${view.resume.done} من ${view.resume.total})`, `Continue (${view.resume.done} of ${view.resume.total})`) : T("ابدأ", "Start")}</button>
       </section>
     );
   }
