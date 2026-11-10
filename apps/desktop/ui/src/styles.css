@@ -396,3 +396,20 @@ h3.sub { font-size: 14.5px; margin: 18px 0 8px; }
 small.hint { display: block; margin: -4px 0 8px; font-size: 12px; }
 @media (max-width: 1100px) { .library { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .library { grid-template-columns: minmax(0, 1fr); } }
+
+/* Coach links */
+.report-links { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 14px; }
+.link-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+.link-card { background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; text-align: start; color: inherit; font: inherit; cursor: pointer; display: flex; flex-direction: column; gap: 4px; }
+.link-card:hover { border-color: var(--accent); }
+.link-card small { color: var(--muted); line-height: 1.5; }
+/* Settings */
+.settings-nav { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 6px 0; }
+.settings-nav a { color: var(--muted); text-decoration: none; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; font-size: 13px; }
+.settings-nav a:hover { color: var(--text); border-color: var(--accent); }
+.key-row { display: flex; gap: 12px; align-items: flex-end; margin-top: 4px; }
+.key-row .field { flex: 1; margin: 0; }
+.key-row .btn { flex: none; height: 40px; }
+ul.examples { margin: 0 0 8px; padding-inline-start: 20px; color: var(--muted); font-size: 13px; line-height: 1.7; }
+section[id^="set-"] { scroll-margin-top: 56px; }
+@media (max-width: 700px) { .key-row { flex-direction: column; align-items: stretch; } }

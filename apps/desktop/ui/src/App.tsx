@@ -1399,6 +1399,49 @@ const AI_SOURCES: { id: string; name: string; model: string; needsKey: boolean }
   { id: "custom", name: "", model: "", needsKey: false },
 ];
 
+/** Drills a report names, found by their display names in either language. */
+function drillsIn(texts: string[]): string[] {
+  const found = Object.keys(drillNames).filter((id) => texts.some((t) => drillNames[id].some((n) => t.includes(n))));
+  return found.slice(0, 3);
+}
+
+function ReportLinks({ ctx, report }: { ctx: Ctx; report: View["reports"][number] }) {
+  const { view, T, lang, go } = ctx;
+  const drills = drillsIn([...report.reply.next_steps, ...report.reply.weaknesses.map((w) => `${w.fix ?? ""} ${w.title}`)]);
+  const latest = view.sessions[0];
+  return (
+    <section className="report-links">
+      <h2>{T("كمل من هنا", "Take it from here")}</h2>
+      <div className="link-grid">
+        {drills.map((d) => (
+          <button key={d} className="link-card" onClick={() => go("practice", `drill:${d}`)}>
+            <b>{T("جهّز تدريب حر", "Set up free practice")}</b>
+            <small>{pick(drillNames[d], lang, d)} · {pick(drillInfo[d]?.purpose, lang, "")}</small>
+          </button>
+        ))}
+        {view.plan && (
+          <button className="link-card" onClick={() => go("plan")}>
+            <b>{T("افتح خطتك", "Open your plan")}</b>
+            <small>{T("التقرير يكمّل الخطة، والخطة هي اللي تقيس التحسن.", "The report supports the plan; the plan measures the improvement.")}</small>
+          </button>
+        )}
+        {report.scope === "latest" && latest && (
+          <button className="link-card" onClick={() => go("analysis", latest.path)}>
+            <b>{T("شوف الجلسة بالتفصيل", "See the session in detail")}</b>
+            <small>{T("كل حركة ورصاصة بالتحليل.", "Every movement and shot in Analysis.")}</small>
+          </button>
+        )}
+        {report.scope !== "latest" && (
+          <button className="link-card" onClick={() => go("progress")}>
+            <b>{T("شوف تقدمك", "See your progress")}</b>
+            <small>{T("الأرقام اللي يعتمد عليها التقرير، يوم بعد يوم.", "The numbers behind this report, day by day.")}</small>
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function Coach({ ctx }: { ctx: Ctx }) {
   const { view, T, act, lang, go } = ctx;
   const [selected, setSelected] = useState(0);
@@ -1484,6 +1527,7 @@ function Coach({ ctx }: { ctx: Ctx }) {
                 <ol className="next">{report.reply.next_steps.map((s) => <li key={s}>{s}</li>)}</ol>
               </>
             )}
+            <ReportLinks ctx={ctx} report={report} />
           </article>
         </div>
       )}
@@ -1551,30 +1595,39 @@ function SettingsPage({ ctx }: { ctx: Ctx }) {
   };
   return (
     <>
-      <PageHead title={T("الإعدادات", "Settings")} />
-      <section className="card">
+      <PageHead title={T("الإعدادات", "Settings")} sub={T("كل تغيير ينحفظ لحاله.", "Every change saves by itself.")} />
+      <nav className="settings-nav">
+        {[["set-mouse", T("الماوس", "Mouse")], ["set-game", T("داخل اللعبة", "In the game")], ["set-app", T("التطبيق", "App")], ["set-coach", T("المدرب", "Coach")]].map(([id, name]) => (
+          <a key={id} href={`#${id}`}>{name}</a>
+        ))}
+      </nav>
+      <section className="card" id="set-mouse">
         <h2>{T("الماوس", "Mouse")}</h2>
+        <p className="muted small">{T("نفس أرقام لعبتك بالضبط. منها نحسب كم سنتيمتر تحتاج حتى تلف 360.", "Exactly the numbers from your game. They give the centimetres for a full turn.")}</p>
         <div className="grid2">
           <Num label="DPI" value={s.dpi} step={50} min={50} set={(dpi) => set({ dpi })} />
           <Num label={T("الحساسية", "Sensitivity")} value={s.sens} step={0.01} min={0.01} set={(sens) => set({ sens })} />
         </div>
-        <p className="small muted">{T("الحساب الحالي", "Current")}: {view.cm360.toFixed(1)} cm/360. {T("غيرها بس إذا غيرتها باللعبة، لأن المقارنات تعتمد عليها.", "Change this only when you change it in the game; comparisons depend on it.")}</p>
+        <p className="small muted">{T("الحساب الحالي", "Current")}: <b dir="ltr">{view.cm360.toFixed(1)} cm/360</b>. {T("غيرها بس إذا غيرتها باللعبة، لأن المقارنات تعتمد عليها.", "Change this only when you change it in the game; comparisons depend on it.")}</p>
       </section>
-      <section className="card">
-        <h2>{T("التطبيق", "App")}</h2>
-        <div className="grid2"><LangSelect ctx={ctx} value={s.locale} set={(locale) => set({ locale })} /></div>
-        <Toggle checked={s.windowed} set={(windowed) => set({ windowed })} label={T("شغّل اللعبة بنافذة", "Run the game in a window")} />
-      </section>
-      <section className="card">
-        <h2>{T("اللعبة", "In the game")}</h2>
+      <section className="card" id="set-game">
+        <h2>{T("داخل اللعبة", "In the game")}</h2>
+        <p className="muted small">{T("شكل التصويب والصوت أثناء التدريب.", "How aiming looks and sounds while you train.")}</p>
         <div className="grid2">
           <Slider label={T("صوت الإصابة والخطأ", "Hit and miss sound")} value={s.sound_volume} min={0} max={100} step={5} unit="%" set={(sound_volume) => set({ sound_volume })} />
           <CrosshairEditor ctx={ctx} value={s.crosshair} set={(crosshair) => set({ crosshair })} />
         </div>
-        <Toggle checked={s.test_mode} set={(test_mode) => set({ test_mode })} label={T("وضع التجربة", "Test mode")} help={T("تمارين 20 ثانية وبدون انتظار يوم الراحة.", "20-second drills and no rest-day wait.")} />
+        <Toggle checked={s.windowed} set={(windowed) => set({ windowed })} label={T("شغّل اللعبة بنافذة", "Run the game in a window")} help={T("ملء الشاشة أدق بالتوقيت. النافذة أسهل إذا تبدل بين البرامج.", "Full screen has steadier timing; a window is easier when switching apps.")} />
       </section>
-      <section className="card">
-        <h2>{T("مصدر الذكاء الاصطناعي", "AI source")}</h2>
+      <section className="card" id="set-app">
+        <h2>{T("التطبيق", "App")}</h2>
+        <div className="grid2"><LangSelect ctx={ctx} value={s.locale} set={(locale) => set({ locale })} /></div>
+        <Toggle checked={s.test_mode} set={(test_mode) => set({ test_mode })} label={T("وضع التجربة", "Test mode")} help={T("تمارين 20 ثانية وبدون انتظار يوم الراحة. للتجربة بس، لأن النتائج ما تعتبر قياس حقيقي.", "20-second drills and no rest-day wait. For trying things only; results are not a real measurement.")} />
+      </section>
+      <section className="card" id="set-coach">
+        <h2>{T("المدرب", "Coach")}</h2>
+        <p className="muted small">{T("التقارير تنكتب بالتحليل المدمج بدون إنترنت، أو بذكاء اصطناعي تختاره انت.", "Reports are written by the built-in analysis offline, or by an AI you choose.")}</p>
+        <h3 className="sub">{T("مصدر الذكاء الاصطناعي", "AI source")}</h3>
         <div className="grid2">
           <label className="field">{T("المصدر", "Source")}
             <select value={s.ai_provider} onChange={(e) => { const a = AI_SOURCES.find((x) => x.id === e.target.value)!; set({ ai_provider: a.id, ai_model: a.model, ai_base_url: a.id === "custom" ? s.ai_base_url : "" }); setKey(""); }}>
@@ -1588,28 +1641,38 @@ function SettingsPage({ ctx }: { ctx: Ctx }) {
           </label>
           {needsAi && <label className="field">{T("اسم الموديل", "Model name")}<input dir="ltr" value={s.ai_model} onChange={(e) => set({ ai_model: e.target.value })} /></label>}
           {s.ai_provider === "custom" && <label className="field">{T("رابط الخادم (Base URL)", "Server URL (Base URL)")}<input dir="ltr" placeholder="http://localhost:11434/v1" value={s.ai_base_url} onChange={(e) => set({ ai_base_url: e.target.value })} /></label>}
-          {needsAi && <label className="field">API key{source.needsKey ? "" : T(" (اختياري)", " (optional)")}<input dir="ltr" type="password" autoComplete="off" placeholder={hasKey ? T("محفوظ. اكتب مفتاح جديد لتغييره", "Saved. Type a new key to replace it") : ""} value={key} onChange={(e) => setKey(e.target.value)} onBlur={saveKey} /></label>}
         </div>
         {needsAi && (
-          <div className="row">
+          <div className="key-row">
+            <label className="field grow">API key{source.needsKey ? "" : T(" (اختياري)", " (optional)")}
+              <input dir="ltr" type="password" autoComplete="off" placeholder={hasKey ? T("محفوظ. اكتب مفتاح جديد لتغييره", "Saved. Type a new key to replace it") : ""} value={key} onChange={(e) => setKey(e.target.value)} onBlur={saveKey} />
+            </label>
             <button className="btn ghost" disabled={testing} onClick={runTest}>{testing ? T("يفحص...", "Testing...") : T("افحص الاتصال", "Test connection")}</button>
-            {test && <span className={test.ok ? "up" : "down"}>{test.text}</span>}
           </div>
         )}
+        {needsAi && test && <p className={`small ${test.ok ? "up" : "down"}`}>{test.text}</p>}
         {needsAi && <p className="small muted">{T("المفتاح ينحفظ على جهازك بس، ويروح للمصدر اللي اخترته فقط.", "The key is stored only on this computer and sent only to the source you chose.")}</p>}
+        {config && (
+          <>
+            <h3 className="sub">{T("شنو يشوف المدرب من بياناتك", "What the coach can see")}</h3>
+            <p className="muted small">{T("كل شي تطفيه ما يوصل للمدرب. الأرقام بس، بدون تسجيلات الحركة.", "Anything switched off never reaches the coach. Numbers only, never the movement recordings.")}</p>
+            <div className="toggle-grid">
+              {DATA_TOGGLES.map(([k, ar, en]) => <Toggle key={k} checked={Boolean(config[k])} set={(v) => { setSaved(false); setConfig({ ...config, [k]: v }); }} label={T(ar, en)} />)}
+            </div>
+            <h3 className="sub">{T("تعليمات إضافية للمدرب", "Extra instructions for the coach")}</h3>
+            <p className="muted small">{T("اكتب شي يخص أسلوبك أو هدفك، والمدرب ياخذه بعين الاعتبار بكل تقرير. أمثلة:", "Write anything about your style or goal; the coach considers it in every report. Examples:")}</p>
+            <ul className="examples">
+              <li>{T("ألعب Duelist وأعتمد على الفليك، ركز على سرعتي.", "I play Duelist and rely on flicks; focus on my speed.")}</li>
+              <li>{T("عندي 30 دقيقة باليوم بس.", "I only have 30 minutes a day.")}</li>
+              <li>{T("خلي التقرير قصير ومباشر.", "Keep reports short and direct.")}</li>
+            </ul>
+            <label className="field">
+              <textarea rows={3} placeholder={T("مثلاً: ألعب Sentinel وأريد أحسن ثبات مستوى الرأس.", "For example: I play Sentinel and want steadier head level.")} value={config.extra_instructions} onChange={(e) => { setSaved(false); setConfig({ ...config, extra_instructions: e.target.value }); }} />
+            </label>
+            <p className="small muted">{T("نفس الإعدادات بملف JSON وتكدر تعدله:", "The same settings live in a JSON file you can edit:")} <code dir="ltr">{view.coach_config_path}</code></p>
+          </>
+        )}
       </section>
-      {config && (
-        <section className="card">
-          <h2>{T("شنو يشوف المدرب من بياناتك", "What the coach can see")}</h2>
-          <div className="toggle-grid">
-            {DATA_TOGGLES.map(([k, ar, en]) => <Toggle key={k} checked={Boolean(config[k])} set={(v) => { setSaved(false); setConfig({ ...config, [k]: v }); }} label={T(ar, en)} />)}
-          </div>
-          <label className="field spaced">{T("تعليمات إضافية للمدرب", "Extra instructions for the coach")}
-            <textarea rows={3} value={config.extra_instructions} onChange={(e) => { setSaved(false); setConfig({ ...config, extra_instructions: e.target.value }); }} />
-          </label>
-          <p className="small muted">{T("نفس الإعدادات بملف JSON وتكدر تعدله:", "The same settings live in a JSON file you can edit:")} <code dir="ltr">{view.coach_config_path}</code></p>
-        </section>
-      )}
       <p className="small muted savebar">{saved ? T("✓ كل التغييرات محفوظة", "✓ All changes saved") : T("التغييرات تنحفظ تلقائياً.", "Changes save automatically.")}</p>
     </>
   );
