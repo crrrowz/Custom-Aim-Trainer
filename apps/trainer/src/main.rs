@@ -1638,17 +1638,19 @@ fn spawn_feedback_hud(mut commands: Commands, ui_fonts: Res<trainer::fonts::UiFo
                 }
             });
         });
+    // The HUD sits in the top-left corner: targets spawn within about 32 degrees of the centre, so the
+    // corners are the one place they never appear. Centred at the top it covered targets straight up.
     commands
         .spawn(Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(20.0),
-            width: Val::Percent(100.0),
-            justify_content: JustifyContent::Center,
+            top: Val::Px(HUD_MARGIN_PX),
+            left: Val::Px(HUD_MARGIN_PX),
             ..default()
         })
         .with_children(|root| {
             root.spawn(Node {
-                column_gap: Val::Px(8.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(6.0),
                 ..default()
             })
             .with_children(|row| {
@@ -1656,11 +1658,11 @@ fn spawn_feedback_hud(mut commands: Commands, ui_fonts: Res<trainer::fonts::UiFo
                     row.spawn((
                         Node {
                             display: Display::None,
-                            min_width: Val::Px(128.0),
+                            min_width: Val::Px(120.0),
                             flex_direction: FlexDirection::Column,
                             align_items: AlignItems::Center,
                             row_gap: Val::Px(2.0),
-                            padding: UiRect::axes(Val::Px(18.0), Val::Px(10.0)),
+                            padding: UiRect::axes(Val::Px(14.0), Val::Px(7.0)),
                             border_radius: BorderRadius::all(Val::Px(10.0)),
                             ..default()
                         },
@@ -1699,9 +1701,9 @@ fn spawn_feedback_hud(mut commands: Commands, ui_fonts: Res<trainer::fonts::UiFo
     commands
         .spawn(Node {
             position_type: PositionType::Absolute,
-            bottom: Val::Px(72.0),
-            width: Val::Percent(100.0),
-            justify_content: JustifyContent::Center,
+            top: Val::Px(HUD_MARGIN_PX + 3.0 * HUD_CELL_SLOT_PX),
+            left: Val::Px(HUD_MARGIN_PX),
+            max_width: Val::Px(300.0),
             ..default()
         })
         .with_children(|root| {
@@ -1709,7 +1711,7 @@ fn spawn_feedback_hud(mut commands: Commands, ui_fonts: Res<trainer::fonts::UiFo
                 Text::new(""),
                 TextFont {
                     font: bevy::text::FontSource::Handle(ui_fonts.semibold.clone()),
-                    font_size: bevy::text::FontSize::Px(22.0),
+                    font_size: bevy::text::FontSize::Px(20.0),
                     ..default()
                 },
                 TextColor(COLOR_TEXT_PRIMARY),
@@ -1719,6 +1721,10 @@ fn spawn_feedback_hud(mut commands: Commands, ui_fonts: Res<trainer::fonts::UiFo
 }
 
 /// One line under the crosshair: how far the last flick went, or whether the player can shoot.
+/// Distance of the HUD from the window edge, and the height one HUD cell takes with its gap.
+const HUD_MARGIN_PX: f32 = 20.0;
+const HUD_CELL_SLOT_PX: f32 = 70.0;
+
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn update_session_hud(
     mut state: ResMut<TrainerState>,
