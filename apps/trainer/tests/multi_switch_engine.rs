@@ -72,8 +72,8 @@ fn test_multi_switch_engine_concurrency_and_octant_distance_balance() {
             signed_yaw
         );
         assert!(
-            a.angles.pitch.abs() <= 35.0,
-            "Target #{} pitch {} exceeds max_pitch 35.0°",
+            a.angles.pitch.abs() <= 32.0,
+            "Target #{} pitch {} exceeds max_pitch 32.0°",
             a.target_id,
             a.angles.pitch
         );
@@ -88,14 +88,14 @@ fn test_multi_switch_engine_concurrency_and_octant_distance_balance() {
         .iter()
         .filter(|a| (a.distance_bin_deg - 20.0).abs() < 1e-5)
         .count();
-    let c35 = spawned
+    let c30 = spawned
         .iter()
-        .filter(|a| (a.distance_bin_deg - 35.0).abs() < 1e-5)
+        .filter(|a| (a.distance_bin_deg - 30.0).abs() < 1e-5)
         .count();
 
     assert_eq!(c10, 16, "Distance bin 10° must have 16 targets");
     assert_eq!(c20, 16, "Distance bin 20° must have 16 targets");
-    assert_eq!(c35, 16, "Distance bin 35° must have 16 targets");
+    assert_eq!(c30, 16, "Distance bin 30° must have 16 targets");
 
     // Verify octant distribution through the real engine execution (6 each)
     for oct in 0..8 {

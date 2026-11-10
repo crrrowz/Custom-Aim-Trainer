@@ -112,14 +112,14 @@ fn test_a6_cluster_distribution_balance() {
             .iter()
             .filter(|(d, _)| (*d - 20.0).abs() < 1e-5)
             .count();
-        let c35 = candidates
+        let c30 = candidates
             .iter()
-            .filter(|(d, _)| (*d - 35.0).abs() < 1e-5)
+            .filter(|(d, _)| (*d - 30.0).abs() < 1e-5)
             .count();
 
         assert_eq!(c10, 16);
         assert_eq!(c20, 16);
-        assert_eq!(c35, 16);
+        assert_eq!(c30, 16);
 
         // Verify octants distribution (48 / 8 = 6 each)
         for octant in 0..8 {

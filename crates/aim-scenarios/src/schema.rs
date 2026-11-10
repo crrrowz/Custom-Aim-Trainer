@@ -130,6 +130,12 @@ pub enum TargetLayout {
 /// Speed at or below which a shot is accurate (m/s). Provisional, calibrated against VALORANT later.
 pub const ACCURATE_SPEED_MPS: f64 = 0.7;
 
+/// Half the visible screen in degrees from the centre, with a small margin. The game uses a 103 degree
+/// horizontal field of view on a 16:9 screen, which shows about 51 degrees left and right and 35 up and
+/// down. A target farther out than this cannot be seen without turning.
+pub const ON_SCREEN_H_DEG: f64 = 48.0;
+pub const ON_SCREEN_V_DEG: f64 = 33.0;
+
 /// Extra rules that make a drill train one specific habit. All off by default.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct DrillRules {

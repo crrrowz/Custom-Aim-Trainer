@@ -10,10 +10,7 @@ use serde::{Deserialize, Serialize};
 
 const SPAWN_DISTANCE_M: f64 = 15.0;
 const OCTANTS: u32 = 8;
-/// Half the visible screen, in degrees from the centre, with a small margin: the game uses a 103 degree
-/// horizontal field of view on a 16:9 screen, which shows about 51 degrees left and right and 35 up and down.
-pub const ON_SCREEN_H_DEG: f64 = 48.0;
-pub const ON_SCREEN_V_DEG: f64 = 33.0;
+pub use aim_scenarios::schema::{ON_SCREEN_H_DEG, ON_SCREEN_V_DEG};
 const SECONDS_PER_TRIAL: f64 = 1.5;
 const PEEK_SPEED_MPS: f64 = 5.73;
 

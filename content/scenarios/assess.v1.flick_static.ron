@@ -1,13 +1,13 @@
 Scenario(
     id: "assess.v1.flick_static",
-    version: 1,
+    version: 2,
     kind: Assessment,
     timeout_s: 288.0,
     spawn_distance_m: 15.0,
     target_shape: Sphere,
     layout: Fitts(
         grid: FittsGrid(
-            distances_deg: [8.0, 20.0, 40.0],
+            distances_deg: [8.0, 20.0, 32.0], // v2: 40 put targets above and below the screen
             radius_sizes_deg: [0.4, 0.8],
             octants: 8,
             repetitions_per_cell: 2,
