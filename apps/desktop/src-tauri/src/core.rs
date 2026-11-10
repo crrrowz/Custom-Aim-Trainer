@@ -500,6 +500,15 @@ fn stage_index(path: &Path) -> Option<usize> {
     path.file_name()?.to_str()?.split('_').next()?.parse().ok()
 }
 
+/// True when this run saved a recording in `dir`, new or replacing an earlier one.
+fn written_since(dir: &Path, started: SystemTime) -> bool {
+    recordings_in(dir).unwrap_or_default().iter().any(|p| {
+        std::fs::metadata(p)
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t >= started)
+    })
+}
+
 /// Stages finished in a row from the start, ignoring a stage the player left part-way.
 fn finished_stages(dir: &Path) -> usize {
     let done: Vec<usize> = recordings_in(dir)
@@ -673,7 +682,7 @@ impl<R: TrainerRunner> Engine<R> {
                 (self.new_run_dir("assessment")?, done % FORMS, 0)
             }
         };
-        let before = recordings_in(&dir)?.len();
+        let started = SystemTime::now();
         let mut args = self.base_args(&s);
         args.extend([
             "--battery".to_string(),
@@ -692,7 +701,9 @@ impl<R: TrainerRunner> Engine<R> {
         self.runner.run(&args)?;
 
         let files = recordings_in(&dir)?;
-        if start > 0 && files.len() == before && finished_stages(&dir) == start {
+        // A test left with "save and exit" replaces the earlier partial file of the same test, so count
+        // what this run wrote rather than how many files there are.
+        if start > 0 && !written_since(&dir, started) {
             return Err(STOPPED_EARLY.to_string());
         }
         let sessions = files
@@ -1380,6 +1391,45 @@ impl<R: TrainerRunner> Engine<R> {
         self.store.set(KEY_REPORTS, &reports).map_err(err)
     }
 
+    /// Deletes several reports at once.
+    pub fn delete_reports(&self, at_ms: &[u64]) -> Res<()> {
+        let mut reports = self.reports()?;
+        reports.retain(|r| !at_ms.contains(&r.at_ms));
+        self.store.set(KEY_REPORTS, &reports).map_err(err)
+    }
+
+    /// Deletes several recordings. Every one is tried; the first failure is reported afterwards.
+    pub fn delete_sessions(&self, paths: &[String]) -> Res<()> {
+        let failures: Vec<String> = paths
+            .iter()
+            .filter_map(|p| self.delete_session(p).err())
+            .collect();
+        failures.into_iter().next().map_or(Ok(()), Err)
+    }
+
+    /// Saves a share card picture where the player can find it, and returns its path.
+    pub fn save_share_card(&self, png: &[u8], name: &str) -> Res<String> {
+        const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        if !png.starts_with(&PNG_SIGNATURE) {
+            return Err("The share card is not a PNG picture.".to_string());
+        }
+        let safe: String = name
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .take(60)
+            .collect();
+        let dir = std::env::var_os("USERPROFILE")
+            .map(|home| PathBuf::from(home).join("Pictures").join("AimForge"))
+            .unwrap_or_else(|| self.data_dir.join("share"));
+        std::fs::create_dir_all(&dir).map_err(err)?;
+        let file = dir.join(format!(
+            "{}.png",
+            if safe.is_empty() { "aimforge" } else { &safe }
+        ));
+        std::fs::write(&file, png).map_err(err)?;
+        Ok(file.to_string_lossy().into_owned())
+    }
+
     /// Deletes one recording. Only files inside the app's own sessions folder can be removed.
     pub fn delete_session(&self, path: &str) -> Res<()> {
         let file = Path::new(path).canonicalize().map_err(err)?;
@@ -1571,6 +1621,8 @@ mod tests {
         calls: RefCell<Vec<Vec<String>>>,
         write_files: Cell<bool>,
         full_battery: Cell<bool>,
+        /// Leave the first remaining stage part-way with "save and exit", recording nothing after it.
+        quit_and_save: Cell<bool>,
     }
 
     fn value_after(args: &[String], flag: &str) -> Option<String> {
@@ -1656,6 +1708,14 @@ mod tests {
                 }
                 let start: usize =
                     value_after(args, "--battery-start").map_or(0, |v| v.parse().unwrap());
+                if self.quit_and_save.get() {
+                    let mut partial = flick_session("assess.v1.other_a", gain);
+                    partial.header.quality_flags |= quality_flags::ABORTED;
+                    return write(
+                        &partial,
+                        &Path::new(&dir).join(format!("{start}_other_a.aft")),
+                    );
+                }
                 if start == 0 {
                     write(
                         &flick_session("assess.v1.warmup", gain),
@@ -1702,6 +1762,7 @@ mod tests {
                 calls: RefCell::new(Vec::new()),
                 write_files: Cell::new(true),
                 full_battery: Cell::new(true),
+                quit_and_save: Cell::new(false),
             },
         )
         .unwrap();
@@ -2091,6 +2152,69 @@ mod tests {
             view.estimate.is_none(),
             "a full assessment replaces the estimate"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn several_sessions_and_reports_are_deleted_together() {
+        let (mut e, dir) = engine("bulk", 1.0);
+        e.run_assessment().unwrap();
+        let paths: Vec<String> = e
+            .view()
+            .unwrap()
+            .sessions
+            .iter()
+            .take(3)
+            .map(|c| c.path.clone())
+            .collect();
+        e.delete_sessions(&paths).unwrap();
+        let left = e.view().unwrap().sessions;
+        assert!(paths.iter().all(|p| left.iter().all(|c| &c.path != p)));
+        assert_eq!(left.len(), 5);
+        assert!(
+            e.delete_sessions(&["C:/Windows/notepad.exe".to_string()])
+                .is_err(),
+            "outside files are refused"
+        );
+
+        for _ in 0..3 {
+            e.generate_report("all").unwrap();
+        }
+        let reports = e.view().unwrap().reports;
+        e.delete_reports(&[reports[0].at_ms, reports[1].at_ms])
+            .unwrap();
+        assert_eq!(e.view().unwrap().reports.len(), reports.len() - 2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_share_card_must_be_a_png() {
+        let (e, dir) = engine("share", 1.0);
+        assert!(e.save_share_card(b"not a picture", "x").is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn save_and_exit_in_a_resumed_test_is_kept_every_time() {
+        let (mut e, dir) = engine("quit-save", 1.0);
+        e.runner.full_battery.set(false);
+        e.run_assessment().unwrap();
+        e.runner.quit_and_save.set(true);
+        for attempt in 0..2 {
+            // The second attempt replaces the first one's partial file for the same test.
+            e.run_assessment().unwrap();
+            let view = e.view().unwrap();
+            assert_eq!(
+                view.notice.as_deref(),
+                Some("incomplete"),
+                "attempt {attempt}"
+            );
+            assert_eq!(
+                view.resume.map(|r| r.done),
+                Some(2),
+                "the part-way test is redone"
+            );
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 

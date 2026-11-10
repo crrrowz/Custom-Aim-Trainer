@@ -126,6 +126,33 @@ async fn delete_session(app: tauri::AppHandle, path: String) -> Result<View, Str
 }
 
 #[tauri::command]
+async fn delete_sessions(app: tauri::AppHandle, paths: Vec<String>) -> Result<View, String> {
+    with_engine(app, move |e| {
+        e.delete_sessions(&paths)?;
+        e.view()
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_reports(app: tauri::AppHandle, at_ms: Vec<u64>) -> Result<View, String> {
+    with_engine(app, move |e| {
+        e.delete_reports(&at_ms)?;
+        e.view()
+    })
+    .await
+}
+
+#[tauri::command]
+async fn save_share_card(
+    app: tauri::AppHandle,
+    png: Vec<u8>,
+    name: String,
+) -> Result<String, String> {
+    with_engine(app, move |e| e.save_share_card(&png, &name)).await
+}
+
+#[tauri::command]
 async fn delete_report(app: tauri::AppHandle, at_ms: u64) -> Result<View, String> {
     with_engine(app, move |e| {
         e.delete_report(at_ms)?;
@@ -180,7 +207,10 @@ fn main() {
             session_detail,
             generate_report,
             delete_session,
+            delete_sessions,
             delete_report,
+            delete_reports,
+            save_share_card,
             set_ai_key,
             test_ai,
             get_coach_config,
