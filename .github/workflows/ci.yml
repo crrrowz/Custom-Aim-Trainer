@@ -29,21 +29,37 @@ jobs:
         shell: pwsh
         run: ./scripts/check-boundaries.ps1
 
-  workspace:
-    name: Rust workspace
-    runs-on: windows-latest
+  # Everything except the game builds on Linux, which is faster and cheaper than Windows.
+  crates:
+    name: Rust crates (Linux)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Formatting
+      - name: Formatting (whole workspace)
         run: cargo fmt --all -- --check
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude trainer --all-targets --profile ci -- -D warnings
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --exclude trainer --profile ci
+
+  # The game reads raw input through Win32, so it is checked on Windows.
+  trainer:
+    name: Trainer (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy -p trainer --all-targets --profile ci -- -D warnings
+      - name: Tests
+        run: cargo test -p trainer --profile ci
 
   desktop:
     name: Desktop app
@@ -73,7 +89,7 @@ jobs:
         run: cargo fmt -- --check
       - name: Clippy
         working-directory: apps/desktop/src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --profile ci -- -D warnings
       - name: Tests
         working-directory: apps/desktop/src-tauri
-        run: cargo test --lib
+        run: cargo test --lib --profile ci

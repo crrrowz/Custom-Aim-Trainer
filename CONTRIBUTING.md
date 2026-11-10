@@ -80,14 +80,20 @@ Rules that keep this safe:
 
 ## Checks before merging
 
-Every pull request into `main` runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml) on
-Windows. It has three jobs, and all three must pass before the pull request can be merged:
+Every pull request into `main` runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml). It has
+four jobs, and all four must pass before the pull request can be merged:
 
-| Job | What it checks |
-| --- | --- |
-| Architecture boundaries | `aim-analysis` and `aim-coach` do not depend on Bevy, Tauri, winit, reqwest or rusqlite |
-| Rust workspace | `cargo fmt`, `cargo clippy -D warnings` and `cargo test` for every crate and the trainer |
-| Desktop app | the UI type-checks and builds, then `cargo fmt`, `clippy` and the backend tests in `apps/desktop/src-tauri` |
+| Job | Runs on | What it checks |
+| --- | --- | --- |
+| Architecture boundaries | Windows | `aim-analysis` and `aim-coach` do not depend on Bevy, Tauri, winit, reqwest or rusqlite |
+| Rust crates (Linux) | Linux | `cargo fmt` for everything, then `clippy -D warnings` and the tests of every crate except the game |
+| Trainer (Windows) | Windows | `clippy -D warnings` and the tests of the game, which needs Win32 |
+| Desktop app | Windows | the UI type-checks and builds, then `cargo fmt`, `clippy` and the backend tests in `apps/desktop/src-tauri` |
+
+CI builds with the `ci` profile (no optimisation, no debug info) so it compiles quickly; run the same
+build locally with `--profile ci`. Compiled dependencies are cached after a successful run on `main`,
+so a pull request normally takes a few minutes. The first run after `Cargo.lock` changes rebuilds
+everything and takes longer.
 
 When a check fails, open it from the pull request page and read the first error. Most failures are
 one of these:
