@@ -22,7 +22,7 @@ use aim_telemetry::read_aft;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -139,6 +139,33 @@ pub struct AssessmentRecord {
     /// Recordings of each test, oldest stage first.
     #[serde(default)]
     pub files: Vec<String>,
+    /// Version of each test's scenario. A test whose design changed is not comparable across versions.
+    #[serde(default)]
+    pub versions: BTreeMap<String, u32>,
+}
+
+impl AssessmentRecord {
+    /// Scenario versions, read from the recordings for records saved before they were stored.
+    fn scenario_versions(&self) -> BTreeMap<String, u32> {
+        if !self.versions.is_empty() {
+            return self.versions.clone();
+        }
+        self.files
+            .iter()
+            .filter_map(|f| read_session(Path::new(f)).ok())
+            .map(|s| (s.header.scenario_id, s.header.scenario_version))
+            .collect()
+    }
+}
+
+/// Tests present in both assessments whose scenario version differs.
+fn changed_tests(pre: &AssessmentRecord, post: &AssessmentRecord) -> Vec<String> {
+    let after = post.scenario_versions();
+    pre.scenario_versions()
+        .into_iter()
+        .filter(|(id, v)| after.get(id).is_some_and(|w| w != v))
+        .map(|(id, _)| id)
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -201,6 +228,9 @@ pub struct BlockResult {
     pub settings_before: (u32, f64),
     #[serde(default)]
     pub settings_after: (u32, f64),
+    /// Tests whose design changed between the two assessments, so their scores are not like for like.
+    #[serde(default)]
+    pub changed_tests: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -691,6 +721,10 @@ impl<R: TrainerRunner> Engine<R> {
                 .iter()
                 .map(|p| p.to_string_lossy().into_owned())
                 .collect(),
+            versions: sessions
+                .iter()
+                .map(|x| (x.header.scenario_id.clone(), x.header.scenario_version))
+                .collect(),
         };
         self.store.add_assessment(today(), &record).map_err(err)?;
         Ok(record)
@@ -854,7 +888,8 @@ impl<R: TrainerRunner> Engine<R> {
             .cloned()
             .ok_or("Baseline assessment is missing.")?;
         let s = self.settings()?;
-        let result = compare(&baseline, &post, &plan, s.lang());
+        let mut result = compare(&baseline, &post, &plan, s.lang());
+        result.changed_tests = changed_tests(&baseline, &post);
 
         plan.no_change_before = result.adaptation == Adaptation::SwitchDrill;
         plan.state = plan.state.clone().apply(PlanEvent::RetestFinished);
@@ -1517,6 +1552,7 @@ fn compare(
         conditions_changed: pre.dpi != post.dpi || (pre.sens - post.sens).abs() > 1e-9,
         settings_before: (pre.dpi, pre.sens),
         settings_after: (post.dpi, post.sens),
+        changed_tests: Vec::new(),
     }
 }
 
@@ -1543,10 +1579,16 @@ mod tests {
             .map(|i| args[i + 1].clone())
     }
 
+    thread_local! {
+        /// Scenario version the fake trainer writes into its recordings.
+        static SCENARIO_VERSION: Cell<u32> = const { Cell::new(1) };
+    }
+
     /// 96 flicks at growing distances, each with a first movement of `gain` times the distance.
     fn flick_session(scenario: &str, gain: f64) -> AftSession {
         let mut s = sample_session();
         s.header.scenario_id = scenario.to_string();
+        s.header.scenario_version = SCENARIO_VERSION.with(Cell::get);
         s.header.mouse.deg_per_count = 0.002;
         s.streams.keys.records.clear();
         s.streams.targets.records.clear();
@@ -1667,6 +1709,34 @@ mod tests {
     }
 
     #[test]
+    fn a_retest_on_a_newer_test_version_is_flagged() {
+        let (mut e, dir) = engine("versions", 1.15);
+        let mut s = e.settings().unwrap();
+        s.test_mode = true;
+        e.save_settings(&s).unwrap();
+        e.run_assessment().unwrap();
+        e.accept_plan().unwrap();
+        for _ in 0..BLOCK_DAYS {
+            let items = e.view().unwrap().plan.unwrap().today_items.len();
+            for _ in 0..items {
+                e.run_next_item().unwrap();
+            }
+        }
+        // The flick test changed between the assessment and the retest.
+        SCENARIO_VERSION.with(|v| v.set(2));
+        e.run_retest().unwrap();
+        let result = e.view().unwrap().block_result.unwrap();
+        assert!(
+            result
+                .changed_tests
+                .contains(&"assess.v1.flick_static".to_string()),
+            "{:?}",
+            result.changed_tests
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn whole_loop_from_assessment_to_verdict() {
         let (mut e, dir) = engine("loop", 1.15);
         let mut s = e.settings().unwrap();
@@ -1712,6 +1782,7 @@ mod tests {
         assert!(gain.trained);
         assert_eq!(gain.verdict, Verdict::Improved, "{gain:?}");
         assert!(!result.conditions_changed);
+        assert!(result.changed_tests.is_empty());
         assert!(matches!(
             view.plan.unwrap().state,
             PlanState::Evaluated { .. }

@@ -74,6 +74,8 @@ export interface BlockResult {
   training_effect: number | null;
   adaptation: string;
   conditions_changed: boolean;
+  /** Tests whose design changed between the two assessments. */
+  changed_tests?: string[];
   settings_before: [number, number];
   settings_after: [number, number];
 }

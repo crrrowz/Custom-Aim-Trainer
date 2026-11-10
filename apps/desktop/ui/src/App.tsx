@@ -1026,6 +1026,14 @@ function PlanPage({ ctx }: { ctx: Ctx }) {
           <h2>{T("نتيجة الكتلة", "Block result")}</h2>
           {view.block_result.conditions_changed && view.block_result.settings_before[0] === 0 && <div className="banner">{T("إعدادات الماوس اختلفت بين الاختبارين، فالمقارنة غير دقيقة.", "Mouse settings differ between the tests, so the comparison is unreliable.")}</div>}
           {view.block_result.conditions_changed && view.block_result.settings_before[0] > 0 && <div className="banner">{T(`إعدادات الماوس اختلفت بين الاختبارين: DPI ${view.block_result.settings_before[0]} وحساسية ${view.block_result.settings_before[1]} قبل، و DPI ${view.block_result.settings_after[0]} وحساسية ${view.block_result.settings_after[1]} بعد. المقارنة غير دقيقة.`, `Mouse settings differ between the tests: ${view.block_result.settings_before[0]} DPI / ${view.block_result.settings_before[1]} before, ${view.block_result.settings_after[0]} DPI / ${view.block_result.settings_after[1]} after. The comparison is unreliable.`)}</div>}
+          {(view.block_result.changed_tests?.length ?? 0) > 0 && (
+            <div className="banner">
+              {T(
+                `تصميم ${view.block_result.changed_tests!.length === 1 ? "اختبار" : "اختبارات"} تغيّر بين التقييم الأول وإعادة الاختبار: ${view.block_result.changed_tests!.map((id) => scenarioTitle(id, lang)).join("، ")}. نتائجها ما تنقارن بدقة، لأن المسافات صارت مختلفة. اعتبر التغيير بهذي المهارات تقريبي، والتقييم الجاي يكون أساس جديد صحيح.`,
+                `The design of ${view.block_result.changed_tests!.length === 1 ? "a test" : "some tests"} changed between your first assessment and the retest: ${view.block_result.changed_tests!.map((id) => scenarioTitle(id, lang)).join(", ")}. Their results are not directly comparable because the distances differ. Treat the change in those skills as approximate; your next assessment becomes a clean baseline.`,
+              )}
+            </div>
+          )}
           {view.block_result.training_effect !== null && (
             <div className="stats"><Stat value={`${view.block_result.training_effect > 0 ? "+" : ""}${view.block_result.training_effect.toFixed(1)}`} label={T("أثر التدريب", "Training effect")} hint={T("تحسن المهارات المدربة ناقص غيرها", "Trained skills minus the rest")} /></div>
           )}
