@@ -46,3 +46,10 @@ fn the_last_ten_seconds_are_highlighted() {
     n.remaining_s = 9.5;
     assert_eq!(hud_cells(n)[0].tone, HudTone::Warn);
 }
+
+#[test]
+fn the_rest_hint_counts_down_and_names_the_keys() {
+    let hint = trainer::session_flow::rest_hint(11.2);
+    assert!(hint.contains("12s"), "{hint}");
+    assert!(hint.contains("Enter") && hint.contains("Esc"));
+}

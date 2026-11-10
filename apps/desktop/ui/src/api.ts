@@ -11,6 +11,8 @@ export interface Settings {
   ai_provider: string;
   ai_base_url: string;
   ai_model: string;
+  sound_volume: number;
+  crosshair: string;
 }
 export interface Skill {
   skill: string;
@@ -80,6 +82,7 @@ export interface Practice {
   name: string;
   hit_rate: number;
   difficulty: number | null;
+  level_before?: number | null;
   at_ms?: number;
   file?: string | null;
   mode?: string | null;

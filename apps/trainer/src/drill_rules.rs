@@ -184,3 +184,11 @@ impl ShotCheck<'_> {
         None
     }
 }
+
+/// The centre target only resets the crosshair between trials, so it is not scored and a click near it
+/// counts. Without this, a missed click on the small centre dot left the player stuck on it.
+pub const HOME_CLICK_TOLERANCE_DEG: f64 = 2.5;
+
+pub fn home_clicked(distance_deg: f64) -> bool {
+    distance_deg <= HOME_CLICK_TOLERANCE_DEG
+}

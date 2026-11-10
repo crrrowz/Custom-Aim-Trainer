@@ -217,6 +217,17 @@ impl LayoutEngineState {
         }
     }
 
+    /// True while the player has to click the centre target before the next one appears.
+    pub fn awaiting_home(&self) -> bool {
+        match self {
+            Self::Fitts { phase, .. } => *phase == FittsPhase::AwaitingHomeTarget,
+            Self::Peeks {
+                awaiting_neutral, ..
+            } => *awaiting_neutral,
+            _ => false,
+        }
+    }
+
     pub fn is_completed(&self) -> bool {
         match self {
             Self::Fitts {

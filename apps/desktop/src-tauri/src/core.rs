@@ -66,6 +66,7 @@ fn today() -> u32 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub onboarded: bool,
     pub dpi: u32,
@@ -78,6 +79,10 @@ pub struct Settings {
     pub ai_provider: String,
     pub ai_base_url: String,
     pub ai_model: String,
+    /// 0 turns hit and miss sounds off.
+    pub sound_volume: u32,
+    /// `rrggbb:length:thickness:gap:dot`, the trainer's crosshair format.
+    pub crosshair: String,
 }
 
 impl Default for Settings {
@@ -92,6 +97,8 @@ impl Default for Settings {
             ai_provider: "template".to_string(),
             ai_base_url: String::new(),
             ai_model: String::new(),
+            sound_volume: 60,
+            crosshair: "00ff4c:0:4:0:1".to_string(),
         }
     }
 }
@@ -157,6 +164,9 @@ pub struct PracticeRecord {
     pub name: String,
     pub hit_rate: f64,
     pub difficulty: Option<f64>,
+    /// Drill level before this session, to show how far it moved.
+    #[serde(default)]
+    pub level_before: Option<f64>,
     #[serde(default)]
     pub at_ms: u64,
     #[serde(default)]
@@ -539,6 +549,10 @@ impl<R: TrainerRunner> Engine<R> {
             s.sens.to_string(),
             "--locale".to_string(),
             s.locale.clone(),
+            "--sound".to_string(),
+            s.sound_volume.to_string(),
+            "--crosshair".to_string(),
+            s.crosshair.clone(),
         ];
         if s.windowed {
             args.push("--windowed".to_string());
@@ -719,20 +733,16 @@ impl<R: TrainerRunner> Engine<R> {
         outcomes.iter().for_each(|&w| staircase.update(w));
         levels.insert(item.drill.clone(), staircase.d);
         self.store.set(KEY_LEVELS, &levels).map_err(err)?;
-        self.store
-            .add_practice(
-                today(),
-                &PracticeRecord {
-                    day: today(),
-                    name: item.drill,
-                    hit_rate: hit_rate(&outcomes),
-                    difficulty: Some(staircase.d),
-                    at_ms: now_ms(),
-                    file: Some(file),
-                    mode: None,
-                },
-            )
-            .map_err(err)?;
+        self.add_practice_record(PracticeRecord {
+            day: today(),
+            name: item.drill,
+            hit_rate: hit_rate(&outcomes),
+            difficulty: Some(staircase.d),
+            level_before: Some(start),
+            at_ms: now_ms(),
+            file: Some(file),
+            mode: None,
+        })?;
 
         plan.item_index += 1;
         plan.last_trained = today();
@@ -807,20 +817,16 @@ impl<R: TrainerRunner> Engine<R> {
         let Some((outcomes, file)) = self.absorb_stop(played)? else {
             return Ok(());
         };
-        self.store
-            .add_practice(
-                today(),
-                &PracticeRecord {
-                    day: today(),
-                    name: "custom".to_string(),
-                    hit_rate: hit_rate(&outcomes),
-                    difficulty: None,
-                    at_ms: now_ms(),
-                    file: Some(file),
-                    mode: Some(format!("{:?}", targets.mode).to_lowercase()),
-                },
-            )
-            .map_err(err)
+        self.add_practice_record(PracticeRecord {
+            day: today(),
+            name: "custom".to_string(),
+            hit_rate: hit_rate(&outcomes),
+            difficulty: None,
+            level_before: None,
+            at_ms: now_ms(),
+            file: Some(file),
+            mode: Some(format!("{:?}", targets.mode).to_lowercase()),
+        })
     }
 
     /// Plays one stock drill or assessment scenario outside the plan.
@@ -837,20 +843,16 @@ impl<R: TrainerRunner> Engine<R> {
         let Some((outcomes, file)) = self.absorb_stop(played)? else {
             return Ok(());
         };
-        self.store
-            .add_practice(
-                today(),
-                &PracticeRecord {
-                    day: today(),
-                    name: name.to_string(),
-                    hit_rate: hit_rate(&outcomes),
-                    difficulty: None,
-                    at_ms: now_ms(),
-                    file: Some(file),
-                    mode: None,
-                },
-            )
-            .map_err(err)
+        self.add_practice_record(PracticeRecord {
+            day: today(),
+            name: name.to_string(),
+            hit_rate: hit_rate(&outcomes),
+            difficulty: None,
+            level_before: None,
+            at_ms: now_ms(),
+            file: Some(file),
+            mode: None,
+        })
     }
 
     /// Full analysis of one recording. Only files inside the app's own data folder can be opened.
@@ -1289,6 +1291,22 @@ impl<R: TrainerRunner> Engine<R> {
             }
         }
         Ok(())
+    }
+
+    /// Records a practice result and tells the player when it beats their best for that drill.
+    fn add_practice_record(&self, record: PracticeRecord) -> Res<()> {
+        let best = self
+            .store
+            .practice::<PracticeRecord>()
+            .map_err(err)?
+            .iter()
+            .filter(|p| p.name == record.name && p.mode == record.mode)
+            .map(|p| p.hit_rate)
+            .fold(None, |a: Option<f64>, v| Some(a.map_or(v, |a| a.max(v))));
+        if best.is_some_and(|b| record.hit_rate > b) {
+            self.tell("new_best");
+        }
+        self.store.add_practice(today(), &record).map_err(err)
     }
 
     fn reports(&self) -> Res<Vec<CoachReport>> {
@@ -1784,6 +1802,75 @@ mod tests {
             .delete_session(&dir.join("aimforge.db").to_string_lossy())
             .is_err());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn beating_your_best_is_announced() {
+        let (mut e, dir) = engine("best", 1.0);
+        let targets = CustomTargets {
+            mode: aim_coach::drills::CustomMode::Flick,
+            radius_deg: 0.7,
+            min_distance_deg: 10.0,
+            max_distance_deg: 30.0,
+            speed_deg_s: 20.0,
+            time_limit_s: 2.0,
+            concurrent: 3,
+            duration_s: 45.0,
+            area_h_deg: 35.0,
+            area_v_deg: 12.0,
+            reversal_s: 0.55,
+        };
+        e.store
+            .add_practice(
+                today(),
+                &PracticeRecord {
+                    day: today(),
+                    name: "custom".to_string(),
+                    hit_rate: 0.1,
+                    difficulty: None,
+                    level_before: None,
+                    at_ms: 0,
+                    file: None,
+                    mode: Some("flick".to_string()),
+                },
+            )
+            .unwrap();
+        e.run_custom(&targets).unwrap();
+        assert_eq!(e.view().unwrap().notice.as_deref(), Some("new_best"));
+        e.run_custom(&targets).unwrap();
+        assert_eq!(
+            e.view().unwrap().notice,
+            None,
+            "matching a record is not a new one"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn game_settings_reach_the_trainer() {
+        let (mut e, dir) = engine("args", 1.0);
+        let mut s = e.settings().unwrap();
+        s.sound_volume = 0;
+        s.crosshair = "ff0000:6:2:3:1".to_string();
+        e.save_settings(&s).unwrap();
+        e.run_scenario("warmup").unwrap();
+        let calls = e.runner.calls.borrow();
+        let args = &calls[0];
+        assert_eq!(value_after(args, "--sound").as_deref(), Some("0"));
+        assert_eq!(
+            value_after(args, "--crosshair").as_deref(),
+            Some("ff0000:6:2:3:1")
+        );
+        drop(calls);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn old_settings_without_new_fields_still_load() {
+        let old = r#"{"onboarded":true,"dpi":1600,"sens":0.2,"locale":"ar","windowed":false,"test_mode":false,"ai_provider":"template","ai_base_url":"","ai_model":""}"#;
+        let s: Settings = serde_json::from_str(old).unwrap();
+        assert_eq!(s.dpi, 1600);
+        assert_eq!(s.sound_volume, 60);
     }
 
     #[test]

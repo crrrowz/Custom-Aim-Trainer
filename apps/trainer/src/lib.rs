@@ -3,6 +3,7 @@
 pub mod camera;
 pub mod clock;
 pub mod drill_rules;
+pub mod feedback;
 pub mod fonts;
 pub mod layout_engine;
 pub mod pause;

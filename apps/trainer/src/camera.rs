@@ -41,9 +41,72 @@ pub fn spawn_fps_camera(mut commands: Commands) {
     ));
 }
 
+/// The player's crosshair, matching what they use in VALORANT.
+#[derive(Resource, Debug, Clone, PartialEq)]
+pub struct CrosshairStyle {
+    pub color: [u8; 3],
+    /// Arm length in pixels; 0 draws only the centre dot.
+    pub length: f32,
+    pub thickness: f32,
+    pub gap: f32,
+    pub dot: bool,
+}
+
+impl Default for CrosshairStyle {
+    fn default() -> Self {
+        Self {
+            color: [0, 255, 76],
+            length: 0.0,
+            thickness: 2.0,
+            gap: 3.0,
+            dot: true,
+        }
+    }
+}
+
+impl CrosshairStyle {
+    /// Parses `rrggbb:length:thickness:gap:dot`, for example `00ff4c:6:2:3:1`.
+    pub fn parse(text: &str) -> Option<Self> {
+        let parts: Vec<&str> = text.split(':').collect();
+        if parts.len() != 5 || parts[0].len() != 6 {
+            return None;
+        }
+        let byte = |i: usize| u8::from_str_radix(&parts[0][i..i + 2], 16).ok();
+        let number = |s: &str| s.parse::<f32>().ok().filter(|v| (0.0..=40.0).contains(v));
+        Some(Self {
+            color: [byte(0)?, byte(2)?, byte(4)?],
+            length: number(parts[1])?,
+            thickness: number(parts[2])?.max(1.0),
+            gap: number(parts[3])?,
+            dot: parts[4] == "1",
+        })
+    }
+
+    pub fn bevy_color(&self) -> Color {
+        Color::srgb_u8(self.color[0], self.color[1], self.color[2])
+    }
+
+    /// The rectangles to draw, as (x, y, width, height) around the screen centre.
+    pub fn rects(&self) -> Vec<(f32, f32, f32, f32)> {
+        let t = self.thickness;
+        let mut rects = Vec::new();
+        if self.dot || self.length <= 0.0 {
+            rects.push((-t / 2.0, -t / 2.0, t, t));
+        }
+        if self.length > 0.0 {
+            let (g, l) = (self.gap, self.length);
+            rects.push((g, -t / 2.0, l, t));
+            rects.push((-g - l, -t / 2.0, l, t));
+            rects.push((-t / 2.0, g, t, l));
+            rects.push((-t / 2.0, -g - l, t, l));
+        }
+        rects
+    }
+}
+
 /// Spawns the pixel-aligned 2D crosshair overlay centered on screen.
-pub fn spawn_crosshair_ui(mut commands: Commands) {
-    // Exact screen-center root container
+pub fn spawn_crosshair_ui(mut commands: Commands, style: Res<CrosshairStyle>) {
+    let color = style.bevy_color();
     commands
         .spawn(Node {
             width: Val::Percent(100.0),
@@ -54,15 +117,27 @@ pub fn spawn_crosshair_ui(mut commands: Commands) {
             ..default()
         })
         .with_children(|parent| {
-            // 4x4 pixel green crosshair dot (#00ff4c)
-            parent.spawn((
-                Node {
-                    width: Val::Px(4.0),
-                    height: Val::Px(4.0),
+            parent
+                .spawn(Node {
+                    width: Val::Px(0.0),
+                    height: Val::Px(0.0),
                     ..default()
-                },
-                BackgroundColor(Color::srgb(0.0, 1.0, 0.3)),
-            ));
+                })
+                .with_children(|centre| {
+                    for (x, y, w, h) in style.rects() {
+                        centre.spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: Val::Px(x),
+                                top: Val::Px(y),
+                                width: Val::Px(w),
+                                height: Val::Px(h),
+                                ..default()
+                            },
+                            BackgroundColor(color),
+                        ));
+                    }
+                });
         });
 }
 
@@ -76,6 +151,21 @@ pub fn sync_camera_transform(mut query: Query<(&FpsCamera, &mut Transform)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crosshair_text_round_trips() {
+        let style = CrosshairStyle::parse("ff0000:6:2:3:1").unwrap();
+        assert_eq!(style.color, [255, 0, 0]);
+        assert_eq!(style.rects().len(), 5);
+        assert!(CrosshairStyle::parse("nope").is_none());
+        assert!(CrosshairStyle::parse("ff0000:99:2:3:1").is_none());
+    }
+
+    #[test]
+    fn a_dot_only_crosshair_draws_one_square() {
+        let style = CrosshairStyle::parse("ffffff:0:4:0:1").unwrap();
+        assert_eq!(style.rects(), vec![(-2.0, -2.0, 4.0, 4.0)]);
+    }
 
     #[test]
     fn test_valorant_51_5_deg_projection_screen_edge() {

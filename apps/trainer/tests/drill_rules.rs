@@ -140,3 +140,10 @@ fn on_target_share_counts_frames() {
     r.track_frames_on = 3;
     assert_eq!(r.on_target_percent(), Some(75.0));
 }
+
+#[test]
+fn a_click_near_the_centre_dot_counts() {
+    use trainer::drill_rules::home_clicked;
+    assert!(home_clicked(1.8));
+    assert!(!home_clicked(4.0));
+}

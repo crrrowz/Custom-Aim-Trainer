@@ -299,6 +299,16 @@ pub fn hud_cells(n: HudNumbers) -> Vec<HudCell> {
     ]
 }
 
+/// Shown under a battery result while the player rests before the next test.
+pub fn rest_hint(left_s: f32) -> String {
+    format!(
+        "{} {}s   •   {}",
+        strings::rest_next_in(),
+        left_s.ceil() as u32,
+        strings::rest_keys()
+    )
+}
+
 type Instructions = (&'static str, &'static str, &'static str);
 
 /// Scenario instructions in the player's language. Returns (title, line1, line2).

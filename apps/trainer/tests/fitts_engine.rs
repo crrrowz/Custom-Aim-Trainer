@@ -102,3 +102,35 @@ fn test_fitts_engine_sequence_and_state_machine() {
     assert_eq!(spawned_trials.len(), expected_trials.len());
     assert!(engine.is_completed());
 }
+
+#[test]
+fn after_a_miss_the_cycle_goes_home_then_to_the_next_target() {
+    use trainer::layout_engine::{FittsSpawnAction, LayoutEngineState};
+    let scenario = aim_scenarios::schema::Scenario::from_ron_str(
+        &std::fs::read_to_string("../../content/scenarios/assess.v1.warmup.ron").unwrap(),
+    )
+    .unwrap();
+    let mut engine = LayoutEngineState::new(&scenario, 7, 0);
+    let mut id = 1;
+    assert!(engine.awaiting_home());
+    assert!(matches!(
+        engine.handle_fitts_spawn(&mut id, 0, 15.0),
+        Some(FittsSpawnAction::SpawnHome { .. })
+    ));
+    engine.handle_fitts_hit(true, 100);
+    assert!(!engine.awaiting_home());
+    assert!(matches!(
+        engine.handle_fitts_spawn(&mut id, 200, 15.0),
+        Some(FittsSpawnAction::SpawnTrial { .. })
+    ));
+    engine.handle_fitts_miss();
+    assert!(
+        engine.awaiting_home(),
+        "a miss sends the player back to the centre"
+    );
+    engine.handle_fitts_hit(true, 900);
+    assert!(matches!(
+        engine.handle_fitts_spawn(&mut id, 1000, 15.0),
+        Some(FittsSpawnAction::SpawnTrial { .. })
+    ));
+}

@@ -103,8 +103,9 @@ export function App() {
         {!view.trainer_found && <div className="banner">{T("ما لكينا برنامج اللعبة. ابنيه بـ: cargo build --release -p trainer", "Game program not found. Build it with: cargo build --release -p trainer")}</div>}
         {error && <div className="banner err">{T("صار خطأ", "Something went wrong")}: {error}</div>}
         {view.notice === "stopped" && <div className="banner">{T("طلعت قبل ما ينسجل شي، فما انحسبت هذي المرة.", "You left before anything was recorded, so this one did not count.")}</div>}
+        {view.notice === "new_best" && <div className="banner good">{T("رقم قياسي جديد لهذا التمرين!", "New personal best for this drill!")}</div>}
         {view.notice === "done_today" && <div className="banner">{T("خلصت جلسة اليوم. الجلسة الجاية تفتح باجر.", "Today's session is done. The next one opens tomorrow.")}</div>}
-        {view.notice === "incomplete" && <div className="banner">{T("التقييم ما كمل. نتائجك انحفظت بالتحليل، بس الخطة تحتاج كل الاختبارات الثمانية.", "The assessment was not finished. Your results are in Analysis, but a plan needs all eight tests.")}</div>}
+        {view.notice === "incomplete" && <div className="banner">{T("التقييم وقف قبل ما تخلص الاختبارات الثمانية، فما انحسب. الجلسات اللي خلصتها موجودة بالتحليل. بين الاختبارات أكو استراحة قصيرة، والاختبار الجاي يبدي لحاله أو بـ Enter. زر Esc يوقف التقييم كله.", "The assessment stopped before all eight tests, so it did not count. The tests you finished are in Analysis. Between tests there is a short rest; the next test starts by itself or with Enter. Esc stops the whole assessment.")}</div>}
         <ScreenGuard key={tab} message={T("هذي الصفحة واجهت خطأ. الصفحات الثانية تشتغل عادي.", "This page hit an error. The other pages still work.")} retry={T("أعد المحاولة", "Try again")}>
           {tab === "home" && <Home ctx={ctx} />}
           {tab === "analysis" && <Analysis ctx={ctx} initial={recording} />}
@@ -803,14 +804,16 @@ function PlanPage({ ctx }: { ctx: Ctx }) {
           ))}
         </section>
       )}
-      {view.block_result && (
+      {view.block_result && plan && typeof plan.state === "object" && "Evaluated" in plan.state && (
         <section className="card">
           <h2>{T("نتيجة الكتلة", "Block result")}</h2>
-          {view.block_result.conditions_changed && <div className="banner">{T(`إعدادات الماوس اختلفت بين الاختبارين: DPI ${view.block_result.settings_before[0]} وحساسية ${view.block_result.settings_before[1]} قبل، و DPI ${view.block_result.settings_after[0]} وحساسية ${view.block_result.settings_after[1]} بعد. المقارنة غير دقيقة.`, `Mouse settings differ between the tests: ${view.block_result.settings_before[0]} DPI / ${view.block_result.settings_before[1]} before, ${view.block_result.settings_after[0]} DPI / ${view.block_result.settings_after[1]} after. The comparison is unreliable.`)}</div>}
+          {view.block_result.conditions_changed && view.block_result.settings_before[0] === 0 && <div className="banner">{T("إعدادات الماوس اختلفت بين الاختبارين، فالمقارنة غير دقيقة.", "Mouse settings differ between the tests, so the comparison is unreliable.")}</div>}
+          {view.block_result.conditions_changed && view.block_result.settings_before[0] > 0 && <div className="banner">{T(`إعدادات الماوس اختلفت بين الاختبارين: DPI ${view.block_result.settings_before[0]} وحساسية ${view.block_result.settings_before[1]} قبل، و DPI ${view.block_result.settings_after[0]} وحساسية ${view.block_result.settings_after[1]} بعد. المقارنة غير دقيقة.`, `Mouse settings differ between the tests: ${view.block_result.settings_before[0]} DPI / ${view.block_result.settings_before[1]} before, ${view.block_result.settings_after[0]} DPI / ${view.block_result.settings_after[1]} after. The comparison is unreliable.`)}</div>}
           {view.block_result.training_effect !== null && (
             <div className="stats"><Stat value={`${view.block_result.training_effect > 0 ? "+" : ""}${view.block_result.training_effect.toFixed(1)}`} label={T("أثر التدريب", "Training effect")} hint={T("تحسن المهارات المدربة ناقص غيرها", "Trained skills minus the rest")} /></div>
           )}
-          <table>
+          {view.block_result.rows.length === 0 && <p className="muted">{T("ما لكينا مهارات تنقارن بين الاختبارين. سوِّ إعادة اختبار كاملة.", "No skills could be compared between the tests. Take a full retest.")}</p>}
+          {view.block_result.rows.length > 0 && <table>
             <thead><tr><th>{T("المهارة", "Skill")}</th><th>{T("قبل", "Before")}</th><th>{T("بعد", "After")}</th><th>{T("التغيير", "Change")}</th><th /></tr></thead>
             <tbody>
               {view.block_result.rows.map((r) => (
@@ -822,7 +825,7 @@ function PlanPage({ ctx }: { ctx: Ctx }) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table>}
           {typeof plan?.state === "object" && "Evaluated" in plan.state && <p><button className="btn" onClick={() => act("next_block")}>{T("ابدأ الكتلة الجاية", "Start next block")}</button></p>}
         </section>
       )}
@@ -879,12 +882,24 @@ function PlanBody({ ctx, plan }: { ctx: Ctx; plan: Plan }) {
               <b>{pick(drillNames[item.drill], lang, item.drill)}</b>
               <small>{pick(drillInfo[item.drill]?.purpose, lang, "")}</small>
             </span>
-            {plan.levels[item.drill] !== undefined && <span className="muted small">{T("المستوى", "Level")} {(plan.levels[item.drill] * 100).toFixed(0)}</span>}
+            {plan.levels[item.drill] !== undefined && <LevelBadge ctx={ctx} drill={item.drill} level={plan.levels[item.drill]} />}
             <span className="muted small">{item.minutes} {T("د", "min")}</span>
           </li>
         ))}
       </ol>
     </section>
+  );
+}
+
+/** The drill level and how far the last session moved it. */
+function LevelBadge({ ctx, drill, level }: { ctx: Ctx; drill: string; level: number }) {
+  const last = [...ctx.view.practice].reverse().find((p) => p.name === drill && p.level_before != null && p.difficulty != null);
+  const change = last ? Math.round((last.difficulty! - last.level_before!) * 100) : 0;
+  return (
+    <span className="muted small">
+      {ctx.T("المستوى", "Level")} {(level * 100).toFixed(0)}
+      {change !== 0 && <b className={change > 0 ? "up" : "down"}> {change > 0 ? "▲" : "▼"}{Math.abs(change)}</b>}
+    </span>
   );
 }
 
@@ -1109,7 +1124,7 @@ function Coach({ ctx }: { ctx: Ctx }) {
               <span className="muted small">{scopeName(report.scope)} · {whenText(report.at_ms, lang)}</span>
               <span className="row">
                 <span className={`tag ${report.source === "ai" ? "good" : ""}`}>{report.source === "ai" ? T("ذكاء اصطناعي", "AI") : T("تحليل مدمج", "Built-in")}</span>
-                <ConfirmButton label={T("احذف", "Delete")} confirm={T("متأكد؟", "Sure?")} onConfirm={() => { act("delete_report", { at_ms: report.at_ms }); setSelected(0); }} />
+                <ConfirmButton label={T("احذف", "Delete")} confirm={T("متأكد؟", "Sure?")} onConfirm={() => { act("delete_report", { atMs: report.at_ms }); setSelected(0); }} />
               </span>
             </div>
             {report.locale && report.locale !== view.settings.locale && (
@@ -1224,6 +1239,13 @@ function SettingsPage({ ctx }: { ctx: Ctx }) {
         <h2>{T("التطبيق", "App")}</h2>
         <div className="grid2"><LangSelect ctx={ctx} value={s.locale} set={(locale) => set({ locale })} /></div>
         <Toggle checked={s.windowed} set={(windowed) => set({ windowed })} label={T("شغّل اللعبة بنافذة", "Run the game in a window")} />
+      </section>
+      <section className="card">
+        <h2>{T("اللعبة", "In the game")}</h2>
+        <div className="grid2">
+          <Slider label={T("صوت الإصابة والخطأ", "Hit and miss sound")} value={s.sound_volume} min={0} max={100} step={5} unit="%" set={(sound_volume) => set({ sound_volume })} />
+          <CrosshairEditor ctx={ctx} value={s.crosshair} set={(crosshair) => set({ crosshair })} />
+        </div>
         <Toggle checked={s.test_mode} set={(test_mode) => set({ test_mode })} label={T("وضع التجربة", "Test mode")} help={T("تمارين 20 ثانية وبدون انتظار يوم الراحة.", "20-second drills and no rest-day wait.")} />
       </section>
       <section className="card">
@@ -1265,6 +1287,41 @@ function SettingsPage({ ctx }: { ctx: Ctx }) {
       )}
       <p className="small muted savebar">{saved ? T("✓ كل التغييرات محفوظة", "✓ All changes saved") : T("التغييرات تنحفظ تلقائياً.", "Changes save automatically.")}</p>
     </>
+  );
+}
+
+const CROSSHAIR_COLORS = ["00ff4c", "ffffff", "00ffff", "ffff00", "ff4cff", "ff3b3b"];
+
+function CrosshairEditor({ ctx, value, set }: { ctx: Ctx; value: string; set: (v: string) => void }) {
+  const { T } = ctx;
+  const [color, length, thickness, gap, dot] = value.split(":");
+  const parts = { color, length: Number(length), thickness: Number(thickness), gap: Number(gap), dot: dot === "1" };
+  const write = (p: Partial<typeof parts>) => {
+    const n = { ...parts, ...p };
+    set(`${n.color}:${n.length}:${n.thickness}:${n.gap}:${n.dot ? 1 : 0}`);
+  };
+  const c = `#${parts.color}`;
+  const t = parts.thickness, g = parts.gap, l = parts.length;
+  const arm = (x: number, y: number, w: number, h: number) => <i style={{ left: 40 + x, top: 40 + y, width: w, height: h, background: c }} />;
+  return (
+    <div className="crosshair-editor">
+      <span className="label">{T("المؤشر", "Crosshair")}</span>
+      <div className="row">
+        <div className="crosshair-preview" aria-hidden="true">
+          {(parts.dot || l === 0) && arm(-t / 2, -t / 2, t, t)}
+          {l > 0 && <>{arm(g, -t / 2, l, t)}{arm(-g - l, -t / 2, l, t)}{arm(-t / 2, g, t, l)}{arm(-t / 2, -g - l, t, l)}</>}
+        </div>
+        <div className="grow">
+          <div className="swatches">
+            {CROSSHAIR_COLORS.map((x) => <button key={x} aria-label={x} className={x === parts.color ? "on" : ""} style={{ background: `#${x}` }} onClick={() => write({ color: x })} />)}
+          </div>
+          <Toggle checked={parts.dot} set={(v) => write({ dot: v })} label={T("نقطة بالوسط", "Centre dot")} />
+        </div>
+      </div>
+      <Slider label={T("طول الخطوط", "Line length")} value={l} min={0} max={12} step={1} unit="px" set={(v) => write({ length: v })} />
+      <Slider label={T("السماكة", "Thickness")} value={t} min={1} max={6} step={1} unit="px" set={(v) => write({ thickness: v })} />
+      <Slider label={T("الفراغ بالوسط", "Centre gap")} value={g} min={0} max={10} step={1} unit="px" set={(v) => write({ gap: v })} />
+    </div>
   );
 }
 

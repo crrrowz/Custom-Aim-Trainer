@@ -317,3 +317,11 @@ input[type="range"]::-webkit-slider-thumb { appearance: none; width: 16px; heigh
 .empty { padding: 36px; border-radius: 12px; }
 .banner.row { margin-top: 8px; }
 .overlay b { font-size: 20px; font-weight: 600; }
+
+.banner.good { background: rgba(61, 220, 151, .1); border-color: rgba(61, 220, 151, .35); color: var(--good); }
+.crosshair-editor .row { align-items: flex-start; flex-wrap: nowrap; margin-bottom: 10px; }
+.crosshair-preview { position: relative; width: 80px; height: 80px; flex: none; border-radius: 10px; background: #2a3a4a linear-gradient(180deg, #3b4f63, #1d2833); direction: ltr; }
+.crosshair-preview i { position: absolute; }
+.swatches { display: flex; gap: 6px; flex-wrap: wrap; }
+.swatches button { width: 26px; height: 26px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; }
+.swatches button.on { border-color: var(--text); }

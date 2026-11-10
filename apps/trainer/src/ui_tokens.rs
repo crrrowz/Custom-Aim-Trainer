@@ -89,7 +89,8 @@ pub mod strings {
         stat_on_target => "ON TARGET", "على الهدف";
         stat_time_left => "TIME LEFT", "الوقت الباقي";
         stat_targets => "TARGETS", "الأهداف";
-        rest_label => "Rest", "استراحة";
+        rest_next_in => "Next test starts in", "الاختبار الجاي يبدي بعد";
+        rest_keys => "Enter  Start now    Esc  Stop the assessment", "Enter  ابدي هسه    Esc  وقف التقييم";
         stat_length => "LENGTH", "المدة";
         stat_reaction => "REACTION", "رد الفعل";
         stage_label => "ASSESSMENT • TEST", "التقييم • اختبار";
@@ -98,5 +99,10 @@ pub mod strings {
         hud_overshoot => "OVERSHOOT", "تجاوزت";
         hud_short => "SHORT", "قبل الهدف";
         hud_on_target => "ON TARGET", "مضبوط";
+        feedback_not_settled => "Clicked while moving", "نقرت والمؤشر يتحرك";
+        feedback_overshot => "Went past the target", "تجاوزت الهدف";
+        feedback_moving => "You were moving", "كنت تتحرك";
+        feedback_streak => "Streak", "سلسلة";
+        hud_go_home => "Click the centre dot to bring the next target", "انقر النقطة بالوسط حتى يطلع الهدف الجاي";
     }
 }

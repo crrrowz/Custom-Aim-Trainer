@@ -18,7 +18,9 @@ use bevy::winit::{UpdateMode, WinitSettings};
 use std::collections::HashMap;
 use std::num::NonZero;
 use std::path::PathBuf;
-use trainer::camera::{spawn_crosshair_ui, spawn_fps_camera, sync_camera_transform, FpsCamera};
+use trainer::camera::{
+    spawn_crosshair_ui, spawn_fps_camera, sync_camera_transform, CrosshairStyle, FpsCamera,
+};
 use trainer::clock::SessionClock;
 use trainer::layout_engine::{
     FittsHitOutcome, FittsMissOutcome, FittsSpawnAction, FittsTimeoutOutcome, LayoutEngineState,
@@ -56,6 +58,7 @@ pub struct TrainerConfig {
     pub duration_override: Option<f64>,
     /// Seconds of rest between the tests of a battery.
     pub rest_s: f32,
+    pub crosshair: CrosshairStyle,
     pub windowed: bool,
     pub fullscreen_exclusive: bool,
     pub backend: String,
@@ -103,6 +106,9 @@ pub struct TrainerState {
     pub session_saved: bool,
     pub drill: trainer::drill_rules::DrillRuntime,
     pub rest_left_s: Option<f32>,
+    /// The rest ended: move to the next test without waiting for a key.
+    pub rest_over: bool,
+    pub feedback: trainer::feedback::FeedbackState,
     pub flow_engine: SessionFlowEngine,
     pub battery_sequencer: Option<BatterySequencer>,
 }
@@ -123,11 +129,20 @@ fn parse_cli_args() -> (TrainerConfig, Option<f64>) {
     let mut output_path = None;
     let mut output_dir = None;
     let mut rest_s = DEFAULT_REST_S;
+    let mut crosshair = CrosshairStyle::default();
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            "--crosshair" if i + 1 < args.len() => {
+                crosshair = CrosshairStyle::parse(&args[i + 1]).unwrap_or_default();
+                i += 2;
+            }
+            "--sound" if i + 1 < args.len() => {
+                trainer::feedback::set_volume(args[i + 1].parse().unwrap_or(60));
+                i += 2;
+            }
             "--rest" if i + 1 < args.len() => {
                 rest_s = args[i + 1].parse().unwrap_or(DEFAULT_REST_S);
                 i += 2;
@@ -236,6 +251,7 @@ fn parse_cli_args() -> (TrainerConfig, Option<f64>) {
             duration_s: 288.0,
             duration_override: None,
             rest_s,
+            crosshair,
             windowed,
             fullscreen_exclusive,
             backend,
@@ -341,6 +357,8 @@ fn setup_trainer(
         session_saved: false,
         drill: Default::default(),
         rest_left_s: None,
+        rest_over: false,
+        feedback: Default::default(),
         flow_engine: SessionFlowEngine::new(config.scenario.clone()),
         battery_sequencer: if let Some(ref bat) = config.battery {
             let stages = resolve_battery_stages(bat).unwrap_or_else(|e| {
@@ -635,20 +653,35 @@ fn drain_and_evaluate_input_system(
                         }
                     }
 
-                    let hit_res = marker.spherical.intersect_ray(angles_at_click);
+                    let mut hit_res = marker.spherical.intersect_ray(angles_at_click);
+                    if marker.is_home_target
+                        && !hit_res.is_hit
+                        && trainer::drill_rules::home_clicked(aim_core::camera::angular_distance(
+                            marker.spherical.center,
+                            angles_at_click,
+                        ))
+                    {
+                        hit_res.is_hit = true;
+                    }
 
                     if !marker.is_home_target && rules.show_gain {
                         state.drill.last_reach = state.drill.reach();
                     }
-                    let rejected = !marker.is_home_target
-                        && (trainer::drill_rules::ShotCheck {
+                    let rejection = if marker.is_home_target {
+                        None
+                    } else {
+                        (trainer::drill_rules::ShotCheck {
                             rules: &rules,
                             runtime: &state.drill,
                             t_us,
                             deg_per_count,
                         })
                         .rejection()
-                        .is_some();
+                    };
+                    let rejected = rejection.is_some();
+                    if hit_res.is_hit && rejected {
+                        state.feedback.pending_rejection = rejection;
+                    }
 
                     if hit_res.is_hit && !rejected {
                         hit_target_id = Some(marker.target_id);
@@ -1540,6 +1573,17 @@ const DEFAULT_REST_S: f32 = 15.0;
 #[derive(Component)]
 struct FeedbackText;
 
+/// Four small squares around the crosshair that flash on every shot.
+#[derive(Component)]
+struct HitMarker;
+
+#[derive(Resource, Default)]
+struct FeedbackFlash {
+    marker_s: f32,
+    message: Option<String>,
+    message_s: f32,
+}
+
 #[derive(Component)]
 struct SessionHudCell(usize);
 
@@ -1550,6 +1594,42 @@ struct SessionHudValue(usize);
 struct SessionHudLabel(usize);
 
 fn spawn_feedback_hud(mut commands: Commands, ui_fonts: Res<trainer::fonts::UiFonts>) {
+    commands.insert_resource(FeedbackFlash::default());
+    commands
+        .spawn(Node {
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            position_type: PositionType::Absolute,
+            ..default()
+        })
+        .with_children(|root| {
+            root.spawn((
+                Node {
+                    width: Val::Px(0.0),
+                    height: Val::Px(0.0),
+                    display: Display::None,
+                    ..default()
+                },
+                HitMarker,
+            ))
+            .with_children(|centre| {
+                for (x, y) in [(9.0, 9.0), (-13.0, 9.0), (9.0, -13.0), (-13.0, -13.0)] {
+                    centre.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(x),
+                            top: Val::Px(y),
+                            width: Val::Px(4.0),
+                            height: Val::Px(4.0),
+                            ..default()
+                        },
+                        BackgroundColor(COLOR_TEXT_PRIMARY),
+                    ));
+                }
+            });
+        });
     commands
         .spawn(Node {
             position_type: PositionType::Absolute,
@@ -1651,20 +1731,17 @@ fn update_session_hud(
     >,
 ) {
     use trainer::session_flow::{hud_cells, HudNumbers, HudTone};
-    use trainer::ui_tokens::{strings, COLOR_WARN};
+    use trainer::ui_tokens::COLOR_WARN;
 
     if let Some(left) = state.rest_left_s {
         let left = left - time.delta_secs();
         if let Some(mut hint) = rest_hint.iter_mut().next() {
-            hint.0 = if left > 0.0 {
-                format!(
-                    "{} {}s   •   Esc",
-                    strings::rest_label(),
-                    left.ceil() as u32
-                )
-            } else {
-                strings::results_next_hint().to_string()
-            };
+            if left > 0.0 {
+                hint.0 = trainer::session_flow::rest_hint(left);
+            }
+        }
+        if left <= 0.0 {
+            state.rest_over = true;
         }
         state.rest_left_s = (left > 0.0).then_some(left);
     }
@@ -1729,8 +1806,72 @@ fn update_session_hud(
     }
 }
 
+/// Plays the hit and miss sounds and flashes the marker when the session counters move.
+#[allow(clippy::type_complexity)]
+fn shot_feedback_system(
+    mut state: ResMut<TrainerState>,
+    time: Res<Time>,
+    mut flash: ResMut<FeedbackFlash>,
+    mut marker: Query<(&mut Node, &Children), With<HitMarker>>,
+    mut squares: Query<&mut BackgroundColor, Without<HitMarker>>,
+) {
+    use trainer::drill_rules::Rejection;
+    use trainer::feedback::{play, ShotOutcome, Sound};
+    use trainer::ui_tokens::strings;
+
+    let (hits, misses) = (state.hits_count, state.misses_count);
+    let outcome = state.feedback.observe(hits, misses);
+    let dt = time.delta_secs();
+    flash.marker_s = (flash.marker_s - dt).max(0.0);
+    flash.message_s = (flash.message_s - dt).max(0.0);
+
+    let Some((mut node, children)) = marker.iter_mut().next() else {
+        return;
+    };
+    if let Some(outcome) = outcome {
+        let tint = match outcome {
+            ShotOutcome::Hit => {
+                play(Sound::Hit);
+                COLOR_ACCENT
+            }
+            ShotOutcome::Miss => {
+                play(Sound::Miss);
+                COLOR_DANGER
+            }
+            ShotOutcome::Rejected(reason) => {
+                play(Sound::Miss);
+                flash.message = Some(
+                    match reason {
+                        Rejection::NotSettled => strings::feedback_not_settled(),
+                        Rejection::Overshot => strings::feedback_overshot(),
+                        Rejection::Moving => strings::feedback_moving(),
+                    }
+                    .to_string(),
+                );
+                flash.message_s = 1.1;
+                trainer::ui_tokens::COLOR_WARN
+            }
+        };
+        for child in children.iter() {
+            if let Ok(mut color) = squares.get_mut(child) {
+                color.0 = tint;
+            }
+        }
+        flash.marker_s = 0.16;
+    }
+    let display = if flash.marker_s > 0.0 {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    if node.display != display {
+        node.display = display;
+    }
+}
+
 fn update_feedback_hud(
     state: Res<TrainerState>,
+    flash: Res<FeedbackFlash>,
     mut text: Query<(&mut Text, &mut TextColor), With<FeedbackText>>,
 ) {
     use trainer::ui_tokens::strings;
@@ -1740,6 +1881,10 @@ fn update_feedback_hud(
     let rules = &state.scenario_def.rules;
     let (value, tint) = if !state.flow_engine.is_running() {
         (String::new(), COLOR_TEXT_PRIMARY)
+    } else if let (Some(message), true) = (&flash.message, flash.message_s > 0.0) {
+        (message.clone(), trainer::ui_tokens::COLOR_WARN)
+    } else if state.layout_engine.awaiting_home() && state.hits_count + state.misses_count < 3 {
+        (strings::hud_go_home().to_string(), COLOR_TEXT_PRIMARY)
     } else if rules.counter_strafe {
         let speed = state.drill.player.velocity.abs();
         if state.drill.player.is_accurate() {
@@ -1771,6 +1916,11 @@ fn update_feedback_hud(
                 COLOR_ACCENT,
             )
         }
+    } else if state.feedback.streak >= 3 {
+        (
+            format!("{} ×{}", strings::feedback_streak(), state.feedback.streak),
+            COLOR_ACCENT,
+        )
     } else {
         (String::new(), COLOR_TEXT_PRIMARY)
     };
@@ -1868,8 +2018,12 @@ fn flow_update_system(
             }
         }
         FlowState::Results => {
-            let advance_pressed = state.rest_left_s.is_none()
-                && (keyboard.just_pressed(KeyCode::Enter) || keyboard.just_pressed(KeyCode::Space));
+            let advance_pressed = std::mem::take(&mut state.rest_over)
+                || keyboard.just_pressed(KeyCode::Enter)
+                || keyboard.just_pressed(KeyCode::Space);
+            if advance_pressed {
+                state.rest_left_s = None;
+            }
             let esc_pressed = keyboard.just_pressed(KeyCode::Escape);
 
             if esc_pressed {
@@ -1913,6 +2067,7 @@ fn flow_update_system(
                     state.reaction_times_s.clear();
                     state.session_saved = false;
                     state.drill = Default::default();
+                    state.feedback = Default::default();
                     state.recorder = SessionRecorder::new(recorder::RecorderSetup {
                         session_id: uuid::Uuid::new_v4().to_string(),
                         scenario_id: next_sc_id.clone(),
@@ -1964,6 +2119,7 @@ fn main() {
         }
     }
     let (scenario_def, scenario_seed) = load_scenario(&config.scenario, config.form, config.seed);
+    let crosshair_style = config.crosshair.clone();
     // --scenario may be a file path; everything after loading works with the scenario's own id.
     config.scenario = scenario_def.id.clone();
     config.duration_s = trainer::resolve_scenario_duration(&scenario_def, duration_override);
@@ -2003,6 +2159,7 @@ fn main() {
         .insert_resource(config)
         .insert_resource(ScenarioResource(scenario_def))
         .insert_resource(scenario_seed)
+        .insert_resource(crosshair_style)
         .insert_resource(WinitSettings {
             focused_mode: UpdateMode::Continuous,
             unfocused_mode: UpdateMode::reactive_low_power(std::time::Duration::from_millis(100)),
@@ -2028,7 +2185,15 @@ fn main() {
                     ..default()
                 }),
         )
-        .add_systems(Update, (update_feedback_hud, update_session_hud))
+        .add_systems(
+            Update,
+            (
+                shot_feedback_system,
+                update_feedback_hud,
+                update_session_hud,
+            )
+                .chain(),
+        )
         .add_systems(
             Startup,
             (

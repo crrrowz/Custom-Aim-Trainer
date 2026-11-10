@@ -32,7 +32,7 @@ const now = Date.now();
 let view: View = {
   settings: {
     onboarded: true, dpi: 800, sens: 0.35, locale: "ar", windowed: false, test_mode: true,
-    ai_provider: "template", ai_base_url: "", ai_model: "",
+    ai_provider: "template", ai_base_url: "", ai_model: "", sound_volume: 60, crosshair: "00ff4c:0:4:0:1",
   },
   today: 20400, cm360: 46.6, trainer_found: true, claude_key_found: false,
   latest: assessment(6, now - 3600e3),
