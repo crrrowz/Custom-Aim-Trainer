@@ -107,7 +107,40 @@ impl Default for Settings {
     }
 }
 
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetUserDefaultUILanguage() -> u16;
+}
+
+pub fn locale_for_ui_language(langid: u16) -> &'static str {
+    if (langid & 0x03ff) == 0x01 {
+        "ar"
+    } else {
+        "en"
+    }
+}
+
+pub fn system_ui_language() -> u16 {
+    #[cfg(windows)]
+    {
+        // SAFETY: GetUserDefaultUILanguage takes no arguments, writes no memory, and returns a 16-bit language ID.
+        unsafe { GetUserDefaultUILanguage() }
+    }
+    #[cfg(not(windows))]
+    {
+        0
+    }
+}
+
 impl Settings {
+    pub fn first_run(ui_langid: u16) -> Self {
+        Self {
+            locale: locale_for_ui_language(ui_langid).to_string(),
+            ..Self::default()
+        }
+    }
+
     fn lang(&self) -> Locale {
         if self.locale == "en" {
             Locale::En
@@ -591,7 +624,7 @@ impl<R: TrainerRunner> Engine<R> {
             .store
             .get(KEY_SETTINGS)
             .map_err(err)?
-            .unwrap_or_default())
+            .unwrap_or_else(|| Settings::first_run(system_ui_language())))
     }
 
     pub fn save_settings(&self, settings: &Settings) -> Res<()> {
@@ -2273,6 +2306,61 @@ mod tests {
         assert!(text.contains("0.7"), "{text}");
         assert_eq!(e.view().unwrap().practice.len(), 1);
         drop(calls);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ui_language_maps_to_locale() {
+        for langid in [0x0801, 0x0401, 0x3c01] {
+            assert_eq!(
+                locale_for_ui_language(langid),
+                "ar",
+                "langid {langid:#06x} should map to ar"
+            );
+        }
+        for langid in [0x0409, 0x0809, 0x0407, 0x0429, 0] {
+            assert_eq!(
+                locale_for_ui_language(langid),
+                "en",
+                "langid {langid:#06x} should map to en"
+            );
+        }
+    }
+
+    #[test]
+    fn first_run_settings_follow_ui_language() {
+        let mut en = Settings::first_run(0x0409);
+        assert_eq!(en.locale, "en");
+        en.locale = Settings::default().locale;
+        assert_eq!(en, Settings::default());
+
+        let mut ar = Settings::first_run(0x0801);
+        assert_eq!(ar.locale, "ar");
+        ar.locale = Settings::default().locale;
+        assert_eq!(ar, Settings::default());
+    }
+
+    #[test]
+    fn fresh_engine_uses_windows_language() {
+        let (e, dir) = engine("fresh_engine_lang", 1.0);
+        assert_eq!(
+            e.settings().unwrap().locale,
+            locale_for_ui_language(system_ui_language())
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn saved_locale_wins_over_windows_language() {
+        let (e, dir) = engine("saved_locale_wins", 1.0);
+        let mut s = e.settings().unwrap();
+        s.locale = "ar".to_string();
+        e.save_settings(&s).unwrap();
+        assert_eq!(e.settings().unwrap().locale, "ar");
+
+        s.locale = "en".to_string();
+        e.save_settings(&s).unwrap();
+        assert_eq!(e.settings().unwrap().locale, "en");
         let _ = std::fs::remove_dir_all(dir);
     }
 }
