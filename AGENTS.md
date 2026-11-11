@@ -44,7 +44,9 @@ Architecture and data flow: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 4. **Test first.** Write the test, run it, and keep the failure lines: it must fail on the current code
    for the reason it names. Then the smallest change that makes it pass. No unrelated refactors.
 5. **Gates** (section 3) green before every commit. **One change per commit**; the body names the test
-   and pastes the failure excerpt.
+   and pastes the failure excerpt. Write the message to a file and commit with `git commit -F <file>`,
+   saved as UTF-8 **without** a BOM (PowerShell: `[IO.File]::WriteAllText($path, $msg)`); never pass it
+   through PowerShell `-m "..."`, where a backtick is an escape (`` `f `` becomes a form feed).
 6. **Finish:** push the branch and open a PR to `main` only when the prompt says so. Never push to
    `main`, never `--force`, `rebase`, `amend`, delete branches or tag unless the user asked.
 7. **Report** in the format of section 7.
@@ -56,13 +58,19 @@ From the repo root:
 ```powershell
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo test --workspace --exclude trainer
+cargo test -p trainer
 .\scripts\check-boundaries.ps1
 ```
 
 Inside `apps/desktop/src-tauri`: `cargo clippy --all-targets -- -D warnings` and `cargo test --lib`.
 Inside `apps/desktop/ui`: `npm ci` once, then `npm run build` (type-check and build).
 
+- Test `trainer` on its own, as CI does: building it together with the other crates
+  (`cargo test --workspace`) fails with "crate `wgpu` required to be available in rlib format", and the
+  build folder it leaves behind also breaks a later `cargo test -p trainer`. If that happens, use a fresh
+  `CARGO_TARGET_DIR`.
+- Report test counts by summing the `test result:` lines of this run (`passed` per suite), not from memory.
 - While iterating run the narrowest test (`cargo test -p aim-coach <name>`); run everything before a commit.
 - Timing-sensitive tests (threads, input, frame timing): run 10 times and report `0/10 failures`.
 - CI (`.github/workflows/ci.yml`) uses `--profile ci` and runs the portable crates on Linux; same checks,
