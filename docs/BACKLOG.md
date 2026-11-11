@@ -57,7 +57,7 @@ Owner: **E** an executor prompt can do it · **U** needs the user (a decision, h
 
 | ID | What | PR |
 | --- | --- | --- |
-| B1 | New installs start in the Windows UI language, not always Arabic | #? |
+| B1 | New installs start in the Windows UI language, not always Arabic | #5 |
 | — | Faster CI (ci profile, Linux for portable crates) | #1 |
 | — | Installer, portable zip, release workflow, screenshots, user guide, architecture | #2 |
 | — | First-run language choice switches the page right away | #3 |
