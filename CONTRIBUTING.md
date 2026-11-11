@@ -11,6 +11,9 @@ measurements trustworthy and comparable over time. The rules below exist for tha
   solve. It saves work on both sides.
 - Windows is required to run the trainer. Analysis and coaching crates build and test anywhere.
 
+Known problems and planned work are listed in [docs/BACKLOG.md](docs/BACKLOG.md); pick an item, or open an
+issue for something new. AI agents follow [AGENTS.md](AGENTS.md).
+
 ## From idea to merged change
 
 1. **Fork** the repository on GitHub (outside contributors) or work in a branch (maintainers).
