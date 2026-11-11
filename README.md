@@ -131,7 +131,8 @@ The desktop backend is a separate Cargo workspace: run `cargo clippy --all-targe
 To build the installer and the portable zip yourself, run
 `powershell -ExecutionPolicy Bypass -File scripts\package-release.ps1`; the files land in `dist\`.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the rules that keep recordings readable and measurements
+All documentation is listed in [docs/README.md](docs/README.md), and known problems in
+[docs/BACKLOG.md](docs/BACKLOG.md). See [CONTRIBUTING.md](CONTRIBUTING.md) for the rules that keep recordings readable and measurements
 comparable.
 
 ## Other folders
