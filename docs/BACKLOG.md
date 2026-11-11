@@ -14,7 +14,6 @@ Owner: **E** an executor prompt can do it · **U** needs the user (a decision, h
 
 | ID | P | Owner | Problem | Evidence | Done when |
 | --- | --- | --- | --- | --- | --- |
-| B1 | P1 | E | New installs start in Arabic for everyone. | `apps/desktop/src-tauri/src/core.rs:98` defaults `locale` to `"ar"` | Default follows the Windows UI language (Arabic for `ar-*`, English otherwise); test covers both; existing settings unchanged |
 | B2 | P1 | E | The trainer run on its own writes `session-<id>.aft` into the current folder; the repo root holds 17 such files. | `apps/trainer/src/main.rs:1267`, `:1304` | Without `--output` the file goes to `recordings/` under the current folder (created if missing, git-ignored) and the path is printed; test covers the default path |
 | B3 | P2 | E | `SHA256SUMS.txt` has Windows line endings, so `sha256sum -c` fails on Linux and macOS. | `scripts/package-release.ps1:56` | File written with `\n` endings; checked with `sha256sum -c` in the release workflow |
 | B4 | P2 | E | Release drafts are not marked as pre-release, and the version lives in four files that must be bumped by hand. | `.github/workflows/release.yml:54`; `Cargo.toml`, `apps/desktop/src-tauri/Cargo.toml`, `apps/desktop/ui/package.json`, `apps/desktop/src-tauri/tauri.conf.json` | `0.x` and `-alpha/-beta` tags create pre-releases; `scripts/bump-version.ps1 <x.y.z>` updates all four; CI fails if they differ |
@@ -58,6 +57,7 @@ Owner: **E** an executor prompt can do it · **U** needs the user (a decision, h
 
 | ID | What | PR |
 | --- | --- | --- |
+| B1 | New installs start in the Windows UI language, not always Arabic | #5 |
 | — | Faster CI (ci profile, Linux for portable crates) | #1 |
 | — | Installer, portable zip, release workflow, screenshots, user guide, architecture | #2 |
 | — | First-run language choice switches the page right away | #3 |
