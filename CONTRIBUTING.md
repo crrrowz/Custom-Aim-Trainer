@@ -72,7 +72,8 @@ Rules that keep this safe:
    ```powershell
    cargo fmt --all -- --check
    cargo clippy --workspace --all-targets -- -D warnings
-   cargo test --workspace
+   cargo test --workspace --exclude trainer
+   cargo test -p trainer
    .\scripts\check-boundaries.ps1
    ```
 
